@@ -63,7 +63,7 @@ def read_env_file(path: Path = ENV_FILE) -> dict[str, str]:
 
     支持写法：
 
-        APP_NAME=back_ai
+        APP_NAME=xiuxianserver
         APP_MODULES=["src.ws"]
         zdy1=hello
 
@@ -280,7 +280,7 @@ def load_config() -> AppConfig:
 
     # 项目基础配置。
     project = ProjectConfig(
-        name=env.get("APP_NAME", "back_ai"),
+        name=env.get("APP_NAME", "xiuxianserver"),
         debug=env.get_bool("APP_DEBUG", False),
         timezone=env.get("APP_TIMEZONE", "Asia/Shanghai"),
     )

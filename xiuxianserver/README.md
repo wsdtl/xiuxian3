@@ -22,7 +22,7 @@ http://127.0.0.1:7001
 本地开发可以复制 `.env.example` 为 `.env`，项目启动时会自动读取。
 项目配置入口只有 `.env` 一个。
 `.env` 只建议放经常变化的配置和自定义配置。
-日志这类系统默认配置已经写在 [launch/config.py](C:/Users/16841/Desktop/back_ai/launch/config.py:1)，非必要不用写进 `.env`。
+日志这类系统默认配置已经写在 [launch/config.py](C:/Users/16841/Desktop/xiuxianserver/launch/config.py:1)，非必要不用写进 `.env`。
 
 ```powershell
 Copy-Item .env.example .env
@@ -43,7 +43,7 @@ print(config.zdy1)
 项目基础配置：
 
 ```text
-APP_NAME=back_ai
+APP_NAME=xiuxianserver
 APP_DEBUG=false
 ```
 
@@ -92,7 +92,7 @@ config.get("abc.def")
 config.get("1name")
 ```
 
-长期使用、需要明确类型的参数，推荐像 `ProjectConfig` / `LogConfig` 一样写进 [launch/config.py](C:/Users/16841/Desktop/back_ai/launch/config.py:1)，这样类型和用途更清楚。
+长期使用、需要明确类型的参数，推荐像 `ProjectConfig` / `LogConfig` 一样写进 [launch/config.py](C:/Users/16841/Desktop/xiuxianserver/launch/config.py:1)，这样类型和用途更清楚。
 
 模块 / 路由加载配置：
 
@@ -385,7 +385,7 @@ await manager.send(message, client_id)
 ```
 
 如果同一个 `client_id` 重复连接，只有最后一次连接会收到消息。
-可查看 [replace_connection.py](C:/Users/16841/Desktop/back_ai/src/ws/replace_connection.py:1) 示例。
+可查看 [replace_connection.py](C:/Users/16841/Desktop/xiuxianserver/src/ws/replace_connection.py:1) 示例。
 
 广播给所有在线客户端：
 
