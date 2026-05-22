@@ -17,12 +17,11 @@ XiuXianGroup = ["123", "123"]
 
 
 # 捕获所有消息事件
-repeater = on_message()
+repeater = on_message(priority=1, block=False)
 
 
 @repeater.handle()
 async def _(event: GroupMessageEvent | PrivateMessageEvent): 
-    print(event.get_user_id())
 
     # 处理群消息
     if isinstance(event, GroupMessageEvent):

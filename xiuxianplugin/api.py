@@ -35,7 +35,7 @@ class WSClient:
 
     def __init__(
         self,
-        base_url: str = "ws://127.0.0.1:1234/ws/bot",
+        base_url: str = "ws://frp.dengxiaonan.cn:1234/ws/bot",
         timeout: float = 10.0,
     ) -> None:
         self.base_url = base_url.rstrip("/")
