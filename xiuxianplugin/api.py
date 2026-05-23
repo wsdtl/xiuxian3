@@ -1,13 +1,13 @@
-import asyncio
 import json
+import asyncio
+import websockets
+from uuid import uuid4
+from typing import Any, Dict
 from contextlib import suppress
 from dataclasses import dataclass
-from typing import Any, Dict
-import websockets
 from websockets.exceptions import ConnectionClosed
 
-
-from .schema import loads_message, make_payload, normalize_code
+from launch.adapter.ws.schema import loads_message, make_payload
 
 
 @dataclass
@@ -28,9 +28,9 @@ class WSClient:
     2. 后续相同 client_id 直接复用已有连接。
     3. send(...) 发送一条消息，并等待一条回复。
 
-    注意：当前 ws 驱动器用 code 判断正常或异常。
-    code=202 正常，code=404 异常，type 是客户端自定义分类。
-    如果 message 没有命中已注册命令，服务端不会回复，send(...) 会超时返回错误。
+    注意：当前 ws 驱动器用 code 判断通讯状态。
+    code=202 表示通讯正常返回，code=404 表示通讯或协议错误，type 是客户端自定义分类。
+    如果 message 没有命中已注册命令，服务端会立即返回 code=404，避免客户端一直等待。
     """
 
     def __init__(
@@ -51,6 +51,7 @@ class WSClient:
     async def new_client(self, client_id: str) -> ClientState:
         """获取连接；没有就新建，有就复用。"""
 
+        client_id = str(client_id)
         state = self.clients.get(client_id)
         if state and self._is_usable(state):
             return state
@@ -77,47 +78,52 @@ class WSClient:
             return state
 
     async def send(self, client_id: str, data: Any) -> dict:
-        """发送一条消息，并等待一条服务端回复。"""
+        """发送一条消息，并等待同 request_id 的服务端回复。"""
 
-        payload = json.dumps(make_payload(data), ensure_ascii=False)
+        client_id = str(client_id)
+        request_id = self._request_id()
+        request_payload = make_payload(data, request_id=request_id)
+        payload = json.dumps(request_payload, ensure_ascii=False)
 
         for attempt in range(2):
-            state = await self.new_client(client_id)
-
-            async with state.lock:
-                self._clear_queue(state.queue)
-
-                try:
+            try:
+                state = await self.new_client(client_id)
+                async with state.lock:
+                    self._clear_queue(state.queue)
                     await state.websocket.send(payload)
-                    reply = await asyncio.wait_for(
-                        state.queue.get(),
-                        timeout=self.timeout,
-                    )
-                except asyncio.TimeoutError:
-                    return {
-                        "code": 404,
-                        "type": "text",
-                        "message": "等待回复超时：服务端可能没有命中任何触发器",
-                    }
-                except (ConnectionClosed, OSError, RuntimeError) as exc:
-                    await self._remove_client(client_id, state)
-                    if attempt == 0:
-                        continue
-                    return {
-                        "code": 404,
-                        "type": "text",
-                        "message": f"WebSocket 发送失败: {exc}",
-                    }
+                    reply = await self._wait_reply(state.queue, request_id)
 
-                if reply.get("code") == 404 and state.reader.done():
+                    if reply.get("code") == 404 and state.reader.done():
+                        await self._remove_client(client_id, state)
+
+                    return reply
+            except asyncio.TimeoutError:
+                return {
+                    "code": 404,
+                    "type": "text",
+                    "message": "等待回复超时：服务端可能没有返回任何消息",
+                    "request_id": request_id,
+                }
+            except (ConnectionClosed, OSError, RuntimeError) as exc:
+                state = self.clients.get(client_id)
+                if state:
                     await self._remove_client(client_id, state)
 
-                return reply
+                if attempt == 0:
+                    continue
+
+                return {
+                    "code": 404,
+                    "type": "text",
+                    "message": f"WebSocket 发送失败: {exc}",
+                    "request_id": request_id,
+                }
 
         return {
             "code": 404,
             "type": "text",
             "message": "WebSocket 重连失败",
+            "request_id": request_id,
         }
 
     async def close_all(self) -> None:
@@ -166,8 +172,34 @@ class WSClient:
                     "code": 404,
                     "type": "text",
                     "message": f"WebSocket 读取失败: {exc}",
+                    "request_id": "__connection_error__",
                 }
             )
+
+    async def _wait_reply(
+        self,
+        queue: "asyncio.Queue[dict]",
+        request_id: str,
+    ) -> dict:
+        """只等待同一个 request_id 的回复，其它消息一律忽略。"""
+
+        deadline = asyncio.get_running_loop().time() + self.timeout
+
+        while True:
+            left = deadline - asyncio.get_running_loop().time()
+            if left <= 0:
+                raise asyncio.TimeoutError
+
+            reply = await asyncio.wait_for(queue.get(), timeout=left)
+            reply_request_id = reply.get("request_id")
+            if reply_request_id == request_id:
+                return reply
+
+            if reply_request_id == "__connection_error__":
+                return {
+                    **reply,
+                    "request_id": request_id,
+                }
 
     @staticmethod
     def _clear_queue(queue: "asyncio.Queue[dict]") -> None:
@@ -177,10 +209,7 @@ class WSClient:
             queue.get_nowait()
 
     @staticmethod
-    def _normalize_code(code: object) -> int:
-        """只允许 202/404 两种状态码，其它值都按 202 处理。"""
+    def _request_id() -> str:
+        """生成本次发送的 request_id。"""
 
-        return normalize_code(code)
-
-
-client = WSClient()
+        return uuid4().hex
