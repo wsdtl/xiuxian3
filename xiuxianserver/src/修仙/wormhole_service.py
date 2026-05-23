@@ -14,11 +14,11 @@ from typing import Any
 from .common import CoreService, business_day, dt, dump_json, hint, load_json, money, now, ts
 from .constants import (
     MAX_LEVEL,
-    WEAPON_TYPE_INTERVAL_FACTORS,
     WORMHOLE_ACTIVE_WINDOW_DAYS,
     WORMHOLE_CHALLENGE_COOLDOWN_MINUTES,
     WORMHOLE_DAILY_ACTIVE_PLAYER_STEP,
     WORMHOLE_DAILY_BASE_LIMIT,
+    WORMHOLE_DAILY_MIN_LIMIT,
     WORMHOLE_DAILY_MAX_LIMIT,
     WORMHOLE_DURATION_MINUTES,
     WORMHOLE_NOTICE_COOLDOWN_MINUTES,
@@ -474,35 +474,44 @@ class WormholeService(CoreService):
         weapon_service.ensure_starter_weapon(client_id)
         weapon = weapon_service.equipped_weapon(client_id)
         skill = weapon_service.skill(weapon["skill_id"]) if weapon else None
-        bonuses = self.equipment_bonuses(client_id)
+        bonuses = self._merge_effects(self.equipment_bonuses(client_id), self._weapon_effects(weapon))
         player_attack = int(player["base_attack"]) + (int(weapon["attack"]) if weapon else 0)
         hp = int(player["hp"])
         mp = int(player["mp"])
         total_damage = 0
         skill_times = 0
         rounds = 10 + min(4, int(player["level"]) // 25)
-        interval = self._skill_interval(skill, weapon)
-        skill_cost = max(0, int(skill["cost_mp"]) if skill else 0)
+        interval = self._skill_interval(skill, weapon, bonuses)
+        skill_cost = self._skill_cost(skill, bonuses)
         boss_hp = int(event["hp"])
         actions: list[dict[str, Any]] = []
 
         for round_no in range(1, rounds + 1):
             raw = player_attack + random.randint(int(player["level"]), max(int(player["level"]) * 4, int(player["level"]) + 3))
+            raw = int(raw * (1 + float(bonuses.get("hit_bonus", 0)) * 0.5))
             skill_used = False
             skill_name = ""
             if skill and interval and round_no % interval == 0 and mp >= skill_cost:
-                raw = int(raw * float(skill["power"]))
+                raw = int(raw * self._skill_power(skill, bonuses))
                 mp -= skill_cost
                 skill_times += 1
                 skill_used = True
                 skill_name = str(skill["name"])
-            damage = damage_after_defense(raw, int(event["defense"]))
-            total_damage += damage
-            boss_hp = max(0, boss_hp - damage)
+            damage = damage_after_defense(raw, int(event["defense"]), self._pierce_rate(bonuses))
+            combo_damage = self._combo_damage(raw, int(event["defense"]), bonuses)
+            round_damage = damage + combo_damage
+            total_damage += round_damage
+            boss_hp = max(0, boss_hp - round_damage)
+            hp_before_steal = hp
+            if bonuses.get("life_steal"):
+                hp = min(int(player["max_hp"]), hp + int(round_damage * float(bonuses["life_steal"])))
             action = {
                 "round": round_no,
                 "raw": raw,
-                "damage": damage,
+                "damage": round_damage,
+                "base_damage": damage,
+                "combo_damage": combo_damage,
+                "life_steal": max(0, hp - hp_before_steal),
                 "skill_used": skill_used,
                 "skill_name": skill_name,
                 "mp_cost": skill_cost if skill_used else 0,
@@ -522,21 +531,23 @@ class WormholeService(CoreService):
                     random.randint(max(1, int(event["attack"] * 0.75)), max(1, int(event["attack"] * 1.18))),
                     int(player["defense"]),
                 )
-                hurt = max(1, int(hurt * (1 - min(0.55, float(bonuses.get("crit_resist_bonus", 0))))))
-                hp -= hurt
+                reduced_hurt = self._reduce_damage(hurt, bonuses, skill_used)
+                hp -= reduced_hurt
                 action["boss_attack"] = True
-                action["boss_damage"] = hurt
+                action["boss_hurt_raw"] = hurt
+                action["boss_damage"] = reduced_hurt
             else:
                 action["dodged"] = True
             action["player_hp_left"] = max(0, hp)
-            action["player_mp_left"] = max(0, mp)
+            action["player_mp_left"] = 0 if hp <= 0 else max(0, mp)
             actions.append(action)
             if hp <= 0:
                 break
+        mp_left = 0 if hp <= 0 else max(0, mp)
         return {
             "damage": max(1, total_damage),
             "hp_left": max(0, hp),
-            "mp_left": max(0, mp),
+            "mp_left": mp_left,
             "skill_times": skill_times,
             "actions": actions,
         }
@@ -595,6 +606,8 @@ class WormholeService(CoreService):
 
         round_no = int(action.get("round", 0))
         damage = int(action.get("damage", 0))
+        combo_damage = int(action.get("combo_damage", 0))
+        life_steal = int(action.get("life_steal", 0))
         boss_hp_left = max(0, int(action.get("boss_hp_left", 0)))
         boss_hp_max = max(1, int(action.get("boss_hp_max", 1)))
         skill_name = str(action.get("skill_name") or "")
@@ -604,9 +617,11 @@ class WormholeService(CoreService):
         else:
             attack_text = "普通攻击"
             cost_text = ""
+        combo_text = f"，连击追加 {combo_damage}" if combo_damage > 0 else ""
+        steal_text = f"，吸血 +{life_steal}" if life_steal > 0 else ""
         lines = [
             f"第 {round_no} 回合",
-            f"  我方出手：{attack_text}，造成 {damage} 伤害{cost_text}；{boss_name} 血气 {boss_hp_left}/{boss_hp_max}",
+            f"  我方出手：{attack_text}，造成 {damage} 伤害{combo_text}{steal_text}{cost_text}；{boss_name} 血气 {boss_hp_left}/{boss_hp_max}",
         ]
         if boss_hp_left <= 0:
             lines.append(f"  Boss 出手：{boss_name} 已倒下。")
@@ -622,8 +637,10 @@ class WormholeService(CoreService):
             return lines
 
         hurt = int(action.get("boss_damage", 0))
+        raw_hurt = int(action.get("boss_hurt_raw", hurt))
+        reduce_text = f"，减免 {max(0, raw_hurt - hurt)}" if raw_hurt > hurt else ""
         lines.append(
-            f"  Boss 出手：{boss_name} 造成 {hurt} 伤害；"
+            f"  Boss 出手：{boss_name} 造成 {hurt} 伤害{reduce_text}；"
             f"我方血气 {hp_left}/{player['max_hp']}，精神 {mp_left}/{player['max_mp']}"
         )
         return lines
@@ -805,11 +822,17 @@ class WormholeService(CoreService):
 
     @staticmethod
     def _daily_event_limit(active_count: int) -> int:
-        """按活跃人数计算每日虫洞生成上限。"""
+        """按活跃人数计算每日虫洞生成上限。
+
+        活跃人数只负责把上限往上抬；最低下限始终保留，
+        避免低活跃日完全没有虫洞可打。
+        """
 
         active = max(1, int(active_count))
         extra = (active - 1) // WORMHOLE_DAILY_ACTIVE_PLAYER_STEP
-        return max(WORMHOLE_DAILY_BASE_LIMIT, min(WORMHOLE_DAILY_MAX_LIMIT, WORMHOLE_DAILY_BASE_LIMIT + extra))
+        dynamic_limit = WORMHOLE_DAILY_BASE_LIMIT + extra
+        capped_limit = min(WORMHOLE_DAILY_MAX_LIMIT, dynamic_limit)
+        return max(WORMHOLE_DAILY_MIN_LIMIT, capped_limit)
 
     @staticmethod
     def _discovery_chance(source: str, active_count: int, opened_today: int, daily_limit: int) -> float:
@@ -829,15 +852,6 @@ class WormholeService(CoreService):
 
         per_round = damage_after_defense(int(median_attack * 1.25 + level * 2.0), boss_defense)
         return max(25, per_round * 10)
-
-    @staticmethod
-    def _skill_interval(skill: dict[str, Any] | None, weapon: dict[str, Any] | None) -> int:
-        """按武器类型修正技能释放间隔。"""
-
-        if not skill:
-            return 0
-        factor = WEAPON_TYPE_INTERVAL_FACTORS.get(str(weapon.get("weapon_type") if weapon else ""), 1.0)
-        return max(2, min(12, round(int(skill["interval"]) * factor)))
 
     def _format_status(self, event: dict[str, Any]) -> str:
         """格式化虫洞状态。"""

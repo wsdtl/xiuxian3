@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import json
 import random
-import re
 import sqlite3
 from datetime import datetime, timedelta
 from typing import Any, Iterable
@@ -22,11 +21,9 @@ from .constants import (
     FIXED_EQUIPMENT_SLOT_FACTORS,
     MAX_LEVEL,
     RENAME_COOLDOWN_HOURS,
+    WEAPON_TYPE_INTERVAL_FACTORS,
 )
-from .rules import base_attack, defense, exp_need, level_from_exp, max_hp, max_mp, money
-
-
-AT_RE = re.compile(r"\[CQ:at,qq=(?P<id>[^\],]+)")
+from .rules import base_attack, damage_after_defense, defense, exp_need, level_from_exp, max_hp, max_mp, money
 
 
 def now() -> datetime:
@@ -142,12 +139,9 @@ def hint(reason: str, suggestion: str) -> str:
 
 
 def parse_player_ref(text: str) -> str:
-    """提取玩家引用文本；普通文本是名称，CQ/at 提取内部 id。"""
+    """提取玩家引用文本；WS 层已把 CQ/at 转成内部 id。"""
 
     value = text.strip()
-    match = AT_RE.search(value)
-    if match:
-        return match.group("id").strip()
     return value.split()[0].strip() if value else ""
 
 
@@ -220,8 +214,8 @@ class CoreService:
         value = parse_player_ref(text)
         if not value:
             return ""
-        if AT_RE.search(text):
-            return value if self.player(value) else ""
+        if self.player(value):
+            return value
         row = self.db.fetch_one(
             "SELECT client_id FROM players WHERE display_name = ?",
             (value,),
@@ -479,6 +473,116 @@ class CoreService:
                     bonus_key = "max_mp_bonus" if key == "mp_bonus" else key
                     bonuses[bonus_key] = bonuses.get(bonus_key, 0) + float(value)
         return bonuses
+
+    def weapon_effects_from_ids(self, enchant_ids: object) -> dict[str, float]:
+        """按附魔 id 列表汇总武器附魔效果。
+
+        技能书真正参与战斗的是 weapon_enchants 表里的 effect 和 mp_delta。
+        这个函数是唯一入口，战斗结算和武器详情都走这里，避免不同玩法漏算技能书。
+        """
+
+        effects: dict[str, float] = {}
+        if not isinstance(enchant_ids, list):
+            return effects
+        for enchant_id in enchant_ids:
+            row = self.db.fetch_one("SELECT effect, mp_delta FROM weapon_enchants WHERE enchant_id = ?", (enchant_id,))
+            if not row:
+                continue
+            for key, value in load_json(row["effect"], {}).items():
+                if isinstance(value, int | float):
+                    effects[key] = effects.get(key, 0) + float(value)
+            effects["mp_delta"] = effects.get("mp_delta", 0) + int(row["mp_delta"])
+        return effects
+
+    def _weapon_effects(self, weapon: dict[str, Any] | None) -> dict[str, float]:
+        """读取一把武器已经附魔的全部战斗效果。"""
+
+        if not weapon:
+            return {}
+        return self.weapon_effects_from_ids(load_json(weapon.get("enchant_effects"), []))
+
+    @staticmethod
+    def _merge_effects(*groups: dict[str, float]) -> dict[str, float]:
+        """合并装备、宝石、体质和武器附魔效果。"""
+
+        merged: dict[str, float] = {}
+        for group in groups:
+            for key, value in group.items():
+                if isinstance(value, int | float):
+                    merged[key] = merged.get(key, 0) + float(value)
+        return merged
+
+    @staticmethod
+    def _attack_raw(base_attack_value: int, level: int, effects: dict[str, float]) -> int:
+        """计算一次普通出手的原始伤害。"""
+
+        stable_bonus = float(effects.get("hit_bonus", 0)) * 0.5
+        raw = int(base_attack_value * (1 + stable_bonus))
+        return raw + random.randint(0, max(2, int(level) * 2))
+
+    @staticmethod
+    def _skill_power(skill: dict[str, Any], effects: dict[str, float]) -> float:
+        """计算武器技能实际威力。"""
+
+        power = float(skill["power"])
+        power += float(effects.get("skill_power_bonus", 0))
+        power += float(effects.get("heavy_bonus", 0))
+        power += float(effects.get("single_hit_bonus", 0))
+        return max(1.0, power)
+
+    @staticmethod
+    def _skill_cost(skill: dict[str, Any] | None, effects: dict[str, float]) -> int:
+        """计算武器技能实际精神消耗。"""
+
+        if not skill:
+            return 0
+        return max(0, int(skill["cost_mp"]) + int(effects.get("mp_delta", 0)))
+
+    @staticmethod
+    def _skill_interval(skill: dict[str, Any] | None, weapon: dict[str, Any] | None, effects: dict[str, float]) -> int:
+        """计算武器技能实际触发间隔。"""
+
+        if not skill:
+            return 0
+        weapon_type = str(weapon.get("weapon_type") if weapon else "")
+        type_factor = WEAPON_TYPE_INTERVAL_FACTORS.get(weapon_type, 1.0)
+        rate = max(0.6, 1.0 + float(effects.get("interval_rate", 0)))
+        interval = round(int(skill["interval"]) * type_factor * rate)
+        interval += int(effects.get("interval_delta", 0))
+        return max(2, min(12, interval))
+
+    @staticmethod
+    def _pierce_rate(effects: dict[str, float]) -> float:
+        """把穿透和压防统一成防御穿透率。"""
+
+        return min(0.8, float(effects.get("pierce_bonus", 0)) + float(effects.get("defense_suppress", 0)))
+
+    @staticmethod
+    def _combo_damage(raw: int, defense_value: int, effects: dict[str, float]) -> int:
+        """按连击类附魔追加一段轻伤害。"""
+
+        if random.random() >= min(0.5, float(effects.get("combo_bonus", 0))):
+            return 0
+        rate = min(0.8, 0.35 + float(effects.get("combo_damage_bonus", 0)))
+        return damage_after_defense(int(raw * rate), defense_value, CoreService._pierce_rate(effects))
+
+    @staticmethod
+    def _reduce_damage(damage: int, effects: dict[str, float], skill_used: bool) -> int:
+        """计算最终承伤；玄盾书在本回合武器技能触发时生效。"""
+
+        rate = float(effects.get("damage_reduce", 0)) + float(effects.get("crit_resist_bonus", 0))
+        if skill_used:
+            rate += float(effects.get("shield_bonus", 0))
+        return max(1, int(damage * (1 - min(0.7, rate))))
+
+    @staticmethod
+    def _suppress_mp(mp: int, max_mp_value: int, effects: dict[str, float]) -> int:
+        """按断念类附魔削掉对手精神。"""
+
+        rate = min(0.25, float(effects.get("mp_suppress", 0)))
+        if rate <= 0:
+            return mp
+        return max(0, int(mp) - int(max_mp_value * rate))
 
     def recalc_player(self, client_id: str) -> dict[str, Any]:
         """按经验重算等级和基础数值。"""
@@ -943,6 +1047,27 @@ def format_effect(effect_text: str) -> str:
         value = effect.get(key)
         if isinstance(value, int | float) and value:
             parts.append(f"{label}{value * 100:+.1f}%")
+    combat_labels = {
+        "hit_bonus": "命中稳定",
+        "pierce_bonus": "防御穿透",
+        "life_steal": "吸血",
+        "shield_bonus": "技能护盾",
+        "mp_suppress": "精神压制",
+        "defense_suppress": "压低防御",
+        "combo_bonus": "连击概率",
+        "damage_reduce": "最终减伤",
+        "skill_power_bonus": "技能威力",
+        "heavy_bonus": "重击威力",
+        "combo_damage_bonus": "连击伤害",
+        "single_hit_bonus": "单次爆发",
+    }
+    for key, label in combat_labels.items():
+        value = effect.get(key)
+        if isinstance(value, int | float) and value:
+            parts.append(f"{label}{value * 100:+.1f}%")
+    interval_delta = effect.get("interval_delta")
+    if isinstance(interval_delta, int | float) and interval_delta:
+        parts.append(f"技能间隔{int(interval_delta):+d}")
     trade_bonus = effect.get("trade_bonus")
     if isinstance(trade_bonus, int | float) and trade_bonus:
         if trade_bonus > 0:

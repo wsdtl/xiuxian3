@@ -44,10 +44,12 @@ def exp_need(level: int) -> int:
     if level <= 40:
         return base_need
 
-    # 40 级后平滑加难：每日 10 次全胜约 7 个月满级，
-    # 每日 2 次全胜约 3 年满级，兼顾高频和低频玩家。
+    # 40 级后进入长期曲线：
+    # - 40-60 级只轻微加压，避免中期突然卡死。
+    # - 60-80 级开始拉开差距。
+    # - 80 级后明显变重，专门压住每日十几次探险的高频玩家。
     progress = (level - 40) / 59
-    difficulty = 1 + 4 * (progress**1.25)
+    difficulty = 1 + 8 * (progress**1.35) + 12 * (progress**2.4) + 18 * (progress**4.0)
     return floor(base_need * difficulty)
 
 
@@ -216,7 +218,7 @@ def weapon_enchant_slots(max_level: int, level: int) -> int:
     """按武器上限和当前等级计算已解锁附魔栏。"""
 
     slots = 0
-    for need in (20, 40, 60, 80, 100):
+    for need in (20, 40, 60, 80, 90, 100):
         if int(max_level) >= need and int(level) >= need:
             slots += 1
     return slots

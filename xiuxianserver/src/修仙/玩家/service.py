@@ -19,7 +19,7 @@ class PlayerService(CoreService):
             "1. 创建用户 名称\n"
             "2. 新手礼包\n"
             "3. 修仙信息 / 武器 / 纳戒\n"
-            "4. 探险 -> 探险状态 -> 30分钟后结束探险\n"
+            "4. 探险 地点名 -> 探险状态 -> 30分钟后结束探险\n"
             "5. 自动用药 开启 / 背包 / 使用 血契丹 / 洗髓 / 休息\n"
             "6. 商场列表 / 商场 / 商场推荐 / 商场奖励\n"
             "常用：签到、源库、地点、固定装备、铭刻、二手市场、特殊自动出售、切磋 对方名称"
@@ -61,7 +61,8 @@ class PlayerService(CoreService):
             f"☆{player['display_name']}的修仙信息☆\n"
             f"等级:{player['level']} 经验:{self.next_level_text(player)}\n"
             f"血气:{player['hp']}/{player['max_hp']} 精神:{player['mp']}/{player['max_mp']}\n"
-            f"体质:{physique_text} 攻击:{total_attack}(基础{player['base_attack']}+武器{weapon_attack}) 防御:{player['defense']}\n"
+            f"体质:{physique_text}\n"
+            f"攻击:{total_attack}(基础{player['base_attack']}+武器{weapon_attack}) 防御:{player['defense']}\n"
             f"当前武器:{weapon_text}\n"
             f"源石:{money(player['source_stones'])} 状态:{player['status']}\n"
             f"自动用药:{'开启' if player['auto_use_medicine'] else '关闭'}\n"
@@ -223,7 +224,7 @@ class PlayerService(CoreService):
         if not row:
             return str(player["physique"])
         effect = format_effect(row["effect"])
-        return f"{row['name']}|{row['grade']}/{row['kind']}|{row['physique_value']}|特性:{effect}"
+        return f"{row['name']}|{row['grade']}-{row['kind']}-{row['physique_value']}| 特性:{effect}"
 
 
 service = PlayerService(db)

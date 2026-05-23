@@ -35,8 +35,12 @@ class ExplorationService(CoreService):
         assert player is not None
         return f"当前位置：{player['location_name']} ({player['x']},{player['y']})"
 
-    def start(self, client_id: str) -> str:
-        """开始探险。"""
+    def start(self, client_id: str, location_name: str = "") -> str:
+        """开始探险。
+
+        不带地点时使用玩家当前位置；带地点时先切到该探险地点再开始。
+        移动没有时间成本，所以这里直接更新位置，避免用户还要先发一次导航。
+        """
 
         player, error = self.require_player(client_id)
         if error:
@@ -50,15 +54,19 @@ class ExplorationService(CoreService):
             return hint(f"当前状态为 {player['status']}，不能开始探险。", "先处理当前状态，例如：结束休息 / 探险状态 / 结束探险")
         if player["hp"] <= 0:
             return hint("血气不足，不能开始探险。", "发送：休息，时间到后发送：结束休息")
-        location = self.db.fetch_one(
-            "SELECT * FROM exploration_locations WHERE name = ?",
-            (player["location_name"],),
-        )
+        target_name = location_name.strip() or player["location_name"]
+        location = self._exploration_location(target_name)
         if not location:
-            return hint("当前位置不是探险地点。", "发送：地点列表 查看可探险地点，再发送：导航 地点名")
+            if location_name.strip():
+                return hint(f"没有找到探险地点：{target_name}。", "发送：地点列表 查看可探险地点。")
+            return hint("当前位置不是探险地点。", "发送：地点列表 查看可探险地点，或发送：探险 地点名")
 
         weapon_service.ensure_starter_weapon(client_id)
-        result = self._precompute(client_id, player)
+        explore_player = dict(player)
+        explore_player["location_name"] = location["name"]
+        explore_player["x"] = location["x"]
+        explore_player["y"] = location["y"]
+        result = self._precompute(client_id, explore_player)
         started = now()
         ready = started + timedelta(minutes=EXPLORE_MINUTES)
         with self.db.transaction() as conn:
@@ -80,8 +88,12 @@ class ExplorationService(CoreService):
                 if not row or int(row["quantity"]) < int(quantity):
                     return hint("自动用药库存已变化，无法开始探险。", "发送：纳戒 确认恢复药数量后，再发送：探险")
             cursor = conn.execute(
-                "UPDATE players SET status = '探险中' WHERE client_id = ? AND status = '空闲'",
-                (client_id,),
+                """
+                UPDATE players
+                SET status = '探险中', location_name = ?, x = ?, y = ?
+                WHERE client_id = ? AND status = '空闲'
+                """,
+                (location["name"], location["x"], location["y"], client_id),
             )
             if cursor.rowcount <= 0:
                 return hint("当前状态已变化，不能开始探险。", "发送：修仙信息 查看当前状态后再操作。")
@@ -93,10 +105,10 @@ class ExplorationService(CoreService):
                 (client_id, location_name, status, started_at, ready_at, result)
                 VALUES (?, ?, '探险中', ?, ?, ?)
                 """,
-                (client_id, player["location_name"], ts(started), ts(ready), dump_json(result)),
+                (client_id, location["name"], ts(started), ts(ready), dump_json(result)),
             )
         auto_state = "开启" if player["auto_use_medicine"] else "关闭"
-        return f"开始探险：{player['location_name']}。自动用药：{auto_state}。30 分钟后可结算。"
+        return f"开始探险：{location['name']}。自动用药：{auto_state}。30 分钟后可结算。"
 
     def status(self, client_id: str) -> str:
         """查看探险状态。"""
@@ -191,6 +203,8 @@ class ExplorationService(CoreService):
                 ring_drops[event["ring_drop_id"]] = ring_drops.get(event["ring_drop_id"], 0) + 1
             if hp_left <= 0:
                 dead = True
+                mp_left = 0
+                event["mp_left"] = 0
                 break
 
         with self.db.transaction() as conn:
@@ -223,7 +237,7 @@ class ExplorationService(CoreService):
                 weapon_drops.append(f"#{weapon_id} {drop['name']}[{drop['quality']}] 上限{drop['max_level']}")
             conn.execute(
                 "UPDATE players SET hp = ?, mp = ?, status = '空闲' WHERE client_id = ?",
-                (max(1, hp_left), max(0, mp_left), client_id),
+                (max(1, hp_left), 0 if hp_left <= 0 else max(0, mp_left), client_id),
             )
             conn.execute(
                 """
@@ -378,6 +392,23 @@ class ExplorationService(CoreService):
         if location:
             return max(1, int(location["min_level"])), max(1, int(location["max_level"]))
         return max(1, player["level"] - 5), max(5, player["level"] + 8)
+
+    def _exploration_location(self, name: str) -> dict | None:
+        """读取探险地点，并补上导航坐标。"""
+
+        location = self.db.fetch_one(
+            "SELECT * FROM exploration_locations WHERE name = ?",
+            (name.strip(),),
+        )
+        if not location:
+            return None
+        coord = self.db.fetch_one(
+            "SELECT x, y FROM trade_locations WHERE name = ?",
+            (location["name"],),
+        )
+        location["x"] = int(coord["x"]) if coord else 0
+        location["y"] = int(coord["y"]) if coord else 0
+        return location
 
     def _active_record(self, client_id: str) -> dict | None:
         """读取未领取探险。"""

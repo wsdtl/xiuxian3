@@ -15,7 +15,6 @@ from ..common import (
     ts,
     weapon_label_name,
 )
-from ..constants import WEAPON_TYPE_INTERVAL_FACTORS
 from ..rules import (
     book_recycle_price_rate,
     book_recycle_single_cap,
@@ -402,7 +401,7 @@ class WeaponService(WeaponCore):
         enchant_ids = load_json(weapon["enchant_effects"], [])
         if not isinstance(enchant_ids, list):
             enchant_ids = []
-        effects = self._enchant_effects(enchant_ids)
+        effects = self.weapon_effects_from_ids(enchant_ids)
         used_slots = len(enchant_ids)
         unlocked_slots = int(weapon["enchant_slots"])
         potential_slots = weapon_enchant_slots(int(weapon["max_level"]), int(weapon["max_level"]))
@@ -456,7 +455,7 @@ class WeaponService(WeaponCore):
             return "这把武器等级上限不足，无法解锁附魔栏"
         if unlocked_slots >= potential_slots:
             return "附魔栏已按当前等级上限全部解锁"
-        for level in (20, 40, 60, 80, 100):
+        for level in (20, 40, 60, 80, 90, 100):
             if int(weapon["max_level"]) >= level and int(weapon["level"]) < level:
                 return f"下个附魔栏在武器{level}级解锁"
         return "继续升级可解锁更多附魔栏"
@@ -465,7 +464,7 @@ class WeaponService(WeaponCore):
         """展示武器自带技能和当前实际触发参数。"""
 
         interval = self._skill_interval(skill, weapon, effects)
-        cost = max(0, int(skill["cost_mp"]) + int(effects.get("mp_delta", 0)))
+        cost = self._skill_cost(skill, effects)
         power = self._skill_power(skill, effects)
         desc = skill.get("desc", "")
         text = (
@@ -473,40 +472,6 @@ class WeaponService(WeaponCore):
             f"每{interval}次攻击触发"
         )
         return f"{text} | {desc}" if desc else text
-
-    @staticmethod
-    def _skill_interval(skill: dict, weapon: dict, effects: dict[str, float]) -> int:
-        """按武器类型和附魔计算实际技能触发间隔。"""
-
-        type_factor = WEAPON_TYPE_INTERVAL_FACTORS.get(str(weapon["weapon_type"]), 1.0)
-        rate = max(0.6, 1.0 + float(effects.get("interval_rate", 0)))
-        interval = round(int(skill["interval"]) * type_factor * rate)
-        interval += int(effects.get("interval_delta", 0))
-        return max(2, min(12, interval))
-
-    @staticmethod
-    def _skill_power(skill: dict, effects: dict[str, float]) -> float:
-        """按附魔计算实际技能威力倍率。"""
-
-        power = float(skill["power"])
-        power += float(effects.get("skill_power_bonus", 0))
-        power += float(effects.get("heavy_bonus", 0))
-        power += float(effects.get("single_hit_bonus", 0))
-        return max(1.0, power)
-
-    def _enchant_effects(self, enchant_ids: list[str]) -> dict[str, float]:
-        """汇总已附魔技能书的数值效果。"""
-
-        effects: dict[str, float] = {}
-        for enchant_id in enchant_ids:
-            row = self.db.fetch_one("SELECT effect, mp_delta FROM weapon_enchants WHERE enchant_id = ?", (enchant_id,))
-            if not row:
-                continue
-            for key, value in load_json(row["effect"], {}).items():
-                if isinstance(value, int | float):
-                    effects[key] = effects.get(key, 0) + float(value)
-            effects["mp_delta"] = effects.get("mp_delta", 0) + int(row["mp_delta"])
-        return effects
 
     def _enchant_detail_text(self, weapon_id: int, enchant_ids: list[str]) -> str:
         """展示附魔名称和效果。"""

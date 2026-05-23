@@ -19,7 +19,6 @@ from ..constants import (
     MAX_LEVEL,
     SEASONAL_BOSS_CHALLENGE_COOLDOWN_MINUTES,
     SEASONAL_BOSS_MAX_CHALLENGES,
-    WEAPON_TYPE_INTERVAL_FACTORS,
 )
 from ..rules import damage_after_defense, monster_exp
 from ..sql import db
@@ -231,6 +230,34 @@ BOSS_DEFS: dict[str, BossDef] = {
 
 class SeasonalBossService(CoreService):
     """按节令出现的岁时情劫首领。"""
+
+    def open_recent_past_event_for_today(self, lookback_days: int = 45) -> dict[str, Any] | None:
+        """为当前业务日补生成最近已过的岁时情劫。
+
+        这个函数默认不自动调用，只适合临时在启动回调里手动放开。
+        它不会覆盖已有首领，也不会在今天本来就是节气/节日时抢走原机制。
+        """
+
+        day = self._business_date()
+        self._close_expired_events()
+        event = self.db.fetch_one(
+            "SELECT * FROM seasonal_boss_events WHERE business_day = ?",
+            (day.isoformat(),),
+        )
+        if event:
+            return dict(event)
+
+        today_boss, _today_type, _today_weight = self._boss_for_date(day)
+        if today_boss:
+            return None
+
+        past = self._recent_past_boss_for_date(day, lookback_days)
+        if not past:
+            return None
+
+        source_day, boss_def, event_type, weight_type = past
+        echo_type = f"岁时回响·{source_day.isoformat()}·{event_type}"
+        return self._open_event(day, boss_def, echo_type, weight_type)
 
     def status(self, client_id: str) -> str:
         """查看今日岁时情劫。"""
@@ -621,35 +648,44 @@ class SeasonalBossService(CoreService):
         weapon_service.ensure_starter_weapon(client_id)
         weapon = weapon_service.equipped_weapon(client_id)
         skill = weapon_service.skill(weapon["skill_id"]) if weapon else None
-        bonuses = self.equipment_bonuses(client_id)
+        bonuses = self._merge_effects(self.equipment_bonuses(client_id), self._weapon_effects(weapon))
         player_attack = int(player["base_attack"]) + (int(weapon["attack"]) if weapon else 0)
         hp = int(player["hp"])
         mp = int(player["mp"])
         total_damage = 0
         skill_times = 0
         rounds = 10 + min(4, int(player["level"]) // 25)
-        interval = self._skill_interval(skill, weapon)
-        skill_cost = max(0, int(skill["cost_mp"]) if skill else 0)
+        interval = self._skill_interval(skill, weapon, bonuses)
+        skill_cost = self._skill_cost(skill, bonuses)
         boss_hp = int(event["hp"])
         actions: list[dict[str, Any]] = []
 
         for round_no in range(1, rounds + 1):
             raw = player_attack + random.randint(int(player["level"]), max(int(player["level"]) * 4, int(player["level"]) + 3))
+            raw = int(raw * (1 + float(bonuses.get("hit_bonus", 0)) * 0.5))
             skill_used = False
             skill_name = ""
             if skill and interval and round_no % interval == 0 and mp >= skill_cost:
-                raw = int(raw * float(skill["power"]))
+                raw = int(raw * self._skill_power(skill, bonuses))
                 mp -= skill_cost
                 skill_times += 1
                 skill_used = True
                 skill_name = str(skill["name"])
-            damage = damage_after_defense(raw, int(event["defense"]))
-            total_damage += damage
-            boss_hp = max(0, boss_hp - damage)
+            damage = damage_after_defense(raw, int(event["defense"]), self._pierce_rate(bonuses))
+            combo_damage = self._combo_damage(raw, int(event["defense"]), bonuses)
+            round_damage = damage + combo_damage
+            total_damage += round_damage
+            boss_hp = max(0, boss_hp - round_damage)
+            hp_before_steal = hp
+            if bonuses.get("life_steal"):
+                hp = min(int(player["max_hp"]), hp + int(round_damage * float(bonuses["life_steal"])))
             action = {
                 "round": round_no,
                 "raw": raw,
-                "damage": damage,
+                "damage": round_damage,
+                "base_damage": damage,
+                "combo_damage": combo_damage,
+                "life_steal": max(0, hp - hp_before_steal),
                 "skill_used": skill_used,
                 "skill_name": skill_name,
                 "mp_cost": skill_cost if skill_used else 0,
@@ -669,21 +705,23 @@ class SeasonalBossService(CoreService):
                     random.randint(max(1, int(event["attack"] * 0.75)), max(1, int(event["attack"] * 1.18))),
                     int(player["defense"]),
                 )
-                hurt = max(1, int(hurt * (1 - min(0.55, float(bonuses.get("crit_resist_bonus", 0))))))
-                hp -= hurt
+                reduced_hurt = self._reduce_damage(hurt, bonuses, skill_used)
+                hp -= reduced_hurt
                 action["boss_attack"] = True
-                action["boss_damage"] = hurt
+                action["boss_hurt_raw"] = hurt
+                action["boss_damage"] = reduced_hurt
             else:
                 action["dodged"] = True
             action["player_hp_left"] = max(0, hp)
-            action["player_mp_left"] = max(0, mp)
+            action["player_mp_left"] = 0 if hp <= 0 else max(0, mp)
             actions.append(action)
             if hp <= 0:
                 break
+        mp_left = 0 if hp <= 0 else max(0, mp)
         return {
             "damage": max(1, total_damage),
             "hp_left": max(0, hp),
-            "mp_left": max(0, mp),
+            "mp_left": mp_left,
             "skill_times": skill_times,
             "actions": actions,
         }
@@ -744,6 +782,8 @@ class SeasonalBossService(CoreService):
 
         round_no = int(action.get("round", 0))
         damage = int(action.get("damage", 0))
+        combo_damage = int(action.get("combo_damage", 0))
+        life_steal = int(action.get("life_steal", 0))
         boss_hp_left = max(0, int(action.get("boss_hp_left", 0)))
         boss_hp_max = max(1, int(action.get("boss_hp_max", 1)))
         skill_name = str(action.get("skill_name") or "")
@@ -753,9 +793,11 @@ class SeasonalBossService(CoreService):
         else:
             attack_text = "普通攻击"
             cost_text = ""
+        combo_text = f"，连击追加 {combo_damage}" if combo_damage > 0 else ""
+        steal_text = f"，吸血 +{life_steal}" if life_steal > 0 else ""
         lines = [
             f"第 {round_no} 回合",
-            f"  我方出手：{attack_text}，造成 {damage} 伤害{cost_text}；{boss_name} 旧念 {boss_hp_left}/{boss_hp_max}",
+            f"  我方出手：{attack_text}，造成 {damage} 伤害{combo_text}{steal_text}{cost_text}；{boss_name} 旧念 {boss_hp_left}/{boss_hp_max}",
         ]
         if boss_hp_left <= 0:
             lines.append(f"  首领出手：{boss_name} 已消散。")
@@ -771,8 +813,10 @@ class SeasonalBossService(CoreService):
             return lines
 
         hurt = int(action.get("boss_damage", 0))
+        raw_hurt = int(action.get("boss_hurt_raw", hurt))
+        reduce_text = f"，减免 {max(0, raw_hurt - hurt)}" if raw_hurt > hurt else ""
         lines.append(
-            f"  首领出手：{boss_name} 造成 {hurt} 伤害；"
+            f"  首领出手：{boss_name} 造成 {hurt} 伤害{reduce_text}；"
             f"我方血气 {hp_left}/{player['max_hp']}，精神 {mp_left}/{player['max_mp']}"
         )
         return lines
@@ -907,15 +951,6 @@ class SeasonalBossService(CoreService):
         return max(25, per_round * 10)
 
     @staticmethod
-    def _skill_interval(skill: dict | None, weapon: dict | None) -> int:
-        """计算首领挑战里的武器技能间隔。"""
-
-        if not skill:
-            return 0
-        factor = WEAPON_TYPE_INTERVAL_FACTORS.get(str(weapon.get("weapon_type") if weapon else ""), 1.0)
-        return max(2, min(12, round(int(skill["interval"]) * factor)))
-
-    @staticmethod
     def _business_date() -> date:
         """取当前业务日日期。"""
 
@@ -948,6 +983,16 @@ class SeasonalBossService(CoreService):
         _priority, event_type, weight_type, boss_def = sorted(choices, key=lambda item: item[0], reverse=True)[0]
         return boss_def, event_type, weight_type
 
+    def _recent_past_boss_for_date(self, value: date, lookback_days: int) -> tuple[date, BossDef, str, str] | None:
+        """从指定日期往前找最近一个已经过去的节气或传统节日首领。"""
+
+        for offset in range(1, max(1, lookback_days) + 1):
+            day = value - timedelta(days=offset)
+            boss_def, event_type, weight_type = self._boss_for_date(day)
+            if boss_def:
+                return day, boss_def, event_type, weight_type
+        return None
+
     def _next_boss_text(self) -> str:
         """展示下一次岁时情劫。"""
 
@@ -965,15 +1010,29 @@ class SeasonalBossService(CoreService):
         closes = dt(event["closes_at"])
         left = max(0, int((closes - now()).total_seconds() // 60) + 1) if closes else 0
         extra = "\n今日为人间重节，旧愿尤深，铭刻之羽更易遗落。" if event["weight_type"] == "高权重传统节日" else ""
+        source = self._echo_source_text(event)
         return (
             f"☆今日岁时情劫·{event['boss_name']}☆\n"
             f"{event['title']}，现于{BOSS_DEFS[event['boss_key']].location}。\n"
+            f"{source}"
             f"{event['scene']}\n"
             f"等级:{event['level']} 血量:{event['hp']}/{event['max_hp']} 状态:{event['status']}\n"
             f"剩余约 {left} 分钟，挑战冷却 {SEASONAL_BOSS_CHALLENGE_COOLDOWN_MINUTES} 分钟，"
             f"每日最多 {SEASONAL_BOSS_MAX_CHALLENGES} 次。\n"
             f"{event['story']}{extra}"
         )
+
+    @staticmethod
+    def _echo_source_text(event: dict[str, Any]) -> str:
+        """把岁时回响的来源补充到状态里。"""
+
+        event_type = str(event["event_type"])
+        if not event_type.startswith("岁时回响·"):
+            return ""
+        parts = event_type.split("·", 2)
+        if len(parts) < 3:
+            return "这是最近已过节令在今日留下的岁时回响。\n"
+        return f"回响来源:{parts[1]} · {parts[2]}。\n"
 
 
 service = SeasonalBossService(db)

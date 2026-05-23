@@ -26,7 +26,7 @@ async def ws_exploration_locations(client_id: str, message: str) -> None:
 async def ws_exploration_start(client_id: str, message: str) -> None:
     """开始探险。"""
 
-    await send_reply(client_id, service.start(client_id), ws_manager, service)
+    await send_reply(client_id, service.start(client_id, message), ws_manager, service)
 
 
 @WsMessageHandler.handler(cmd=("探险状态", "状态探险", "探索状态"), priority=100, block=True)

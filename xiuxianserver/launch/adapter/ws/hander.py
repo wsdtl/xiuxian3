@@ -253,13 +253,14 @@ class WsMessageHandler(BaseMessageHandler):
     async def _split_message(raw_message: str) -> Tuple[str, str]:
         """按第一个空格拆出 cmd 和 message。
 
-        message 是第一个空格后的原文，不再 split 成列表，避免改变用户内容。
-        如果用户把 CQ/at 紧贴在命令后面，也会把 CQ/at 当作 message。
+        message 不再 split 成列表，避免打乱业务参数。
+        CQ/at 属于通讯层输入格式，会在这里统一替换成内部 id。
         """
 
         cmd, separator, message = raw_message.partition(" ")
         if not separator:
-            return WsMessageHandler._split_no_space_message(raw_message)
+            cmd, message = WsMessageHandler._split_no_space_message(raw_message)
+            return cmd, WsMessageHandler._normalize_at_refs(message)
 
         if "[CQ:at," in cmd:
             split_cmd, split_message = WsMessageHandler._split_no_space_message(cmd)
@@ -267,9 +268,8 @@ class WsMessageHandler(BaseMessageHandler):
                 tail = message.lstrip()
                 if tail:
                     split_message = f"{split_message} {tail}"
-                return split_cmd, split_message
-
-        return cmd, message
+                return split_cmd, WsMessageHandler._normalize_at_refs(split_message)
+        return cmd, WsMessageHandler._normalize_at_refs(message)
 
     @staticmethod
     def _split_no_space_message(raw_message: str) -> Tuple[str, str]:
@@ -296,6 +296,33 @@ class WsMessageHandler(BaseMessageHandler):
                 return cmd, message
 
         return raw_message, ""
+
+    @staticmethod
+    def _normalize_at_refs(message: str) -> str:
+        """把 message 里的 CQ/at 统一替换成内部 id。
+
+        业务层只需要处理 id 或名称，不需要关心 CQ/at 的具体格式。
+        raw_message 仍保留完整原文，后续自定义功能需要时可以读取。
+
+        CQ/at 经常紧贴在前一个参数后面，例如：
+            赌约 1000[CQ:at,qq=abc]
+
+        替换时会在 id 两侧补空格，避免变成 1000abc。
+        """
+
+        if "[CQ:at," not in message:
+            return message
+
+        normalized = re.sub(
+            r"\[CQ:at,qq=(?P<id>[^\],\]]+)[^\]]*\]",
+            lambda match: f" {match.group('id').strip()} ",
+            message,
+        )
+        return re.sub(
+            r"\s+",
+            " ",
+            normalized,
+        ).strip()
 
     @staticmethod
     def _message_after_match(

@@ -28,13 +28,18 @@ class DuelService(CoreService):
     def bet(self, client_id: str, message: str) -> str:
         """发起赌约。"""
 
-        parts = split_words(message)
-        if len(parts) < 2:
-            return hint("赌约格式不正确。", "发送：赌约 对方名称 源石数量，也可以用 CQ/at 指定对方。")
-        stake = to_int(parts[1])
-        if stake <= 0:
-            return hint("赌约源石必须大于 0。", "重新发送：赌约 对方名称 源石数量")
-        return self._create_request(client_id, parts[0], "bet", stake)
+        target_ref, stake = self._parse_bet_message(message)
+        if not target_ref or stake <= 0:
+            return hint("赌约格式不正确。", "发送：赌约 源石数量 对方名称，也可以把 CQ/at 放最后。")
+        return self._create_request(client_id, target_ref, "bet", stake)
+
+    def duel(self, client_id: str, message: str) -> str:
+        """发起决斗；有金额走赌约，没有金额走无押注切磋。"""
+
+        target_ref, stake = self._parse_bet_message(message)
+        if target_ref and stake > 0:
+            return self._create_request(client_id, target_ref, "bet", stake)
+        return self._create_request(client_id, message, "spar", 0)
 
     def accept_bet(self, client_id: str, message: str) -> str:
         """接受赌约。"""
@@ -63,7 +68,7 @@ class DuelService(CoreService):
             (client_id, client_id),
         )
         if not rows:
-            return hint("暂无决斗记录。", "发送：切磋 对方名称，或发送：赌约 对方名称 源石数量。")
+            return hint("暂无决斗记录。", "发送：切磋 对方名称，或发送：赌约 源石数量 对方名称。")
         return "\n".join(row["summary"] for row in rows)
 
     def _create_request(self, client_id: str, message: str, mode: str, stake: int) -> str:
@@ -107,7 +112,14 @@ class DuelService(CoreService):
                 (mode, client_id, target_id, stake, ts()),
             )
         mode_text = "切磋" if mode == "spar" else f"赌约 {money(stake)} 源石"
-        return f"已向 {self.format_player_name(target_id)} 发起{mode_text}，等待对方接受。"
+        accept_cmd = "接受切磋" if mode == "spar" else "接受赌约"
+        reject_cmd = "拒绝切磋" if mode == "spar" else "拒绝赌约"
+        from_name = str(player["display_name"])
+        return (
+            f"已向 {self.format_player_name(target_id)} 发起{mode_text}，等待对方处理。\n"
+            f"对方 10 分钟内发送：{accept_cmd} {from_name}\n"
+            f"如果不接受，发送：{reject_cmd} {from_name}"
+        )
 
     def _accept(self, client_id: str, message: str, mode: str) -> str:
         """接受对战请求并结算。"""
@@ -242,6 +254,29 @@ class DuelService(CoreService):
         if settlement:
             lines.append(settlement)
         return "```javascript\r\n" + "\r\n".join(lines) + "\r\n```"
+
+    def _parse_bet_message(self, message: str) -> tuple[str, int]:
+        """解析赌约参数；金额和对方顺序可以互换。"""
+
+        parts = split_words(message)
+        if len(parts) < 2:
+            return "", 0
+
+        fallback: tuple[str, int] = ("", 0)
+        for index, part in enumerate(parts):
+            stake = to_int(part)
+            if stake <= 0:
+                continue
+
+            target_ref = " ".join(parts[:index] + parts[index + 1 :]).strip()
+            if not target_ref:
+                continue
+
+            if not fallback[0]:
+                fallback = (target_ref, stake)
+            if self.resolve_player_ref(target_ref):
+                return target_ref, stake
+        return fallback
 
     def _duel_round_lines(self, action: dict) -> list[str]:
         """整理一回合双方出手。"""

@@ -10,6 +10,7 @@ from launch.adapter.ws import WsMessageHandler, manager as ws_manager
 from ..reply import send_reply
 from .service import service
 
+
 HELP_IMAGE = Path(__file__).with_name("help.png")
 
 

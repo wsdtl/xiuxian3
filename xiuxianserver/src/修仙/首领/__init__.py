@@ -8,6 +8,17 @@ from ..reply import send_reply
 from .service import service
 
 
+# 需要临时给今天补一只最近已过的岁时情劫时，再取消下面这个启动回调的注释。
+# 同为 priority=50 时，修仙根入口会先初始化数据库，本回调随后执行。
+# from launch import OnEvent
+#
+# @OnEvent.connect(priority=50)
+# async def start_recent_past_boss() -> None:
+#     """服务启动时临时补生成最近已过的岁时情劫。"""
+#
+#     service.open_recent_past_event_for_today()
+
+
 @WsMessageHandler.handler(cmd=("首领", "岁时情劫"), priority=100, block=True)
 async def ws_seasonal_boss_status(client_id: str, message: str) -> None:
     """查看今日岁时情劫。"""

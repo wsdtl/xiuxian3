@@ -6,8 +6,8 @@
 
 from __future__ import annotations
 
-from .common import CoreService, load_json, random, ts
-from .constants import MAX_COMBAT_ROUNDS, WEAPON_TYPE_INTERVAL_FACTORS
+from .common import CoreService, random, ts
+from .constants import MAX_COMBAT_ROUNDS
 from .rules import damage_after_defense, monster_exp
 from .sql import db
 from .weapon_core import service as weapon_core
@@ -95,10 +95,11 @@ class CombatCore(CoreService):
             else:
                 action["dodged"] = True
             action["player_hp_left"] = max(0, hp)
-            action["player_mp_left"] = max(0, mp)
+            action["player_mp_left"] = 0 if hp <= 0 else max(0, mp)
             actions.append(action)
 
         win = hp > 0 and monster_hp <= 0
+        mp_left = 0 if hp <= 0 else max(0, mp)
         exp = monster_exp(monster["level"], 1.0 if win else 0.25, player["level"])
         summary = (
             f"遭遇 {monster['name']}，战斗 {rounds} 回合，"
@@ -109,7 +110,7 @@ class CombatCore(CoreService):
             "summary": summary,
             "exp": exp,
             "hp_left": max(0, hp),
-            "mp_left": max(0, mp),
+            "mp_left": mp_left,
             "monster": monster["name"],
             "monster_hp_left": max(0, monster_hp),
             "actions": actions,
@@ -172,6 +173,8 @@ class CombatCore(CoreService):
                     before_steal = left_hp
                     left_hp = min(int(left["max_hp"]), left_hp + int(left_before_reduce * left_effects["life_steal"]))
                     left_steal = max(0, left_hp - before_steal)
+                if right_hp <= 0:
+                    right_mp = 0
                 action["left"] = {
                     "actor_id": left_id,
                     "target_id": right_id,
@@ -223,6 +226,8 @@ class CombatCore(CoreService):
                     before_steal = right_hp
                     right_hp = min(int(right["max_hp"]), right_hp + int(right_before_reduce * right_effects["life_steal"]))
                     right_steal = max(0, right_hp - before_steal)
+                if left_hp <= 0:
+                    left_mp = 0
                 action["right"] = {
                     "actor_id": right_id,
                     "target_id": left_id,
@@ -263,6 +268,10 @@ class CombatCore(CoreService):
         else:
             winner_id = right_id
         loser_id = right_id if winner_id == left_id else left_id
+        if loser_id == left_id:
+            left_mp = 0
+        else:
+            right_mp = 0
         summary = (
             f"{self.format_player_name(left_id)} 对战 {self.format_player_name(right_id)}，"
             f"{rounds} 回合后 {self.format_player_name(winner_id)} 获胜。"
@@ -289,113 +298,6 @@ class CombatCore(CoreService):
             "left_max_mp": int(left["max_mp"]),
             "right_max_mp": int(right["max_mp"]),
         }
-
-    def _weapon_effects(self, weapon: dict | None) -> dict[str, float]:
-        """汇总武器已附魔的战斗效果。"""
-
-        effects: dict[str, float] = {}
-        if not weapon:
-            return effects
-        enchant_ids = load_json(weapon.get("enchant_effects"), [])
-        if not isinstance(enchant_ids, list):
-            return effects
-        for enchant_id in enchant_ids:
-            row = self.db.fetch_one("SELECT effect, mp_delta FROM weapon_enchants WHERE enchant_id = ?", (enchant_id,))
-            if not row:
-                continue
-            for key, value in load_json(row["effect"], {}).items():
-                if isinstance(value, int | float):
-                    effects[key] = effects.get(key, 0) + float(value)
-            effects["mp_delta"] = effects.get("mp_delta", 0) + int(row["mp_delta"])
-        return effects
-
-    @staticmethod
-    def _merge_effects(*groups: dict[str, float]) -> dict[str, float]:
-        """合并装备、宝石和武器附魔效果。"""
-
-        merged: dict[str, float] = {}
-        for group in groups:
-            for key, value in group.items():
-                if isinstance(value, int | float):
-                    merged[key] = merged.get(key, 0) + float(value)
-        return merged
-
-    @staticmethod
-    def _attack_raw(base_attack_value: int, level: int, effects: dict[str, float]) -> int:
-        """计算一次普通出手的原始伤害。"""
-
-        stable_bonus = effects.get("hit_bonus", 0) * 0.5
-        raw = int(base_attack_value * (1 + stable_bonus))
-        return raw + random.randint(0, max(2, level * 2))
-
-    @staticmethod
-    def _skill_power(skill: dict, effects: dict[str, float]) -> float:
-        """计算武器技能倍率。"""
-
-        power = float(skill["power"])
-        power += effects.get("skill_power_bonus", 0)
-        power += effects.get("heavy_bonus", 0)
-        power += effects.get("single_hit_bonus", 0)
-        return max(1.0, power)
-
-    @staticmethod
-    def _skill_cost(skill: dict | None, effects: dict[str, float]) -> int:
-        """计算释放武器技能需要的精神。"""
-
-        if not skill:
-            return 0
-        return max(0, int(skill["cost_mp"]) + int(effects.get("mp_delta", 0)))
-
-    @staticmethod
-    def _skill_interval(skill: dict | None, weapon: dict | None, effects: dict[str, float]) -> int:
-        """计算武器技能间隔。
-
-        技能书不再限制武器类型；武器类型只在这里影响触发频率。
-        轻快武器更容易频繁触发，重武器触发更慢但通常基础攻击更高。
-        """
-
-        if not skill:
-            return 0
-        weapon_type = str(weapon.get("weapon_type") if weapon else "")
-        type_factor = WEAPON_TYPE_INTERVAL_FACTORS.get(weapon_type, 1.0)
-        rate = max(0.6, 1.0 + effects.get("interval_rate", 0))
-        interval = round(int(skill["interval"]) * type_factor * rate)
-        interval += int(effects.get("interval_delta", 0))
-        return max(2, min(12, interval))
-
-    @staticmethod
-    def _pierce_rate(effects: dict[str, float]) -> float:
-        """把穿透和压防统一成防御穿透率。"""
-
-        return min(0.8, effects.get("pierce_bonus", 0) + effects.get("defense_suppress", 0))
-
-    @staticmethod
-    def _combo_damage(raw: int, defense_value: int, effects: dict[str, float]) -> int:
-        """按连击类附魔追加一段轻伤害。"""
-
-        if random.random() >= min(0.5, effects.get("combo_bonus", 0)):
-            return 0
-        rate = min(0.8, 0.35 + effects.get("combo_damage_bonus", 0))
-        return damage_after_defense(int(raw * rate), defense_value, CombatCore._pierce_rate(effects))
-
-    @staticmethod
-    def _reduce_damage(damage: int, effects: dict[str, float], skill_used: bool) -> int:
-        """按防御类附魔降低最终受伤。"""
-
-        rate = effects.get("damage_reduce", 0) + effects.get("crit_resist_bonus", 0)
-        if skill_used:
-            rate += effects.get("shield_bonus", 0)
-        return max(1, int(damage * (1 - min(0.7, rate))))
-
-    @staticmethod
-    def _suppress_mp(mp: int, max_mp_value: int, effects: dict[str, float]) -> int:
-        """按断念类附魔削掉对手精神。"""
-
-        rate = min(0.25, effects.get("mp_suppress", 0))
-        if rate <= 0:
-            return mp
-        return max(0, mp - int(max_mp_value * rate))
-
 
 service = CombatCore(db)
 
