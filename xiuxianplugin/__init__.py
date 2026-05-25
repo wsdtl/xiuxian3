@@ -38,7 +38,7 @@ XiuXianGroup = []
 ReverseXiuXianGroup = False
 """反转使用范围为黑名单范围，其余开放"""
 if not XiuXianGroup:
-    logger.warning(f"注意: 你没有配置群聊的使用范围，请前往{Path(__file__).parent}下配置群聊使用范围XiuXianGroup")
+    logger.warning(f"注意: 你没有配置群聊的使用范围，请前往{Path(__file__)}下配置群聊使用范围XiuXianGroup")
 
 # 捕获所有消息事件
 repeater = on_message(priority=1, block=False)
