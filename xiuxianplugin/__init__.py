@@ -6,7 +6,6 @@ from pathlib import Path
 from nonebot import logger
 from nonebot import on_message
 from nonebot import get_driver
-from nonebot.plugin.on import on_command
 
 try:
     from nonebot.adapters.onebot.v11 import GroupMessageEvent, PrivateMessageEvent
@@ -51,13 +50,16 @@ async def _():
 
 XiuXianGroup = []
 """使用范围（群聊）"""
+
 ReverseXiuXianGroup = False
 """反转使用范围为黑名单范围，其余开放"""
+
 ENSURE_MARKDOWN = False
 """
 onebot v11协议下确认启用markdown传输，
 注意：在非官方对接的实现端框架下大概率无法正常发送markdown消息，此时推荐此选项保持False
 """
+
 if (not XiuXianGroup) ^ ReverseXiuXianGroup:
     logger.opt(colors=True).warning(
         f"<yellow>注意: 你没有配置群聊的使用范围，请前往{Path(__file__)}下配置群聊使用范围XiuXianGroup</yellow>")
@@ -80,6 +82,7 @@ async def _(
                 reply = await client.send(event.get_user_id(), event.get_message())
                 await handle_ws_reply_onebot_v11(reply, repeater)
             except Exception as e:
+                logger.opt(exception=e).debug("处理来自onebot v11的群消息时出现错误")
                 pass
     # 处理来自官方机器人的群消息
     if ENABLE_ADAPTER_QQ and isinstance(event, GroupAtMessageCreateEvent | GroupMessageCreateEvent):
@@ -88,6 +91,7 @@ async def _(
                 reply = await client.send(event.get_user_id(), event.get_message())
                 await handle_ws_reply_qq(reply, repeater)
             except Exception as e:
+                logger.opt(exception=e).debug("处理来自官方机器人的群消息时出现错误")
                 pass
 
     # 处理私聊消息
@@ -96,6 +100,7 @@ async def _(
             reply = await client.send(event.get_user_id(), event.get_message())
             await handle_ws_reply_onebot_v11(reply, repeater)
         except Exception as e:
+            logger.opt(exception=e).debug("处理来自官方机器人的私聊消息时出现错误")
             pass
     # 处理来自官方机器人的私聊消息
     if ENABLE_ADAPTER_QQ and isinstance(event, C2CMessageCreateEvent):
@@ -103,6 +108,7 @@ async def _(
             reply = await client.send(event.get_user_id(), event.get_message())
             await handle_ws_reply_qq(reply, repeater)
         except Exception as e:
+            logger.opt(exception=e).debug("处理来自onebot v11的私聊消息时出现错误")
             pass
 
 
