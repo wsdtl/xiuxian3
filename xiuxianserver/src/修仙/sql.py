@@ -1,6 +1,6 @@
 """修仙模块 SQLite 数据层。
 
-当前模块按最新 schema 运行；schema 版本不一致时会直接重建修仙库。
+当前模块按最新 schema 运行；小版本字段变更会优先迁移，无法迁移时才重建修仙库。
 """
 
 from __future__ import annotations
@@ -463,7 +463,7 @@ class XiuxianDB:
         self.lock = RLock()
 
     def init(self) -> None:
-        """连接数据库；schema 不匹配时重建。"""
+        """连接数据库；schema 不匹配时优先迁移，无法迁移才重建。"""
 
         with self.lock:
             if self.conn is None:
@@ -478,7 +478,8 @@ class XiuxianDB:
 
             current_version = self._current_schema_version()
             if current_version != SCHEMA_VERSION:
-                self._drop_tables()
+                if not self._migrate_schema(current_version):
+                    self._drop_tables()
             self._create_tables()
             self._seed_data()
             self._validate_seed_data()
@@ -576,6 +577,34 @@ class XiuxianDB:
         )
         self.conn.commit()
 
+    def _migrate_schema(self, current_version: int | None) -> bool:
+        """按版本补充新字段，避免小 schema 变更重建整库。"""
+
+        if current_version is None:
+            return False
+
+        migrated_version = current_version
+        if migrated_version == 2026052502 and SCHEMA_VERSION >= 2026052601:
+            self._add_column_if_missing(
+                "players",
+                "battle_log_detail",
+                "INTEGER NOT NULL DEFAULT 0",
+            )
+            migrated_version = 2026052601
+        if migrated_version == 2026052601 and SCHEMA_VERSION == 2026052602:
+            migrated_version = 2026052602
+        return migrated_version == SCHEMA_VERSION
+
+    def _add_column_if_missing(self, table: str, column: str, column_def: str) -> None:
+        """表字段不存在时补列。"""
+
+        assert self.conn is not None
+        rows = self.conn.execute(f"PRAGMA table_info({table})").fetchall()
+        if any(row["name"] == column for row in rows):
+            return
+        self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {column_def}")
+        self.conn.commit()
+
     def _drop_tables(self) -> None:
         """删除旧 schema 表。"""
 
@@ -625,6 +654,8 @@ class XiuxianDB:
             DROP TABLE IF EXISTS seasonal_boss_participants;
             DROP TABLE IF EXISTS duel_requests;
             DROP TABLE IF EXISTS duel_records;
+            DROP TABLE IF EXISTS robbery_records;
+            DROP TABLE IF EXISTS player_hatreds;
             DROP TABLE IF EXISTS combat_logs;
             DROP TABLE IF EXISTS wormholes;
             DROP TABLE IF EXISTS wormhole_participants;
@@ -632,6 +663,7 @@ class XiuxianDB:
             DROP TABLE IF EXISTS game_logs;
             DROP TABLE IF EXISTS player_journals;
             DROP TABLE IF EXISTS player_titles;
+            DROP TABLE IF EXISTS player_lifetime_stats;
             DROP TABLE IF EXISTS daily_fortunes;
             DROP TABLE IF EXISTS daily_newspapers;
             DROP TABLE IF EXISTS weapon_legends;
@@ -688,6 +720,7 @@ class XiuxianDB:
                 backpack_limit INTEGER NOT NULL DEFAULT 80,
                 weight_limit INTEGER NOT NULL DEFAULT 500,
                 auto_use_medicine INTEGER NOT NULL DEFAULT 1,
+                battle_log_detail INTEGER NOT NULL DEFAULT 0,
                 last_sign_date TEXT,
                 newbie_claimed INTEGER NOT NULL DEFAULT 0,
                 last_rename_at TEXT,
@@ -1085,6 +1118,32 @@ class XiuxianDB:
                 created_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS robbery_records (
+                record_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                exploration_record_id INTEGER NOT NULL,
+                robber_id TEXT NOT NULL,
+                target_id TEXT NOT NULL,
+                winner_id TEXT NOT NULL DEFAULT '',
+                success INTEGER NOT NULL DEFAULT 0,
+                loot_text TEXT NOT NULL DEFAULT '',
+                loot_json TEXT NOT NULL DEFAULT '[]',
+                hate_before INTEGER NOT NULL DEFAULT 0,
+                hate_used INTEGER NOT NULL DEFAULT 0,
+                result TEXT NOT NULL DEFAULT '{}',
+                business_day TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS player_hatreds (
+                from_client_id TEXT NOT NULL,
+                to_client_id TEXT NOT NULL,
+                hate_value INTEGER NOT NULL DEFAULT 0,
+                robbery_count INTEGER NOT NULL DEFAULT 0,
+                last_reason TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (from_client_id, to_client_id)
+            );
+
             CREATE TABLE IF NOT EXISTS combat_logs (
                 log_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 client_id TEXT NOT NULL,
@@ -1161,6 +1220,14 @@ class XiuxianDB:
                 PRIMARY KEY (client_id, title)
             );
 
+            CREATE TABLE IF NOT EXISTS player_lifetime_stats (
+                client_id TEXT NOT NULL,
+                stat_key TEXT NOT NULL,
+                stat_value INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (client_id, stat_key)
+            );
+
             CREATE TABLE IF NOT EXISTS daily_fortunes (
                 client_id TEXT NOT NULL,
                 business_day TEXT NOT NULL,
@@ -1206,11 +1273,15 @@ class XiuxianDB:
             CREATE INDEX IF NOT EXISTS idx_seasonal_boss_status ON seasonal_boss_events(status, closes_at);
             CREATE INDEX IF NOT EXISTS idx_seasonal_boss_participants_client ON seasonal_boss_participants(client_id, reward_claimed);
             CREATE INDEX IF NOT EXISTS idx_duel_to_client ON duel_requests(to_client_id, status);
+            CREATE INDEX IF NOT EXISTS idx_robbery_record_target ON robbery_records(exploration_record_id, target_id);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_robbery_record_once ON robbery_records(exploration_record_id, robber_id);
+            CREATE INDEX IF NOT EXISTS idx_player_hatreds_target ON player_hatreds(to_client_id, hate_value);
             CREATE INDEX IF NOT EXISTS idx_wormholes_status ON wormholes(status, closes_at);
             CREATE INDEX IF NOT EXISTS idx_wormhole_participants_client ON wormhole_participants(client_id, reward_claimed);
             CREATE INDEX IF NOT EXISTS idx_game_logs_client ON game_logs(client_id, created_at);
             CREATE INDEX IF NOT EXISTS idx_player_journals_client ON player_journals(client_id, created_at);
             CREATE INDEX IF NOT EXISTS idx_player_titles_client ON player_titles(client_id, active);
+            CREATE INDEX IF NOT EXISTS idx_player_lifetime_stats_key ON player_lifetime_stats(stat_key, stat_value);
             CREATE INDEX IF NOT EXISTS idx_daily_fortunes_day ON daily_fortunes(business_day);
             CREATE INDEX IF NOT EXISTS idx_weapon_legends_owner ON weapon_legends(current_owner_id);
             """

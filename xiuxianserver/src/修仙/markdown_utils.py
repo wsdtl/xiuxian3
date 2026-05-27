@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 import re
-from typing import Literal, TypedDict
+from typing import Any, Literal, TypedDict
 
 
 MAX_BUTTONS = 25
 MAX_BUTTONS_PER_ROW = 3
 MAX_BUTTON_ROWS = (MAX_BUTTONS + MAX_BUTTONS_PER_ROW - 1) // MAX_BUTTONS_PER_ROW
 BUTTON_TAG_RE = re.compile(r"<([^<>\r\n]+)>")
+BUTTON_CMD_SEPARATORS = (":", "：")
+ButtonCommand = str | dict[str, Any]
 
 
 class TipsWindow(TypedDict):
@@ -73,17 +76,17 @@ def button(
     }
 
 
-def buttons_from_commands(commands: list[str]) -> list[list[dict]]:
+def buttons_from_commands(commands: list[ButtonCommand]) -> list[list[dict]]:
     """把指令列表切成最多 25 个按钮、每行最多 3 个。"""
 
     rows: list[list[dict]] = []
     for index in range(0, min(len(commands), MAX_BUTTONS), MAX_BUTTONS_PER_ROW):
         end_index = min(index + MAX_BUTTONS_PER_ROW, MAX_BUTTONS)
-        rows.append([button(command) for command in commands[index:end_index]])
+        rows.append([_button_from_command(command) for command in commands[index:end_index]])
     return rows[:MAX_BUTTON_ROWS]
 
 
-def markdown_message(content: str, commands: list[str]) -> dict:
+def markdown_message(content: str, commands: list[ButtonCommand]) -> dict:
     """生成 markdown message 字段。"""
 
     return {
@@ -123,15 +126,29 @@ def split_button_tags(text: str) -> tuple[str, list[str]]:
     return _clean_button_tag_content(content), commands
 
 
-def append_suggest_commands(text: str, suggestion: str) -> str:
-    """把建议原文接到正文末尾。"""
+def _button_from_command(command: ButtonCommand) -> dict:
+    """把字符串命令或完整按钮对象统一转成按钮。"""
 
-    suggestion = suggestion.strip()
-    if not suggestion:
-        return text
-    if suggestion in text:
-        return text
-    return f"{text.rstrip()}\n{suggestion}"
+    if isinstance(command, dict):
+        return deepcopy(command)
+    cmd_data, label = _split_button_command(str(command))
+    return button(label, cmd_data=cmd_data)
+
+
+def _split_button_command(text: str) -> tuple[str | None, str]:
+    """解析 `<真实命令:显示文字>` 形式的按钮文本。"""
+
+    value = text.strip()
+    for separator in BUTTON_CMD_SEPARATORS:
+        if separator not in value:
+            continue
+        cmd_data, label = value.split(separator, 1)
+        cmd_data = cmd_data.strip()
+        label = label.strip()
+        if label and cmd_data:
+            return cmd_data, label
+        break
+    return None, value
 
 
 def _clean_button_tag_content(text: str) -> str:

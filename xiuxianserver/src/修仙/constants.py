@@ -6,11 +6,13 @@
 from __future__ import annotations
 
 
-SCHEMA_VERSION = 2026052502
+SCHEMA_VERSION = 2026052602
 DAY_RESET_HOUR = 4
 MAX_LEVEL = 100
 REST_MINUTES = 1
 BATTLE_RECORD_RETENTION_DAYS = 7
+DIRECT_FLOW_RETENTION_DAYS = 30
+NEWSPAPER_RETENTION_DAYS = 30
 
 
 # ----------------------------
@@ -30,14 +32,16 @@ NEWBIE_GIFT_STONES = 10_000
 # ----------------------------
 
 
+# 低星级给更高收益比例，让前期存钱有体感；高星级给更高收益总量，
+# 但比例逐步降低，避免后期只靠源库被动收益压过主动玩法。
 BANK_LEVELS = {
-    1: {"name": "一星", "limit": 100_000, "cost": 0, "daily_interest_limit": 120, "hour_rate": 0.00003},
-    2: {"name": "二星", "limit": 300_000, "cost": 50_000, "daily_interest_limit": 360, "hour_rate": 0.00004},
-    3: {"name": "三星", "limit": 800_000, "cost": 180_000, "daily_interest_limit": 960, "hour_rate": 0.00005},
-    4: {"name": "四星", "limit": 2_000_000, "cost": 600_000, "daily_interest_limit": 2_400, "hour_rate": 0.00006},
-    5: {"name": "五星", "limit": 5_000_000, "cost": 1_800_000, "daily_interest_limit": 6_000, "hour_rate": 0.00007},
-    6: {"name": "六星", "limit": 12_000_000, "cost": 5_000_000, "daily_interest_limit": 14_400, "hour_rate": 0.00008},
-    7: {"name": "七星", "limit": 30_000_000, "cost": 15_000_000, "daily_interest_limit": 36_000, "hour_rate": 0.00009},
+    1: {"name": "一星", "limit": 100_000, "cost": 0, "daily_interest_limit": 12_000, "hour_rate": 0.005},
+    2: {"name": "二星", "limit": 300_000, "cost": 50_000, "daily_interest_limit": 30_000, "hour_rate": 0.0041},
+    3: {"name": "三星", "limit": 800_000, "cost": 180_000, "daily_interest_limit": 64_000, "hour_rate": 0.0033},
+    4: {"name": "四星", "limit": 2_000_000, "cost": 600_000, "daily_interest_limit": 120_000, "hour_rate": 0.0025},
+    5: {"name": "五星", "limit": 5_000_000, "cost": 1_800_000, "daily_interest_limit": 225_000, "hour_rate": 0.0018},
+    6: {"name": "六星", "limit": 12_000_000, "cost": 5_000_000, "daily_interest_limit": 420_000, "hour_rate": 0.0014},
+    7: {"name": "七星", "limit": 30_000_000, "cost": 15_000_000, "daily_interest_limit": 750_000, "hour_rate": 0.001},
 }
 BANK_MAX_LEVEL = 7
 
@@ -107,19 +111,19 @@ WORMHOLE_DAILY_MAX_LIMIT = 12
 SEASONAL_BOSS_CHALLENGE_COOLDOWN_MINUTES = 30
 SEASONAL_BOSS_MAX_CHALLENGES = 5
 WEAPON_TYPE_INTERVAL_FACTORS = {
-    "匕": 0.85,
-    "飞刃": 0.85,
-    "剑": 0.95,
-    "铃": 0.95,
+    "匕": 0.78,
+    "飞刃": 0.82,
+    "剑": 0.93,
+    "铃": 0.9,
     "刀": 1.0,
-    "弩": 1.0,
+    "弩": 1.04,
     "拂尘": 1.0,
-    "杖": 1.05,
-    "枪": 1.1,
+    "杖": 1.08,
+    "枪": 1.12,
     "盾刃": 1.15,
-    "戟": 1.15,
-    "盘": 1.15,
-    "斧": 1.2,
+    "戟": 1.22,
+    "盘": 1.24,
+    "斧": 1.3,
 }
 
 
@@ -139,6 +143,7 @@ __all__ = [
     "DEFAULT_BACKPACK_LIMIT",
     "DEFAULT_LOCATION",
     "DEFAULT_WEIGHT_LIMIT",
+    "DIRECT_FLOW_RETENTION_DAYS",
     "ENCOUNTER_SECONDS",
     "EQUIPMENT_SLOTS",
     "EXPLORE_MINUTES",
@@ -152,6 +157,7 @@ __all__ = [
     "MAX_COMBAT_ROUNDS",
     "MAX_LEVEL",
     "NEWBIE_GIFT_STONES",
+    "NEWSPAPER_RETENTION_DAYS",
     "PLAYER_BASE_ATTACK",
     "RENAME_COOLDOWN_HOURS",
     "REST_MINUTES",

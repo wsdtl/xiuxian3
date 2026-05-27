@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from ..combat_log_text import mode_text
+from ..format_text import T
+
 from ..common import (
     CoreService,
     business_day,
@@ -9,16 +12,15 @@ from ..common import (
     enchant_label_name,
     fixed_equipment_label,
     format_effect,
-    hint,
     load_json,
     money,
     now,
     timedelta,
     ts,
     weapon_label_name,
+    world_state_for_day,
 )
 from ..constants import EQUIPMENT_SLOTS, NEWBIE_GIFT_STONES, REST_MINUTES
-from ..markdown_utils import append_suggest_commands
 from ..rules import sign_reward
 from ..sql import db
 
@@ -28,16 +30,15 @@ class PlayerService(CoreService):
 
     def command_guide(self) -> str:
         """返回关键组件跳转按钮。"""
-        # TODO 按钮审查：这里会生成回复文本，按需把命令写成 <命令>。
 
-        return f"<地图><背包><纳戒><商场推荐><探险状态><结束探险><武器><装备><宝石><虫洞><首领><修仙早报>"
+        return f"<地图><背包><纳戒><商场推荐><探险状态><结束探险><武器><装备><宝石><源库><首领><修仙早报>"
 
     def create(self, client_id: str, message: str) -> str:
         """创建用户。"""
 
         name = message.strip()
         if not name:
-            return hint("缺少用户名称。", "发送：创建用户 青衫客")
+            return T.hint("缺少用户名称。", "发送：创建用户 青衫客")
         return self.create_player(client_id, name)
 
     def rename(self, client_id: str, message: str) -> str:
@@ -45,7 +46,7 @@ class PlayerService(CoreService):
 
         name = message.strip()
         if not name:
-            return hint("缺少新名称。", "发送：改名 云游客")
+            return T.hint("缺少新名称。", "发送：改名 云游客")
         return self.rename_player(client_id, name)
 
     def profile(self, client_id: str) -> str:
@@ -55,39 +56,82 @@ class PlayerService(CoreService):
         if error:
             return error
         assert player is not None
+        player = self.recalc_player(client_id)
         weapon = self.equipped_weapon_row(client_id)
         weapon_attack = int(weapon["attack"]) if weapon else 0
         total_attack = int(player["base_attack"]) + weapon_attack
-        title = self.refresh_titles(client_id, player) or "无称号"
-        lines = [
-            "┌───────────",
-            f"│ {player['display_name']} · {title}",
-            f"│  Lv.{player['level']}",
-            "├────",
-            f"│  经验：{self.next_level_text(player)}",
-            f"│  血气：{player['hp']} / {player['max_hp']}",
-            f"│  精神：{player['mp']} / {player['max_mp']}",
-            "├────",
-            *self._physique_profile_lines(player),
-            "├───",
-            f"│  攻击：{total_attack}（基础{player['base_attack']} + 武器{weapon_attack}）",
-            f"│  防御：{player['defense']}",
-            "├───",
-            *self._weapon_profile_lines(weapon),
-            "├────",
-            *self._fixed_equipment_lines(client_id),
-            "├────",
-            f"│  源石：{money(player['source_stones'])}",
-            f"│  状态：{player['status']}",
-            f"│  自动用药：{'开启' if player['auto_use_medicine'] else '关闭'}",
-            f"│  地点：{player['location_name']} ({player['x']},{player['y']})",
-            "└───────────",
-        ]
-        return "\n".join(lines)
+        combat_info = self._current_combat_info(client_id, player, weapon)
+        self.refresh_titles(client_id, player)
+
+        panel = T.panel()
+        panel.section("状态")
+        panel.line(f"经验：**{self.next_level_text(player)}**")
+        panel.line(f"血气：**{player['hp']}/{player['max_hp']}**｜精神：**{player['mp']}/{player['max_mp']}**")
+        panel.line(f"源石：**{money(player['source_stones'])}**｜状态：{player['status']}｜自动用药：{'开启' if player['auto_use_medicine'] else '关闭'}")
+        panel.line(f"战斗日志：{mode_text(player)}")
+        nemesis_text = self._nemesis_text(client_id)
+        if nemesis_text:
+            panel.line(f"死敌：{nemesis_text}")
+        panel.line(f"地点：{player['location_name']} ({player['x']},{player['y']})")
+        panel.hr()
+        panel.section("战力")
+        panel.line(f"攻击：**{total_attack}**（基础 {player['base_attack']} + 武器 {weapon_attack}）")
+        panel.line(f"防御：**{player['defense']}**")
+        panel.line(f"速度：**{combat_info['speed']}**（{combat_info['speed_grade']}）")
+        panel.line(f"技能节奏：{combat_info['skill_tempo']}")
+        panel.line(f"蓄势基准：{combat_info['skill_interval']}（越小越快）")
+        panel.hr()
+        panel.section("体质")
+        panel.lines(self._physique_profile_lines(player))
+        panel.hr()
+        panel.section("武器")
+        panel.lines(self._weapon_profile_lines(weapon, combat_info))
+        panel.hr()
+        panel.section("装备")
+        panel.lines(self._fixed_equipment_lines(client_id))
+        panel.hr()
+        panel.section("今日加成")
+        panel.lines(self._daily_bonus_lines(client_id))
+        return panel.render() + T.buttons("休息", "结束休息", "地图")
+
+    def status(self, client_id: str) -> str:
+        """查看玩家关键状态。"""
+
+        player, error = self.require_player(client_id)
+        if error:
+            return error
+        assert player is not None
+        player = self.recalc_player(client_id)
+        weapon = self.equipped_weapon_row(client_id)
+        weapon_attack = int(weapon["attack"]) if weapon else 0
+        total_attack = int(player["base_attack"]) + weapon_attack
+        combat_info = self._current_combat_info(client_id, player, weapon)
+        self.refresh_titles(client_id, player)
+
+        weapon_text = "未装备"
+        if weapon:
+            weapon_text = f"#{weapon['weapon_id']} {weapon_label_name(weapon)} [{weapon['quality']}] 攻击 +{weapon_attack}"
+
+        panel = T.panel()
+        panel.section("关键状态")
+        panel.line(f"等级：**{player['level']}**｜经验：**{self.next_level_text(player)}**")
+        panel.line(f"血气：**{player['hp']}/{player['max_hp']}**｜精神：**{player['mp']}/{player['max_mp']}**")
+        panel.line(f"状态：{player['status']}｜地点：{player['location_name']} ({player['x']},{player['y']})")
+        panel.line(f"源石：**{money(player['source_stones'])}**")
+        panel.hr()
+        panel.line(f"攻击：**{total_attack}**｜防御：**{player['defense']}**｜速度：**{combat_info['speed']}**")
+        panel.line(f"技能节奏：{combat_info['skill_tempo']}")
+        panel.line(f"当前武器：{weapon_text}")
+        panel.hr()
+        panel.line(f"自动用药：{'开启' if player['auto_use_medicine'] else '关闭'}｜战斗日志：{mode_text(player)}")
+        panel.line(f"今日加成：{self._daily_bonus_total_text(client_id)}")
+        nemesis_text = self._nemesis_text(client_id)
+        if nemesis_text:
+            panel.line(f"死敌：{nemesis_text}")
+        return panel.render() + T.buttons("修仙信息", "休息", "地图")
 
     def diary(self, client_id: str) -> str:
         """查看个人修仙日记。"""
-        # TODO 按钮审查：这里会生成回复文本，按需把命令写成 <命令>。
 
         player, error = self.require_player(client_id)
         if error:
@@ -105,10 +149,12 @@ class PlayerService(CoreService):
             (client_id,),
         )
         if not rows:
-            return hint("修仙日记还没有内容。", "先签到、探险、跑商或挑战虫洞。<签到><探险><虫洞><商场推荐>")
-        lines = [f"☆{player['display_name']}的修仙日记☆"]
-        lines.extend(f"- {row['text']}" for row in rows)
-        return "\n".join(lines)
+            return T.hint("修仙日记还没有内容。", "先签到、探险、跑商或挑战虫洞。<签到><探险><虫洞><商场推荐>")
+        panel = T.panel()
+        panel.section("修仙日记")
+        for row in rows:
+            panel.line(f"- {row['text']}")
+        return panel.render()
 
     def auto_medicine(self, client_id: str, message: str) -> str:
         """查看或修改探险自动用药开关。"""
@@ -121,7 +167,11 @@ class PlayerService(CoreService):
         text = message.strip()
         if not text:
             state = "开启" if player["auto_use_medicine"] else "关闭"
-            return f"自动用药当前为：{state}。"
+            panel = T.panel()
+            panel.section("自动用药")
+            panel.line(f"当前状态：**{state}**")
+            panel.line("开启后，探险预计算会自动消耗纳戒恢复类药物。")
+            return panel.render()
 
         on_words = {"开启", "打开", "启用", "开", "on", "ON", "1"}
         off_words = {"关闭", "关掉", "停用", "关", "off", "OFF", "0"}
@@ -132,7 +182,7 @@ class PlayerService(CoreService):
             value = 0
             state = "关闭"
         else:
-            return hint("自动用药参数不正确。", "发送：自动用药 开启 或 自动用药 关闭")
+            return T.hint("自动用药参数不正确。", "发送：自动用药 开启 或 自动用药 关闭")
 
         with self.db.transaction() as conn:
             conn.execute("UPDATE players SET auto_use_medicine = ? WHERE client_id = ?", (value, client_id))
@@ -141,6 +191,41 @@ class PlayerService(CoreService):
                 (client_id, state, ts()),
             )
         return f"自动用药已{state}。探险预计算时会按这个开关决定是否消耗纳戒恢复类药物。"
+
+    def battle_log(self, client_id: str, message: str) -> str:
+        """查看或修改战斗日志展示模式。"""
+
+        player, error = self.require_player(client_id)
+        if error:
+            return error
+        assert player is not None
+
+        text = message.strip()
+        if not text:
+            panel = T.panel()
+            panel.section("战斗日志")
+            panel.line(f"当前模式：**{mode_text(player)}**")
+            panel.line("开启为逐回合详细日志，关闭为简要战斗摘要。")
+            return panel.render()
+
+        on_words = {"开启", "打开", "启用", "开", "on", "ON", "1"}
+        off_words = {"关闭", "关掉", "停用", "关", "off", "OFF", "0"}
+        if text in on_words:
+            value = 1
+            state = "详细"
+        elif text in off_words:
+            value = 0
+            state = "简要"
+        else:
+            return T.hint("战斗日志参数不正确。", "发送：战斗日志 开启 或 战斗日志 关闭")
+
+        with self.db.transaction() as conn:
+            conn.execute("UPDATE players SET battle_log_detail = ? WHERE client_id = ?", (value, client_id))
+            conn.execute(
+                "INSERT INTO game_logs (client_id, action, detail, created_at) VALUES (?, '战斗日志', ?, ?)",
+                (client_id, state, ts()),
+            )
+        return f"战斗日志已切换为{state}。"
 
     def sign(self, client_id: str) -> str:
         """每日签到。"""
@@ -164,13 +249,12 @@ class PlayerService(CoreService):
             )
             if cursor.rowcount <= 0:
                 fortune = self.ensure_daily_fortune_conn(conn, client_id)
-                text = (
-                    f"今日已经签到过了。\n"
+                suggestion = (
                     f"今日气运：{fortune['fortune']}，{fortune['flavor']}"
                     f"（{format_effect(fortune['effect'])}）\n"
                     "每日 04:00 后可再次发送：签到"
                 )
-                return append_suggest_commands(text, "每日 04:00 后可再次发送：签到")
+                return T.hint("今日已经签到过了。", suggestion)
             conn.execute(
                 "INSERT INTO game_logs (client_id, action, detail, created_at) VALUES (?, '签到', ?, ?)",
                 (client_id, f"stones={reward}, day={today}", ts()),
@@ -180,7 +264,6 @@ class PlayerService(CoreService):
 
     def newbie_gift(self, client_id: str) -> str:
         """领取新手礼包。"""
-        # TODO 按钮审查：这里会生成回复文本，按需把命令写成 <命令>。
 
         player, error = self.require_player(client_id)
         if error:
@@ -197,7 +280,7 @@ class PlayerService(CoreService):
                 (NEWBIE_GIFT_STONES, client_id),
             )
             if cursor.rowcount <= 0:
-                return hint("新手礼包已经领取过了。", "发送：纳戒 查看礼包物品，或发送：探险 开始升级。<纳戒><探险>")
+                return T.hint("新手礼包已经领取过了。", "发送：纳戒 查看礼包物品，或发送：探险 开始升级。<纳戒><探险>")
             self.add_ring_conn(conn, client_id, "xueqidan", 2)
             self.add_ring_conn(conn, client_id, "yinmingcao", 2)
             conn.execute(
@@ -208,14 +291,13 @@ class PlayerService(CoreService):
 
     def rest(self, client_id: str) -> str:
         """进入休息状态。"""
-        # TODO 按钮审查：这里会生成回复文本，按需把命令写成 <命令>。
 
         player, error = self.require_player(client_id)
         if error:
             return error
         assert player is not None
         if player["status"] != "空闲":
-            return hint(f"当前状态为 {player['status']}，不能休息。", "先处理当前状态")
+            return T.hint(f"当前状态为 {player['status']}，不能休息。", "先处理当前状态<休息>")
 
         until = now() + timedelta(minutes=REST_MINUTES)
         with self.db.transaction() as conn:
@@ -228,28 +310,27 @@ class PlayerService(CoreService):
                 (ts(until), client_id),
             )
             if cursor.rowcount <= 0:
-                return hint("当前状态已变化，不能休息。", "发送：修仙信息 查看当前状态后再操作。<修仙信息>")
+                return T.hint("当前状态已变化，不能休息。", "发送：修仙信息 查看当前状态后再操作。<修仙信息><休息>")
             conn.execute(
                 "INSERT INTO game_logs (client_id, action, detail, created_at) VALUES (?, '开始休息', ?, ?)",
                 (client_id, f"until={ts(until)}", ts()),
             )
-        return f"开始休息，需要 {REST_MINUTES} 分钟。"
+        return f"开始休息，需要 {REST_MINUTES} 分钟。<休息>"
 
     def end_rest(self, client_id: str) -> str:
         """休息满 1 分钟后恢复并退出。"""
-        # TODO 按钮审查：这里会生成回复文本，按需把命令写成 <命令>。
 
         player, error = self.require_player(client_id)
         if error:
             return error
         assert player is not None
         if player["status"] != "休息中":
-            return hint("你当前不在休息中。", "血气不足可发送：休息；想查看状态可发送：修仙信息<修仙信息>")
+            return T.hint("你当前不在休息中。", "血气不足可发送：休息；想查看状态可发送：修仙信息<修仙信息><休息>")
 
         until = dt(player["status_until_at"])
         if until and now() < until:
             left = max(1, int((until - now()).total_seconds()))
-            return hint(f"还需要休息 {left} 秒。", "时间到后再发送：结束休息")
+            return T.hint(f"还需要休息 {left} 秒。", "时间到后再发送：结束休息")
 
         recover_bonus = min(0.5, self.equipment_bonuses(client_id).get("recover_bonus", 0))
         hp = player["max_hp"]
@@ -264,13 +345,20 @@ class PlayerService(CoreService):
                 "INSERT INTO game_logs (client_id, action, detail, created_at) VALUES (?, '结束休息', ?, ?)",
                 (client_id, f"hp={hp}, mp={mp}", ts()),
             )
-        return f"休息结束，血气恢复到 **{hp}**/{player['max_hp']}，精神恢复到 **{mp}**/{player['max_mp']}。"
+        return f"休息结束，血气恢复到 **{hp}**/{player['max_hp']}，精神恢复到 **{mp}**/{player['max_mp']}。<休息>"
 
-    def _weapon_profile_lines(self, weapon: dict | None) -> list[str]:
+    def _current_combat_info(self, client_id: str, player: dict, weapon: dict | None) -> dict:
+        """读取当前实战速度、技能节奏和武器定位。"""
+
+        skill = self.db.fetch_one("SELECT * FROM weapon_skill_defs WHERE skill_id = ?", (weapon["skill_id"],)) if weapon else None
+        effects = self._merge_effects(self.equipment_bonuses(client_id), self._weapon_effects(weapon))
+        return self.combat_profile(int(player["level"]), weapon, skill, effects)
+
+    def _weapon_profile_lines(self, weapon: dict | None, combat_info: dict) -> list[str]:
         """生成修仙信息里的武器区块。"""
 
         if not weapon:
-            return ["│  未装备", "│  技能：无", "│  附魔：无"]
+            return ["未装备", "定位：未装备武器，只有基础出手", "技能：无", "附魔：无"]
 
         weapon_id = int(weapon["weapon_id"])
         skill = self.db.fetch_one(
@@ -285,10 +373,11 @@ class PlayerService(CoreService):
         base_skill = enchant_label_name(skill_name, custom_skill["custom_name"] if custom_skill else "")
         enchants = self._weapon_enchant_profile_text(weapon_id, load_json(weapon["enchant_effects"], []))
         return [
-            f"│  #{weapon_id} {weapon_label_name(weapon)} [{weapon['quality']}]",
-            f"│  攻击 +{weapon['attack']}",
-            f"│  技能：{base_skill}",
-            f"│  附魔：{enchants}",
+            f"#{weapon_id} {weapon_label_name(weapon)} [{weapon['quality']}]",
+            f"类型：{weapon['weapon_type']}｜定位：{combat_info['weapon_style']}",
+            f"攻击：**+{weapon['attack']}**",
+            f"技能：{base_skill}",
+            f"附魔：{enchants}",
         ]
 
     def _weapon_enchant_profile_text(self, weapon_id: int, enchant_ids: object) -> str:
@@ -325,25 +414,115 @@ class PlayerService(CoreService):
                 continue
             parts.append(f"{fixed_equipment_label(row)} Lv{row['level']} {row['hole_count']}孔")
         if not parts:
-            return ["│  无"]
-        return [f"│  {part}" for part in parts]
+            return ["无"]
+        return parts
+
+    def _daily_bonus_lines(self, client_id: str) -> list[str]:
+        """生成今日气运、天气、灵潮和今日合计加成。"""
+
+        day = business_day()
+        fortune = self.db.fetch_one(
+            """
+            SELECT fortune, flavor, effect
+            FROM daily_fortunes
+            WHERE client_id = ? AND business_day = ?
+            """,
+            (client_id, day),
+        )
+        world = world_state_for_day(day)
+        weather = world["weather"]
+        tide = world["tide"]
+        effects = [world["effect"]]
+        if fortune:
+            effects.insert(0, load_json(fortune["effect"], {}))
+
+        return [
+            f"气运：{self._fortune_bonus_text(fortune)}",
+            f"天气：{weather['name']}（{format_effect(weather['effect'])}）",
+            f"灵潮：{tide['name']}（{format_effect(tide['effect'])}）",
+            f"今日加成：{self._effect_total_text(effects)}",
+        ]
+
+    def _daily_bonus_total_text(self, client_id: str) -> str:
+        """生成状态面板里的一行今日加成摘要。"""
+
+        for line in reversed(self._daily_bonus_lines(client_id)):
+            if line.startswith("今日加成："):
+                return line.replace("今日加成：", "", 1)
+        return "无"
+
+    def _nemesis_text(self, client_id: str) -> str:
+        """读取当前对玩家仇恨最高的人，并换算报复指数。"""
+
+        row = self.db.fetch_one(
+            """
+            SELECT h.hate_value, h.robbery_count, p.display_name
+            FROM player_hatreds h
+            LEFT JOIN players p ON p.client_id = h.from_client_id
+            WHERE h.to_client_id = ? AND h.hate_value > 0
+            ORDER BY h.hate_value DESC, h.robbery_count DESC, h.updated_at DESC
+            LIMIT 1
+            """,
+            (client_id,),
+        )
+        if not row:
+            return ""
+
+        hate_value = int(row["hate_value"])
+        revenge_index = min(100, hate_value * 20)
+        robbery_count = int(row["robbery_count"])
+        name = str(row.get("display_name") or "未知玩家")
+        return f"{name}（仇恨 **{hate_value}**，报复指数 **{revenge_index}**，抢劫 **{robbery_count}** 次）"
+
+    @staticmethod
+    def _fortune_bonus_text(fortune: dict | None) -> str:
+        """把玩家今日签到气运整理成面板文字。"""
+
+        if not fortune:
+            return "未签到"
+        return f"{fortune['fortune']}（{format_effect(fortune['effect'])}）"
+
+    @staticmethod
+    def _effect_total_text(effects: list[dict]) -> str:
+        """把多来源今日加成合并展示。"""
+
+        total: dict[str, float] = {}
+        for effect in effects:
+            for key, value in effect.items():
+                if isinstance(value, int | float):
+                    total[key] = total.get(key, 0) + float(value)
+        return format_effect(total)
 
     def _refresh_diary(self, client_id: str, player: dict) -> None:
         """按当前数据补齐修仙日记里程碑。"""
 
-        def count(table: str, where: str, params: tuple) -> int:
-            return self._count(table, where, params)
-
-        def total(sql: str, params: tuple) -> int:
-            row = self.db.fetch_one(sql, params)
-            if not row:
-                return 0
-            return int(row["total"] or 0)
-
         now_text = ts()
+        entries = []
+        entries.extend(self._base_diary_entries(client_id, player, now_text))
+        entries.extend(self._identity_diary_entries(client_id, player, now_text))
+        entries.extend(self._travel_trade_diary_entries(client_id, now_text))
+        entries.extend(self._weapon_diary_entries(client_id, now_text))
+        entries.extend(self._recycle_diary_entries(client_id, now_text))
+        entries.extend(self._battle_diary_entries(client_id, now_text))
+        entries.extend(self._misc_diary_entries(client_id, now_text))
+
+        with self.db.transaction() as conn:
+            for key, text, created_at in entries:
+                self.record_journal_conn(
+                    conn,
+                    client_id,
+                    key,
+                    text,
+                    created_at=created_at,
+                    keep_first_time=True,
+                )
+
+    def _base_diary_entries(self, client_id: str, player: dict, now_text: str) -> list[tuple[str, str, str]]:
+        """日记里的基础资料：创建、等级、财富和当前位置。"""
+
         vault = self.db.fetch_one("SELECT balance FROM source_vaults WHERE client_id = ?", (client_id,))
         vault_balance = int(vault["balance"]) if vault else 0
-        entries = [
+        return [
             ("created", f"{player['created_at']} 初入修仙界，名为 {player['display_name']}。", player["created_at"]),
             ("level", f"修为已至 {player['level']} 级，累计经验 {player['exp']}。", now_text),
             (
@@ -354,16 +533,40 @@ class PlayerService(CoreService):
             ("location", f"当前停留在 {player['location_name']}，状态为 {player['status']}。", now_text),
         ]
 
-        sign_count = count("game_logs", "client_id = ? AND action = '签到'", (client_id,))
+    def _identity_diary_entries(self, client_id: str, player: dict, now_text: str) -> list[tuple[str, str, str]]:
+        """日记里的身份成长：签到、新手礼包和改名。"""
+
+        entries = []
+        sign_count = self.stat_count(
+            client_id,
+            "sign_count",
+            "SELECT COUNT(*) AS count FROM game_logs WHERE client_id = ? AND action = '签到'",
+            (client_id,),
+        )
         if sign_count:
             entries.append(("sign", f"累计签到 {sign_count} 次，日日有进，慢慢成路。", now_text))
         if int(player["newbie_claimed"]):
             entries.append(("newbie_gift", "已经领取新手礼包，最初的一点底气还在账上。", now_text))
-        rename_count = count("game_logs", "client_id = ? AND action = '改名'", (client_id,))
+        rename_count = self.stat_count(
+            client_id,
+            "rename_count",
+            "SELECT COUNT(*) AS count FROM game_logs WHERE client_id = ? AND action = '改名'",
+            (client_id,),
+        )
         if rename_count:
             entries.append(("rename", f"改名 {rename_count} 次，修仙界称呼几经流转。", now_text))
+        return entries
 
-        explore_count = count("exploration_records", "client_id = ?", (client_id,))
+    def _travel_trade_diary_entries(self, client_id: str, now_text: str) -> list[tuple[str, str, str]]:
+        """日记里的行动记录：探险、跑商和二手市场。"""
+
+        entries = []
+        explore_count = self.stat_count(
+            client_id,
+            "explore_count",
+            "SELECT COUNT(*) AS count FROM exploration_records WHERE client_id = ?",
+            (client_id,),
+        )
         if explore_count:
             latest = self.db.fetch_one(
                 """
@@ -378,20 +581,43 @@ class PlayerService(CoreService):
             latest_text = f"，最近一次在 {latest['location_name']}（{latest['status']}）" if latest else ""
             entries.append(("explore", f"累计探险 {explore_count} 次{latest_text}。", now_text))
 
-        trade_sell_count = count("trade_records", "client_id = ? AND action = 'sell'", (client_id,))
-        trade_net = total(
+        trade_sell_count = self.stat_count(
+            client_id,
+            "trade_sell_count",
+            "SELECT COUNT(*) AS count FROM trade_records WHERE client_id = ? AND action = 'sell'",
+            (client_id,),
+        )
+        trade_net = self.stat_total(
+            client_id,
+            "trade_net",
             """
-            SELECT COALESCE(SUM(total_price - fee), 0) AS total
+            SELECT COALESCE(SUM(
+                CASE
+                    WHEN action = 'sell' THEN total_price - fee
+                    WHEN action = 'buy' THEN -(total_price + fee)
+                    ELSE 0
+                END
+            ), 0) AS total
             FROM trade_records
-            WHERE client_id = ? AND action = 'sell'
+            WHERE client_id = ? AND action IN ('buy', 'sell')
             """,
             (client_id,),
         )
         if trade_sell_count:
-            entries.append(("trade", f"累计跑商出售 {trade_sell_count} 次，净收入 {money(trade_net)} 源石。", now_text))
+            entries.append(("trade", f"累计跑商出售 {trade_sell_count} 次，净利润 {money(trade_net)} 源石。", now_text))
 
-        second_hand_sell = count("second_hand_records", "seller_id = ?", (client_id,))
-        second_hand_buy = count("second_hand_records", "buyer_id = ?", (client_id,))
+        second_hand_sell = self.stat_count(
+            client_id,
+            "second_hand_sell_count",
+            "SELECT COUNT(*) AS count FROM second_hand_records WHERE seller_id = ?",
+            (client_id,),
+        )
+        second_hand_buy = self.stat_count(
+            client_id,
+            "second_hand_buy_count",
+            "SELECT COUNT(*) AS count FROM second_hand_records WHERE buyer_id = ?",
+            (client_id,),
+        )
         if second_hand_sell or second_hand_buy:
             entries.append(
                 (
@@ -400,8 +626,13 @@ class PlayerService(CoreService):
                     now_text,
                 )
             )
+        return entries
 
-        weapon_count = count("player_weapons", "owner_id = ?", (client_id,))
+    def _weapon_diary_entries(self, client_id: str, now_text: str) -> list[tuple[str, str, str]]:
+        """日记里的武器收藏。"""
+
+        entries = []
+        weapon_count = self._count("player_weapons", "owner_id = ?", (client_id,))
         if weapon_count:
             equipped = self.equipped_weapon_row(client_id)
             equipped_text = f"，当前执 {weapon_label_name(equipped)}" if equipped else ""
@@ -419,70 +650,133 @@ class PlayerService(CoreService):
         )
         if rare_weapon:
             entries.append(("rare_weapon", f"曾得 {rare_weapon['quality']} 武器 {rare_weapon['count']} 把，坊间称其手气不浅。", now_text))
+        return entries
 
-        recycle_count = count("weapon_recycle_records", "client_id = ?", (client_id,))
-        recycle_income = total(
+    def _recycle_diary_entries(self, client_id: str, now_text: str) -> list[tuple[str, str, str]]:
+        """日记里的回收记录。"""
+
+        entries = []
+        recycle_count = self.stat_count(
+            client_id,
+            "weapon_recycle_count",
+            "SELECT COUNT(*) AS count FROM weapon_recycle_records WHERE client_id = ?",
+            (client_id,),
+        )
+        recycle_income = self.stat_total(
+            client_id,
+            "weapon_recycle_income",
             "SELECT COALESCE(SUM(total_price), 0) AS total FROM weapon_recycle_records WHERE client_id = ?",
             (client_id,),
         )
         if recycle_count:
             entries.append(("weapon_recycle", f"累计回收武器 {recycle_count} 把，得源石 {money(recycle_income)}。", now_text))
-        gem_recycle_count = count("gem_recycle_records", "client_id = ?", (client_id,))
-        gem_recycle_income = total(
+        gem_recycle_count = self.stat_count(
+            client_id,
+            "gem_recycle_count",
+            "SELECT COUNT(*) AS count FROM gem_recycle_records WHERE client_id = ?",
+            (client_id,),
+        )
+        gem_recycle_income = self.stat_total(
+            client_id,
+            "gem_recycle_income",
             "SELECT COALESCE(SUM(total_price), 0) AS total FROM gem_recycle_records WHERE client_id = ?",
             (client_id,),
         )
         if gem_recycle_count:
             entries.append(("gem_recycle", f"累计回收宝石 {gem_recycle_count} 次，得源石 {money(gem_recycle_income)}。", now_text))
-        book_recycle_count = count("book_recycle_records", "client_id = ?", (client_id,))
-        book_recycle_income = total(
+        book_recycle_count = self.stat_count(
+            client_id,
+            "book_recycle_count",
+            "SELECT COUNT(*) AS count FROM book_recycle_records WHERE client_id = ?",
+            (client_id,),
+        )
+        book_recycle_income = self.stat_total(
+            client_id,
+            "book_recycle_income",
             "SELECT COALESCE(SUM(total_price), 0) AS total FROM book_recycle_records WHERE client_id = ?",
             (client_id,),
         )
         if book_recycle_count:
             entries.append(("book_recycle", f"累计回收技能书 {book_recycle_count} 次，得源石 {money(book_recycle_income)}。", now_text))
+        return entries
 
-        wormhole_count = count("wormhole_participants", "client_id = ?", (client_id,))
+    def _battle_diary_entries(self, client_id: str, now_text: str) -> list[tuple[str, str, str]]:
+        """日记里的战斗记录：虫洞、首领和玩家对战。"""
+
+        entries = []
+        wormhole_count = self.stat_count(
+            client_id,
+            "wormhole_count",
+            "SELECT COUNT(*) AS count FROM wormhole_participants WHERE client_id = ?",
+            (client_id,),
+        )
         if wormhole_count:
-            damage = total("SELECT COALESCE(SUM(damage), 0) AS total FROM wormhole_participants WHERE client_id = ?", (client_id,))
+            damage = self.stat_total(client_id, "wormhole_damage", "SELECT COALESCE(SUM(damage), 0) AS total FROM wormhole_participants WHERE client_id = ?", (client_id,))
             entries.append(("wormhole", f"挑战过异界虫洞 {wormhole_count} 场，累计伤害 {damage}。", now_text))
-        boss_count = count("seasonal_boss_participants", "client_id = ?", (client_id,))
+        boss_count = self.stat_count(
+            client_id,
+            "boss_count",
+            "SELECT COUNT(*) AS count FROM seasonal_boss_participants WHERE client_id = ?",
+            (client_id,),
+        )
         if boss_count:
-            damage = total("SELECT COALESCE(SUM(damage), 0) AS total FROM seasonal_boss_participants WHERE client_id = ?", (client_id,))
+            damage = self.stat_total(client_id, "boss_damage", "SELECT COALESCE(SUM(damage), 0) AS total FROM seasonal_boss_participants WHERE client_id = ?", (client_id,))
             entries.append(("seasonal_boss", f"挑战过岁时首领 {boss_count} 场，累计伤害 {damage}。", now_text))
 
-        duel_count = count("duel_records", "from_client_id = ? OR to_client_id = ?", (client_id, client_id))
-        duel_win = count("duel_records", "winner_id = ?", (client_id,))
+        duel_count = self.stat_count(
+            client_id,
+            "duel_count",
+            "SELECT COUNT(*) AS count FROM duel_records WHERE from_client_id = ? OR to_client_id = ?",
+            (client_id, client_id),
+        )
+        duel_win = self.stat_count(
+            client_id,
+            "duel_win_count",
+            "SELECT COUNT(*) AS count FROM duel_records WHERE winner_id = ?",
+            (client_id,),
+        )
         if duel_count:
             entries.append(("duel", f"公开对战 {duel_count} 场，其中胜利 {duel_win} 场。", now_text))
+        return entries
 
-        inscription_count = count(
-            "game_logs",
-            "client_id = ? AND action IN ('铭刻装备', '铭刻武器', '铭刻附魔')",
+    def _misc_diary_entries(self, client_id: str, now_text: str) -> list[tuple[str, str, str]]:
+        """日记里的杂项记录：铭刻和物品使用。"""
+
+        entries = []
+        inscription_count = self.stat_count(
+            client_id,
+            "inscription_count",
+            """
+            SELECT COUNT(*) AS count FROM game_logs
+            WHERE client_id = ? AND action IN ('铭刻装备', '铭刻武器', '铭刻附魔', '铭刻自带技能')
+            """,
             (client_id,),
         )
         if inscription_count:
             entries.append(("inscription", f"使用铭刻之羽 {inscription_count} 次，把名字刻进自己的器物里。", now_text))
-        item_use_count = count("game_logs", "client_id = ? AND action = '使用物品'", (client_id,))
+        item_use_count = self.stat_count(
+            client_id,
+            "item_use_count",
+            "SELECT COUNT(*) AS count FROM game_logs WHERE client_id = ? AND action = '使用物品'",
+            (client_id,),
+        )
         if item_use_count:
             entries.append(("item_use", f"使用恢复或成长物品 {item_use_count} 次，生死间也懂得惜身。", now_text))
-
-        with self.db.transaction() as conn:
-            for key, text, created_at in entries:
-                self.record_journal_conn(
-                    conn,
-                    client_id,
-                    key,
-                    text,
-                    created_at=created_at,
-                    keep_first_time=True,
-                )
+        return entries
 
     def _count(self, table: str, where: str, params: tuple) -> int:
         """执行简单计数。"""
 
         row = self.db.fetch_one(f"SELECT COUNT(*) AS count FROM {table} WHERE {where}", params)
         return int(row["count"]) if row else 0
+
+    def _total(self, sql: str, params: tuple) -> int:
+        """执行 SUM 类统计。"""
+
+        row = self.db.fetch_one(sql, params)
+        if not row:
+            return 0
+        return int(row["total"] or 0)
 
     def _physique_profile_lines(self, player: dict) -> list[str]:
         """生成修仙信息里的体质区块。"""
@@ -493,9 +787,9 @@ class PlayerService(CoreService):
         )
         if not row:
             return [
-                f"│  🌿 体质值 {player['physique']}",
-                "│  ✨ 未知品阶 · 未知向",
-                "│  💤 天赋：无特殊效果",
+                f"🌿 体质值 {player['physique']}",
+                "✨ 未知品阶 · 未知向",
+                "💤 天赋：无特殊效果",
             ]
         effect = format_effect(row["effect"])
         value = int(row["physique_value"])
@@ -503,9 +797,9 @@ class PlayerService(CoreService):
         stage = self._physique_stage_text(str(row["grade"]), str(row["kind"]), value)
         trait_icon = "💤" if effect == "无主动效果" else "🛡️"
         return [
-            f"│  {icon} {row['name']}",
-            f"│  ✨ {stage}",
-            f"│  {trait_icon} 天赋：{effect}",
+            f"{icon} {row['name']}",
+            f"✨ {stage}",
+            f"{trait_icon} 天赋：{effect}",
         ]
 
     @staticmethod

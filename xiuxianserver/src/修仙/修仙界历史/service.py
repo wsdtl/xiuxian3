@@ -2,15 +2,29 @@
 
 from __future__ import annotations
 
+from ..format_text import T
+
 from datetime import date, datetime, time, timedelta
 from typing import Any
 
-from ..common import CoreService, business_day, dump_json, hint, load_json, money, split_words, ts, weapon_label_name
+from ..common import (
+    CoreService,
+    business_day,
+    dump_json,
+    format_effect,
+    load_json,
+    money,
+    ts,
+    weapon_label_name,
+    world_state_for_day,
+)
 from ..constants import DAY_RESET_HOUR
 from ..sql import db
 
 
-NEWSPAPER_TITLE = "修仙早报:v2"
+NEWSPAPER_TITLE = "修仙早报:v4"
+NEWSPAPER_NAV_BUTTONS = "<风云榜><修仙早报><修仙界历史>"
+OLD_TEXT_MARKERS = ("☆", "┌", "└", "├", "│", "模板:", "自带技能:", "附魔栏:", "存放:")
 CHRONICLE_KEY_PREFIX = "xiuxian_history:"
 
 
@@ -19,25 +33,24 @@ class XiuxianHistoryService(CoreService):
 
     def leaderboard(self, client_id: str) -> str:
         """查看当前业务日的全服榜单。"""
-        #TODO 按钮审查：这里会生成回复文本，按需把命令写成 <命令>。
 
         _, error = self.require_player(client_id)
         if error:
             return error
 
         start, end = self._business_window()
-        lines = [f"☆风云榜·{business_day()}☆"]
-        lines.append(self._top_damage_text(start, end))
-        lines.append(self._top_rich_text())
-        lines.append(self._top_trade_text(start, end))
-        lines.append(self._top_explore_text(start, end))
-        lines.append(self._top_luck_text(start, end))
-        lines.append(self._top_active_text(start, end))
-        return "\n".join(lines) + "<风云榜><修仙早报><修仙界历史>"
+        panel = T.panel()
+        panel.section(f"风云榜·{business_day()}")
+        panel.line(self._top_damage_text(start, end))
+        panel.line(self._top_rich_text())
+        panel.line(self._top_trade_text(start, end))
+        panel.line(self._top_explore_text(start, end))
+        panel.line(self._top_luck_text(start, end))
+        panel.line(self._top_active_text(start, end))
+        return panel.render() + "<风云榜><修仙早报><修仙界历史>"
 
     def newspaper(self, client_id: str) -> str:
         """查看今日修仙早报。"""
-        #TODO 按钮审查：这里会生成回复文本，按需把命令写成 <命令>。
 
         _, error = self.require_player(client_id)
         if error:
@@ -45,8 +58,9 @@ class XiuxianHistoryService(CoreService):
 
         day = business_day()
         row = self.db.fetch_one("SELECT title, content FROM daily_newspapers WHERE business_day = ?", (day,))
-        if row and row["title"] == NEWSPAPER_TITLE:
-            return str(row["content"])
+        cached_content = self._current_newspaper_content(row)
+        if cached_content:
+            return self._newspaper_response(cached_content)
 
         content = self._build_newspaper(day)
         with self.db.transaction() as conn:
@@ -58,11 +72,25 @@ class XiuxianHistoryService(CoreService):
                 """,
                 (day, NEWSPAPER_TITLE, content, ts()),
             )
-        return content + "<风云榜><修仙早报><修仙界历史>"
+        return self._newspaper_response(content)
+
+    def _current_newspaper_content(self, row: Any) -> str:
+        """只复用当前富文本版本的早报缓存。"""
+
+        if not row or row["title"] != NEWSPAPER_TITLE:
+            return ""
+        content = str(row["content"])
+        if any(marker in content for marker in OLD_TEXT_MARKERS):
+            return ""
+        return content
+
+    def _newspaper_response(self, content: str) -> str:
+        """早报缓存和新生成内容统一追加跳转按钮。"""
+
+        return T.attach(content, NEWSPAPER_NAV_BUTTONS)
 
     def chronicle(self, client_id: str) -> str:
         """查看最近的修仙界历史。"""
-        #TODO 按钮审查：这里会生成回复文本，按需把命令写成 <命令>。
 
         _, error = self.require_player(client_id)
         if error:
@@ -81,89 +109,116 @@ class XiuxianHistoryService(CoreService):
             (f"{CHRONICLE_KEY_PREFIX}%",),
         )
 
-        lines = ["☆修仙界历史☆"]
+        panel = T.panel()
+        panel.section("修仙界历史")
         for row in rows:
             current_day = str(row["key"]).removeprefix(CHRONICLE_KEY_PREFIX)
             entries = self._decode_entries(row["value"])
-            lines.append(current_day)
-            lines.extend(f"- {entry}" for entry in entries)
-        return "\n".join(lines) + "<风云榜><修仙早报><修仙界历史>"
+            panel.line(current_day)
+            for entry in entries:
+                panel.line(f"- {entry}")
+        return panel.render() + "<风云榜><修仙早报><修仙界历史>"
 
     def profile(self, client_id: str, message: str) -> str:
         """公开查看一位玩家的修仙界档案。"""
-        #TODO 按钮审查：这里会生成回复文本，按需把命令写成 <命令>。
 
         _, error = self.require_player(client_id)
         if error:
             return error
 
         if not message.strip():
-            return hint("缺少要查看的玩家名称。", "发送：人物志 玩家名称，例如：人物志 青衫客")
+            return T.hint("缺少要查看的玩家名称。", "发送：人物志 玩家名称，例如：人物志 青衫客")
 
-        target_id = self._player_id_from_last_arg(message)
+        target_id = self.player_id_from_last_arg(message)
         target = self.player(target_id) if target_id else None
         if not target:
-            return hint("没有找到这位玩家。", "请确认名称是否正确，或直接@对方。")
+            return T.hint("没有找到这位玩家。", "请确认名称是否正确，或直接@对方。")
 
         title = self.refresh_titles(target_id, target) or "无"
         weapon = self.equipped_weapon_row(target_id)
         weapon_text = weapon_label_name(weapon) if weapon else "未佩戴"
-        wormhole_count = self._count("SELECT COUNT(*) AS count FROM wormhole_participants WHERE client_id = ?", (target_id,))
-        boss_count = self._count("SELECT COUNT(*) AS count FROM seasonal_boss_participants WHERE client_id = ?", (target_id,))
-        explore_count = self._count("SELECT COUNT(*) AS count FROM exploration_records WHERE client_id = ?", (target_id,))
-        trade_count = self._count("SELECT COUNT(*) AS count FROM trade_records WHERE client_id = ?", (target_id,))
-        duel_wins = self._count("SELECT COUNT(*) AS count FROM duel_records WHERE winner_id = ?", (target_id,))
-
-        return (
-            f"☆{target['display_name']}人物志☆\n"
-            f"称号：{title}\n"
-            f"等级：{target['level']}\n"
-            f"常驻地点：{target['location_name']}\n"
-            f"代表武器：{weapon_text}\n"
-            f"修仙界事迹：参与虫洞 {wormhole_count} 次，挑战首领 {boss_count} 次，"
-            f"探险 {explore_count} 次，跑商 {trade_count} 次，对战胜利 {duel_wins} 次。"
+        wormhole_count = self.stat_count(
+            target_id,
+            "wormhole_count",
+            "SELECT COUNT(*) AS count FROM wormhole_participants WHERE client_id = ?",
+            (target_id,),
+        )
+        boss_count = self.stat_count(
+            target_id,
+            "boss_count",
+            "SELECT COUNT(*) AS count FROM seasonal_boss_participants WHERE client_id = ?",
+            (target_id,),
+        )
+        explore_count = self.stat_count(
+            target_id,
+            "explore_count",
+            "SELECT COUNT(*) AS count FROM exploration_records WHERE client_id = ?",
+            (target_id,),
+        )
+        trade_count = self.stat_count(
+            target_id,
+            "trade_count",
+            "SELECT COUNT(*) AS count FROM trade_records WHERE client_id = ?",
+            (target_id,),
+        )
+        duel_wins = self.stat_count(
+            target_id,
+            "duel_win_count",
+            "SELECT COUNT(*) AS count FROM duel_records WHERE winner_id = ?",
+            (target_id,),
         )
 
-    def _player_id_from_last_arg(self, message: str) -> str:
-        """取最后一个参数，并按 client_id / 名称查玩家。"""
-
-        parts = split_words(message)
-        if not parts:
-            return ""
-        value = parts[-1].strip()
-        if self.player(value):
-            return value
-        row = self.db.fetch_one(
-            "SELECT client_id FROM players WHERE display_name = ?",
-            (value,),
+        panel = T.panel()
+        panel.section(f"{target['display_name']}人物志")
+        panel.line(f"称号：{title}")
+        panel.line(f"等级：**{target['level']}**")
+        panel.line(f"常驻地点：{target['location_name']}")
+        panel.line(f"代表武器：{weapon_text}")
+        panel.line(
+            f"修仙界事迹：参与虫洞 **{wormhole_count}** 次｜挑战首领 **{boss_count}** 次｜"
+            f"探险 **{explore_count}** 次｜跑商 **{trade_count}** 次｜对战胜利 **{duel_wins}** 次"
         )
-        return str(row["client_id"]) if row else ""
+        return panel.render()
 
     def _build_newspaper(self, day: str) -> str:
         """生成今日修仙早报。"""
-        #TODO 按钮审查：这里会生成回复文本，按需把命令写成 <命令>。
 
         start, end = self._business_window(day)
-        lines = [f"☆修仙早报·{day}☆"]
-        lines.append(f"小编按：今日修仙界从 {DAY_RESET_HOUR:02d}:00 起算，茶摊照例收风。")
-        lines.append("")
-        lines.append("【头版人物】")
-        lines.append(self._top_damage_text(start, end))
-        lines.append(self._top_rich_text())
-        lines.append(self._top_explore_text(start, end))
-        lines.append(self._top_luck_text(start, end))
-        lines.append("")
-        lines.append("【坊间传闻】")
-        lines.append(self._rumor_text(start, end))
-        lines.append("")
-        lines.append("【商会风向】")
-        lines.append(self._business_wind_text(start, end))
-        lines.append("")
-        lines.append("【首领动向】")
-        lines.extend(self._boss_trend_lines(day, start, end))
-        lines.append("")
-        lines.append("<商场推荐><首领>")
-        return "\n".join(lines)
+        panel = T.panel()
+        panel.section(f"修仙早报·{day}")
+        panel.line(f"小编按：今日修仙界从 {DAY_RESET_HOUR:02d}:00 起算，茶摊照例收风。")
+        panel.hr()
+        panel.section("天地气象")
+        panel.lines(self._world_state_lines(day))
+        panel.hr()
+        panel.section("头版人物")
+        panel.line(self._top_damage_text(start, end))
+        panel.line(self._top_rich_text())
+        panel.line(self._top_explore_text(start, end))
+        panel.line(self._top_luck_text(start, end))
+        panel.hr()
+        panel.section("坊间传闻")
+        panel.line(self._rumor_text(start, end))
+        panel.hr()
+        panel.section("商会风向")
+        panel.line(self._business_wind_text(start, end))
+        panel.hr()
+        panel.section("首领动向")
+        panel.lines(self._boss_trend_lines(day, start, end))
+        return panel.render() + "<商场推荐><首领>"
+
+    def _world_state_lines(self, day: str) -> list[str]:
+        """生成早报里的全服天气和灵潮栏目。"""
+
+        state = world_state_for_day(day)
+        weather = state["weather"]
+        tide = state["tide"]
+        total = format_effect(state["effect"])
+        return [
+            f"今日天气：{weather['name']}。{weather['flavor']}（{format_effect(weather['effect'])}）",
+            f"今日灵潮：{tide['name']}。{tide['flavor']}（{format_effect(tide['effect'])}）",
+            f"全服生效：{total}",
+        ]
 
     def _save_or_get_chronicle(self, day: str, refresh: bool = False) -> list[str]:
         """读取或保存某一天的大事记；当天会刷新，旧日保持沉淀结果。"""
@@ -216,7 +271,7 @@ class XiuxianHistoryService(CoreService):
         if trade:
             entries.append(
                 f"今日跑商最高收益由 {self.format_player_name(trade['client_id'])} 创下，"
-                f"净入 {money(trade['net'])}。"
+                f"净利润 {money(trade['net'])}。"
             )
 
         damage = self._top_damage_row(start, end)
@@ -248,7 +303,6 @@ class XiuxianHistoryService(CoreService):
 
     def _top_damage_text(self, start: str, end: str) -> str:
         """今日 Boss 伤害最高者。"""
-        #TODO 按钮审查：这里会生成回复文本，按需把命令写成 <命令>。
 
         row = self._top_damage_row(start, end)
         if not row:
@@ -257,7 +311,6 @@ class XiuxianHistoryService(CoreService):
 
     def _top_rich_text(self) -> str:
         """当前明面资产最高者。"""
-        #TODO 按钮审查：这里会生成回复文本，按需把命令写成 <命令>。
 
         row = self._richest_row()
         if not row:
@@ -265,17 +318,15 @@ class XiuxianHistoryService(CoreService):
         return f"今日最富：{self.format_player_name(row['client_id'])}，明面资产约 {money(row['total'])}。"
 
     def _top_trade_text(self, start: str, end: str) -> str:
-        """今日跑商净收入最高者。"""
-        #TODO 按钮审查：这里会生成回复文本，按需把命令写成 <命令>。
+        """今日普通跑商净利润最高者。"""
 
         row = self._top_trade_row(start, end)
         if not row:
             return "今日商魂：暂无普通跑商出售。"
-        return f"今日商魂：{self.format_player_name(row['client_id'])}，跑商净入 {money(row['net'])}。"
+        return f"今日商魂：{self.format_player_name(row['client_id'])}，跑商净利润 {money(row['net'])}。"
 
     def _top_explore_text(self, start: str, end: str) -> str:
         """今日探险次数最高者。"""
-        #TODO 按钮审查：这里会生成回复文本，按需把命令写成 <命令>。
 
         row = self._top_explore_row(start, end)
         if not row:
@@ -284,7 +335,6 @@ class XiuxianHistoryService(CoreService):
 
     def _top_luck_text(self, start: str, end: str) -> str:
         """今日珍稀武器获得者。"""
-        #TODO 按钮审查：这里会生成回复文本，按需把命令写成 <命令>。
 
         row = self._top_luck_row(start, end)
         if not row:
@@ -296,7 +346,6 @@ class XiuxianHistoryService(CoreService):
 
     def _top_active_text(self, start: str, end: str) -> str:
         """今日关键行为最多者。"""
-        #TODO 按钮审查：这里会生成回复文本，按需把命令写成 <命令>。
 
         row = self._top_active_row(start, end)
         if not row:
@@ -305,7 +354,6 @@ class XiuxianHistoryService(CoreService):
 
     def _rumor_text(self, start: str, end: str) -> str:
         """生成一条坊间传闻。"""
-        #TODO 按钮审查：这里会生成回复文本，按需把命令写成 <命令>。
 
         luck = self._top_luck_row(start, end)
         if luck:
@@ -323,13 +371,12 @@ class XiuxianHistoryService(CoreService):
 
     def _business_wind_text(self, start: str, end: str) -> str:
         """生成商会风向。"""
-        #TODO 按钮审查：这里会生成回复文本，按需把命令写成 <命令>。
 
         row = self._top_trade_row(start, end)
         if row:
             return (
                 f"商会风向：今日普通跑商最高收益来自 {self.format_player_name(row['client_id'])}，"
-                f"净入 {money(row['net'])}。"
+                f"净利润 {money(row['net'])}。"
             )
         return "商会风向：今日普通跑商账簿还空着，想开张可先看 商场推荐。"
 
@@ -397,16 +444,24 @@ class XiuxianHistoryService(CoreService):
         )
 
     def _top_trade_row(self, start: str, end: str) -> dict[str, Any] | None:
-        """查询今日普通跑商净收入第一名。"""
+        """查询今日普通跑商净利润第一名。"""
 
         return self.db.fetch_one(
             """
-            SELECT client_id, SUM(total_price - fee) AS net
+            SELECT client_id,
+                   SUM(
+                       CASE
+                           WHEN action = 'sell' THEN total_price - fee
+                           WHEN action = 'buy' THEN -(total_price + fee)
+                           ELSE 0
+                       END
+                   ) AS net
             FROM trade_records
-            WHERE action = 'sell'
+            WHERE action IN ('buy', 'sell')
               AND datetime(replace(created_at, 'T', ' ')) >= ?
               AND datetime(replace(created_at, 'T', ' ')) < ?
             GROUP BY client_id
+            HAVING net > 0
             ORDER BY net DESC
             LIMIT 1
             """,
@@ -501,7 +556,6 @@ class XiuxianHistoryService(CoreService):
     @staticmethod
     def _status_word(status: str) -> str:
         """把数据库状态转成早报里的短句。"""
-        #TODO 按钮审查：这里会生成回复文本，按需把命令写成 <命令>。
 
         return {
             "开启": "正在现世",

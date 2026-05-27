@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import random
 import sqlite3
@@ -17,13 +18,15 @@ from .constants import (
     DEFAULT_BACKPACK_LIMIT,
     DEFAULT_LOCATION,
     DEFAULT_WEIGHT_LIMIT,
+    DIRECT_FLOW_RETENTION_DAYS,
     EQUIPMENT_SLOTS,
     FIXED_EQUIPMENT_SLOT_FACTORS,
     MAX_LEVEL,
+    NEWSPAPER_RETENTION_DAYS,
     RENAME_COOLDOWN_HOURS,
     WEAPON_TYPE_INTERVAL_FACTORS,
 )
-from .markdown_utils import append_suggest_commands
+from .format_text import T
 from .rules import base_attack, damage_after_defense, defense, exp_need, level_from_exp, max_hp, max_mp, money
 
 FORTUNE_POOL = (
@@ -36,6 +39,65 @@ FORTUNE_POOL = (
     ("天眷", "今日天光偏爱，万事都略顺半分。", {"explore_bonus": 0.08, "recover_bonus": 0.05}),
     ("破云", "心气如剑，出手时更敢一线。", {"damage_reduce": 0.03, "dodge_bonus": 0.03}),
 )
+
+
+WORLD_WEATHER_POOL = (
+    ("晴岚", "云开风轻，山路和商道都显得明快。", {"explore_bonus": 0.03}),
+    ("灵雨", "细雨带着灵气落下，调息恢复更顺。", {"recover_bonus": 0.04}),
+    ("雾锁", "雾色压低远路视野，跑商略有磕绊。", {"trade_bonus": -0.006}),
+    ("星夜", "星光清冷，斗法时心神更定。", {"crit_resist_bonus": 0.025}),
+    ("风起", "长风推人前行，身法更轻。", {"dodge_bonus": 0.025}),
+    ("沉云", "云层压境，万事平稳无额外加成。", {}),
+)
+
+WORLD_TIDE_POOL = (
+    ("灵潮平稳", "天地灵息如常，适合照旧修行。", {}),
+    ("灵潮微涨", "灵息浮动，探险寻物更容易撞见机会。", {"explore_bonus": 0.04}),
+    ("商气东来", "坊市人声热闹，跑商手续费略降。", {"trade_bonus": 0.012}),
+    ("回春潮", "草木气息回环，休息与恢复效果更好。", {"recover_bonus": 0.05}),
+    ("剑气鸣野", "天地间有锋芒回响，出手更稳。", {"damage_reduce": 0.02}),
+    ("静海潮", "灵潮安静，承伤更稳。", {"crit_resist_bonus": 0.03}),
+)
+
+
+PERCENT_BONUS_CAPS = {
+    "dodge_bonus": 0.35,
+    "recover_bonus": 0.50,
+    "explore_bonus": 0.20,
+    "trade_bonus": 0.20,
+    "crit_resist_bonus": 0.45,
+}
+
+
+LIFETIME_STATS_STARTED_AT_KEY = "lifetime_stats_started_at"
+GAME_LOG_LIFETIME_STATS = {
+    "签到": "sign_count",
+    "改名": "rename_count",
+    "新手礼包": "newbie_gift_count",
+    "使用物品": "item_use_count",
+    "铭刻装备": "inscription_count",
+    "铭刻武器": "inscription_count",
+    "铭刻附魔": "inscription_count",
+    "铭刻自带技能": "inscription_count",
+}
+
+
+WEAPON_TYPE_STYLE_TEXT = {
+    "匕": "极速近身，靠高频出手、吸血和闪避找机会",
+    "飞刃": "高频游斗，适合连击、打断和清小怪",
+    "剑": "均衡灵活，速度和伤害都比较稳",
+    "铃": "轻灵扰神，偏精神压制和节奏干扰",
+    "刀": "均衡爆发，单次伤害和出手节奏都适中",
+    "弩": "远程点杀，伤害稳定但蓄势略慢",
+    "拂尘": "多段牵引，适合连击和持续压制",
+    "杖": "术法续航，偏恢复、精神和控制",
+    "枪": "穿透突进，伤害高但节奏偏沉",
+    "盾刃": "攻守兼备，输出较慢但更抗打",
+    "戟": "重兵破阵，高伤慢速，适合破防",
+    "盘": "法器镇压，单次很重，出手和蓄势都慢",
+    "斧": "极重爆发，伤害最高档，但速度代价明显",
+}
+
 
 def now() -> datetime:
     """返回当前时间。"""
@@ -61,6 +123,59 @@ def business_day(value: datetime | None = None) -> str:
     """按每日 04:00 计算业务日。"""
 
     return ((value or now()) - timedelta(hours=DAY_RESET_HOUR)).date().isoformat()
+
+
+def world_state_for_day(day: str | None = None) -> dict[str, Any]:
+    """按业务日稳定生成全服天气和灵潮。"""
+
+    current_day = day or business_day()
+    weather = _stable_choice(WORLD_WEATHER_POOL, f"{current_day}:weather")
+    tide = _stable_choice(WORLD_TIDE_POOL, f"{current_day}:tide")
+    return {
+        "business_day": current_day,
+        "weather": _world_entry("weather", weather),
+        "tide": _world_entry("tide", tide),
+        "effect": merge_numeric_effects(weather[2], tide[2]),
+    }
+
+
+def merge_numeric_effects(*effects: dict[str, Any]) -> dict[str, float]:
+    """合并多个加成字典，只保留数值型效果。"""
+
+    merged: dict[str, float] = {}
+    for effect in effects:
+        for key, value in effect.items():
+            if isinstance(value, int | float):
+                merged[key] = merged.get(key, 0) + float(value)
+    return merged
+
+
+def soft_cap_percent_bonus(raw: float, cap: float) -> float:
+    """给百分比加成做收益递减封顶；负面效果保持原值。"""
+
+    if raw <= 0:
+        return raw
+    return cap * raw / (raw + cap)
+
+
+def _stable_choice(pool: tuple[tuple[str, str, dict[str, Any]], ...], seed_text: str) -> tuple[str, str, dict[str, Any]]:
+    """用业务日文字稳定选择一项，避免服务重启后变化。"""
+
+    digest = hashlib.sha256(seed_text.encode("utf-8")).hexdigest()
+    index = int(digest[:8], 16) % len(pool)
+    return pool[index]
+
+
+def _world_entry(kind: str, row: tuple[str, str, dict[str, Any]]) -> dict[str, Any]:
+    """把天气/灵潮定义整理成统一结构。"""
+
+    name, flavor, effect = row
+    return {
+        "kind": kind,
+        "name": name,
+        "flavor": flavor,
+        "effect": dict(effect),
+    }
 
 
 def to_int(value: object, default: int = 0) -> int:
@@ -143,16 +258,8 @@ def enchant_label_name(enchant_name: object, custom_name: object = "") -> str:
     return custom_label(enchant_name, custom_name)
 
 
-def hint(reason: str, suggestion: str) -> str:
-    """把失败原因和下一步建议拼成统一回复。"""
-    # TODO 按钮审查：这里会生成回复文本，按需把命令写成 <命令>。
-
-    return append_suggest_commands(reason, suggestion)
-
-
 def equipment_item_use_hint(item: dict[str, Any]) -> str:
     """按纳戒物品类型给出正确消耗入口。"""
-    # TODO 按钮审查：这里会生成回复文本，按需把命令写成 <命令>。
 
 
     if item["name"] == "洗髓液":
@@ -163,7 +270,7 @@ def equipment_item_use_hint(item: dict[str, Any]) -> str:
         return "技能书请发送：附魔武器 武器ID 技能书名。<洗髓><宝石><武器>"
     if item["name"] == "开孔器":
         return "开孔器请发送：开孔 装备位。<洗髓><宝石><武器>"
-    return "只有恢复类物品可以直接发送：使用 物品名。<洗髓><宝石><武器>"
+    return "只有恢复类物品可以直接发送：使用 物品名，或使用 物品名 数量。<洗髓><宝石><武器>"
 
 
 def split_words(message: str) -> list[str]:
@@ -189,6 +296,17 @@ def parse_name_level(text: str) -> tuple[str, int | None]:
     if level_text.isdigit() and len(parts) > 1:
         return " ".join(parts[:-1]), max(1, to_int(level_text, 1))
     return text.strip(), None
+
+
+def parse_name_quantity_optional(text: str, default: int = 1) -> tuple[str, int]:
+    """解析“名称 [数量]”，没有数量时使用默认值。"""
+
+    parts = split_words(text)
+    if not parts:
+        return "", 0
+    if len(parts) > 1 and parts[-1].lstrip("+-").isdigit():
+        return " ".join(parts[:-1]), to_int(parts[-1], default)
+    return text.strip(), default
 
 
 def parse_weapon_ref(text: str) -> int:
@@ -224,6 +342,37 @@ class CoreService:
         """读取玩家。"""
 
         return self.db.fetch_one("SELECT * FROM players WHERE client_id = ?", (client_id,))
+
+    def player_by_ref(self, ref: str) -> dict[str, Any] | None:
+        """按 client_id 或展示名读取玩家。
+
+        WS 层已经把 CQ/at 转成 client_id；普通文本则传展示名。
+        所有“指定其他玩家”的业务都走这里，避免各组件各写一套。
+        """
+
+        value = str(ref).strip()
+        if not value:
+            return None
+
+        player = self.player(value)
+        if player:
+            return player
+        return self.db.fetch_one(
+            "SELECT * FROM players WHERE display_name = ?",
+            (value,),
+        )
+
+    def player_id_by_ref(self, ref: str) -> str:
+        """按 client_id 或展示名读取玩家 id；找不到时返回空字符串。"""
+
+        player = self.player_by_ref(ref)
+        return str(player["client_id"]) if player else ""
+
+    def player_id_from_last_arg(self, message: str) -> str:
+        """取最后一个参数作为玩家引用，支持 client_id 和展示名。"""
+
+        parts = split_words(message)
+        return self.player_id_by_ref(parts[-1]) if parts else ""
 
     def equipped_weapon_row(self, client_id: str) -> dict[str, Any] | None:
         """读取玩家当前装备的武器；不自动补初始武器。"""
@@ -270,80 +419,493 @@ class CoreService:
 
         player = self.player(client_id)
         if not player:
-            return None, hint("你还没有创建用户。", "发送：创建用户 名称，例如：创建用户 青衫客")
+            return None, T.hint("你还没有创建用户。", "发送：创建用户 名称，例如：创建用户 青衫客")
         return player, None
 
     def cleanup_battle_records(self, force: bool = False) -> None:
-        """每天最多清理一次 7 天前的战斗记录，避免详细日志长期堆积。"""
+        """每天最多清理一次可直接过期的流水，避免明细记录长期堆积。"""
 
         today = business_day()
-        cutoff = ts(now() - timedelta(days=BATTLE_RECORD_RETENTION_DAYS))
+        battle_cutoff = ts(now() - timedelta(days=BATTLE_RECORD_RETENTION_DAYS))
+        direct_cutoff = ts(now() - timedelta(days=DIRECT_FLOW_RETENTION_DAYS))
+        direct_business_day = business_day(now() - timedelta(days=DIRECT_FLOW_RETENTION_DAYS))
+        newspaper_business_day = business_day(now() - timedelta(days=NEWSPAPER_RETENTION_DAYS))
         with self.db.transaction() as conn:
             if not force:
                 row = conn.execute(
-                    "SELECT value FROM schema_meta WHERE key = 'battle_cleanup_day'",
+                    "SELECT value FROM schema_meta WHERE key = 'direct_flow_cleanup_day'",
                 ).fetchone()
                 if row and row["value"] == today:
                     return
-            conn.execute("DELETE FROM combat_logs WHERE created_at < ?", (cutoff,))
-            conn.execute("DELETE FROM duel_records WHERE created_at < ?", (cutoff,))
+            conn.execute(
+                """
+                DELETE FROM combat_logs
+                WHERE datetime(replace(created_at, 'T', ' ')) < datetime(replace(?, 'T', ' '))
+                """,
+                (battle_cutoff,),
+            )
             conn.execute(
                 """
                 DELETE FROM duel_requests
-                WHERE status != '等待' AND created_at < ?
+                WHERE status != '等待'
+                  AND datetime(replace(created_at, 'T', ' ')) < datetime(replace(?, 'T', ' '))
                 """,
-                (cutoff,),
+                (battle_cutoff,),
             )
+            conn.execute("DELETE FROM trade_prices WHERE business_day < ?", (direct_business_day,))
+            conn.execute("DELETE FROM trade_heat WHERE business_day < ?", (direct_business_day,))
+            conn.execute("DELETE FROM trade_daily_rewards WHERE business_day < ?", (direct_business_day,))
             conn.execute(
                 """
-                DELETE FROM exploration_records
-                WHERE claimed = 1 AND COALESCE(finished_at, started_at) < ?
+                DELETE FROM trade_limits
+                WHERE datetime(replace(last_buy_at, 'T', ' ')) < datetime(replace(?, 'T', ' '))
                 """,
-                (cutoff,),
+                (direct_cutoff,),
             )
-            old_wormholes = conn.execute(
-                """
-                SELECT wormhole_id FROM wormholes
-                WHERE status != '开启' AND COALESCE(killed_at, closes_at, opened_at) < ?
-                """,
-                (cutoff,),
-            ).fetchall()
-            for row in old_wormholes:
-                conn.execute("DELETE FROM wormhole_notices WHERE wormhole_id = ?", (row["wormhole_id"],))
-                conn.execute("DELETE FROM wormhole_participants WHERE wormhole_id = ?", (row["wormhole_id"],))
-                conn.execute("DELETE FROM wormholes WHERE wormhole_id = ?", (row["wormhole_id"],))
+            conn.execute("DELETE FROM daily_fortunes WHERE business_day < ?", (direct_business_day,))
+            conn.execute("DELETE FROM daily_newspapers WHERE business_day < ?", (newspaper_business_day,))
 
-            old_bosses = conn.execute(
-                """
-                SELECT event_id FROM seasonal_boss_events
-                WHERE status != '开启' AND COALESCE(killed_at, closes_at, opened_at) < ?
-                """,
-                (cutoff,),
-            ).fetchall()
-            for row in old_bosses:
-                conn.execute("DELETE FROM seasonal_boss_participants WHERE event_id = ?", (row["event_id"],))
-                conn.execute("DELETE FROM seasonal_boss_events WHERE event_id = ?", (row["event_id"],))
+            stats_start_at = self._lifetime_stats_started_at_conn(conn)
+            self._rollup_lifetime_records_conn(conn, stats_start_at, direct_cutoff)
+            self._cleanup_lifetime_source_records_conn(conn, direct_cutoff)
             conn.execute(
                 """
                 INSERT INTO schema_meta (key, value)
-                VALUES ('battle_cleanup_day', ?)
+                VALUES ('direct_flow_cleanup_day', ?)
                 ON CONFLICT(key) DO UPDATE SET value = excluded.value
                 """,
                 (today,),
             )
 
+    def _lifetime_stats_started_at_conn(self, conn: sqlite3.Connection) -> str:
+        """首次启用长期统计时只记录起点，不回填旧流水。"""
+
+        row = conn.execute(
+            "SELECT value FROM schema_meta WHERE key = ?",
+            (LIFETIME_STATS_STARTED_AT_KEY,),
+        ).fetchone()
+        if row:
+            return str(row["value"])
+
+        started_at = ts()
+        conn.execute(
+            """
+            INSERT INTO schema_meta (key, value)
+            VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """,
+            (LIFETIME_STATS_STARTED_AT_KEY, started_at),
+        )
+        return started_at
+
+    def _rollup_lifetime_records_conn(self, conn: sqlite3.Connection, start_at: str, cutoff_at: str) -> None:
+        """把即将清理的长期来源流水汇总到玩家长期统计。"""
+
+        self._rollup_game_logs_conn(conn, start_at, cutoff_at)
+        self._rollup_trade_records_conn(conn, start_at, cutoff_at)
+        self._rollup_second_hand_records_conn(conn, start_at, cutoff_at)
+        self._rollup_recycle_records_conn(conn, start_at, cutoff_at)
+        self._rollup_exploration_records_conn(conn, start_at, cutoff_at)
+        self._rollup_boss_records_conn(conn, start_at, cutoff_at)
+        self._rollup_duel_records_conn(conn, start_at, cutoff_at)
+        self._rollup_robbery_records_conn(conn, start_at, cutoff_at)
+
+    def _rollup_game_logs_conn(self, conn: sqlite3.Connection, start_at: str, cutoff_at: str) -> None:
+        """汇总签到、铭刻、使用物品等通用行为流水。"""
+
+        rows = conn.execute(
+            """
+            SELECT client_id, action, COUNT(*) AS total
+            FROM game_logs
+            WHERE datetime(replace(created_at, 'T', ' ')) >= datetime(replace(?, 'T', ' '))
+              AND datetime(replace(created_at, 'T', ' ')) < datetime(replace(?, 'T', ' '))
+            GROUP BY client_id, action
+            """,
+            (start_at, cutoff_at),
+        ).fetchall()
+        for row in rows:
+            stat_key = GAME_LOG_LIFETIME_STATS.get(str(row["action"]))
+            if stat_key:
+                self.add_lifetime_stat_conn(conn, row["client_id"], stat_key, int(row["total"] or 0))
+
+    def _rollup_trade_records_conn(self, conn: sqlite3.Connection, start_at: str, cutoff_at: str) -> None:
+        """汇总跑商次数和普通跑商净利润。"""
+
+        rows = conn.execute(
+            """
+            SELECT client_id,
+                   COUNT(*) AS trade_count,
+                   SUM(CASE WHEN action = 'sell' THEN 1 ELSE 0 END) AS trade_sell_count,
+                   SUM(CASE WHEN action = 'buy' THEN 1 ELSE 0 END) AS trade_buy_count,
+                   SUM(
+                       CASE
+                           WHEN action = 'sell' THEN total_price - fee
+                           WHEN action = 'buy' THEN -(total_price + fee)
+                           ELSE 0
+                       END
+                   ) AS trade_net
+            FROM trade_records
+            WHERE datetime(replace(created_at, 'T', ' ')) >= datetime(replace(?, 'T', ' '))
+              AND datetime(replace(created_at, 'T', ' ')) < datetime(replace(?, 'T', ' '))
+            GROUP BY client_id
+            """,
+            (start_at, cutoff_at),
+        ).fetchall()
+        for row in rows:
+            client_id = row["client_id"]
+            for stat_key in ("trade_count", "trade_sell_count", "trade_buy_count", "trade_net"):
+                self.add_lifetime_stat_conn(conn, client_id, stat_key, int(row[stat_key] or 0))
+
+    def _rollup_second_hand_records_conn(self, conn: sqlite3.Connection, start_at: str, cutoff_at: str) -> None:
+        """汇总二手市场买卖次数。"""
+
+        rows = conn.execute(
+            """
+            SELECT seller_id AS client_id, COUNT(*) AS total
+            FROM second_hand_records
+            WHERE datetime(replace(created_at, 'T', ' ')) >= datetime(replace(?, 'T', ' '))
+              AND datetime(replace(created_at, 'T', ' ')) < datetime(replace(?, 'T', ' '))
+            GROUP BY seller_id
+            """,
+            (start_at, cutoff_at),
+        ).fetchall()
+        for row in rows:
+            self.add_lifetime_stat_conn(conn, row["client_id"], "second_hand_sell_count", int(row["total"] or 0))
+
+        rows = conn.execute(
+            """
+            SELECT buyer_id AS client_id, COUNT(*) AS total
+            FROM second_hand_records
+            WHERE datetime(replace(created_at, 'T', ' ')) >= datetime(replace(?, 'T', ' '))
+              AND datetime(replace(created_at, 'T', ' ')) < datetime(replace(?, 'T', ' '))
+            GROUP BY buyer_id
+            """,
+            (start_at, cutoff_at),
+        ).fetchall()
+        for row in rows:
+            self.add_lifetime_stat_conn(conn, row["client_id"], "second_hand_buy_count", int(row["total"] or 0))
+
+    def _rollup_recycle_records_conn(self, conn: sqlite3.Connection, start_at: str, cutoff_at: str) -> None:
+        """汇总武器、宝石和技能书回收次数与收入。"""
+
+        configs = (
+            ("weapon_recycle_records", "weapon_recycle_count", "weapon_recycle_income"),
+            ("gem_recycle_records", "gem_recycle_count", "gem_recycle_income"),
+            ("book_recycle_records", "book_recycle_count", "book_recycle_income"),
+        )
+        for table, count_key, income_key in configs:
+            rows = conn.execute(
+                f"""
+                SELECT client_id, COUNT(*) AS total, COALESCE(SUM(total_price), 0) AS income
+                FROM {table}
+                WHERE datetime(replace(created_at, 'T', ' ')) >= datetime(replace(?, 'T', ' '))
+                  AND datetime(replace(created_at, 'T', ' ')) < datetime(replace(?, 'T', ' '))
+                GROUP BY client_id
+                """,
+                (start_at, cutoff_at),
+            ).fetchall()
+            for row in rows:
+                self.add_lifetime_stat_conn(conn, row["client_id"], count_key, int(row["total"] or 0))
+                self.add_lifetime_stat_conn(conn, row["client_id"], income_key, int(row["income"] or 0))
+
+    def _rollup_exploration_records_conn(self, conn: sqlite3.Connection, start_at: str, cutoff_at: str) -> None:
+        """汇总已领取探险次数；未领取探险保留，不进入清理。"""
+
+        rows = conn.execute(
+            """
+            SELECT client_id, COUNT(*) AS total
+            FROM exploration_records
+            WHERE claimed = 1
+              AND datetime(replace(COALESCE(finished_at, ready_at, started_at), 'T', ' ')) >= datetime(replace(?, 'T', ' '))
+              AND datetime(replace(COALESCE(finished_at, ready_at, started_at), 'T', ' ')) < datetime(replace(?, 'T', ' '))
+            GROUP BY client_id
+            """,
+            (start_at, cutoff_at),
+        ).fetchall()
+        for row in rows:
+            self.add_lifetime_stat_conn(conn, row["client_id"], "explore_count", int(row["total"] or 0))
+
+    def _rollup_boss_records_conn(self, conn: sqlite3.Connection, start_at: str, cutoff_at: str) -> None:
+        """汇总虫洞和岁时首领参与次数与伤害。"""
+
+        configs = (
+            ("wormhole_participants", "wormhole_count", "wormhole_damage"),
+            ("seasonal_boss_participants", "boss_count", "boss_damage"),
+        )
+        for table, count_key, damage_key in configs:
+            rows = conn.execute(
+                f"""
+                SELECT client_id, COUNT(*) AS total, COALESCE(SUM(damage), 0) AS damage
+                FROM {table}
+                WHERE reward_claimed = 1
+                  AND datetime(replace(updated_at, 'T', ' ')) >= datetime(replace(?, 'T', ' '))
+                  AND datetime(replace(updated_at, 'T', ' ')) < datetime(replace(?, 'T', ' '))
+                GROUP BY client_id
+                """,
+                (start_at, cutoff_at),
+            ).fetchall()
+            for row in rows:
+                self.add_lifetime_stat_conn(conn, row["client_id"], count_key, int(row["total"] or 0))
+                self.add_lifetime_stat_conn(conn, row["client_id"], damage_key, int(row["damage"] or 0))
+
+    def _rollup_duel_records_conn(self, conn: sqlite3.Connection, start_at: str, cutoff_at: str) -> None:
+        """汇总切磋和决斗参与次数、胜场。"""
+
+        rows = conn.execute(
+            """
+            SELECT client_id, COUNT(*) AS total
+            FROM (
+                SELECT from_client_id AS client_id, created_at FROM duel_records
+                UNION ALL
+                SELECT to_client_id AS client_id, created_at FROM duel_records
+            )
+            WHERE datetime(replace(created_at, 'T', ' ')) >= datetime(replace(?, 'T', ' '))
+              AND datetime(replace(created_at, 'T', ' ')) < datetime(replace(?, 'T', ' '))
+            GROUP BY client_id
+            """,
+            (start_at, cutoff_at),
+        ).fetchall()
+        for row in rows:
+            self.add_lifetime_stat_conn(conn, row["client_id"], "duel_count", int(row["total"] or 0))
+
+        rows = conn.execute(
+            """
+            SELECT winner_id AS client_id, COUNT(*) AS total
+            FROM duel_records
+            WHERE winner_id IS NOT NULL
+              AND winner_id != ''
+              AND datetime(replace(created_at, 'T', ' ')) >= datetime(replace(?, 'T', ' '))
+              AND datetime(replace(created_at, 'T', ' ')) < datetime(replace(?, 'T', ' '))
+            GROUP BY winner_id
+            """,
+            (start_at, cutoff_at),
+        ).fetchall()
+        for row in rows:
+            self.add_lifetime_stat_conn(conn, row["client_id"], "duel_win_count", int(row["total"] or 0))
+
+    def _rollup_robbery_records_conn(self, conn: sqlite3.Connection, start_at: str, cutoff_at: str) -> None:
+        """汇总抢劫和被抢记录，供后续人物志或称号使用。"""
+
+        rows = conn.execute(
+            """
+            SELECT robber_id AS client_id,
+                   COUNT(*) AS total,
+                   SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) AS success_total
+            FROM robbery_records
+            WHERE datetime(replace(created_at, 'T', ' ')) >= datetime(replace(?, 'T', ' '))
+              AND datetime(replace(created_at, 'T', ' ')) < datetime(replace(?, 'T', ' '))
+            GROUP BY robber_id
+            """,
+            (start_at, cutoff_at),
+        ).fetchall()
+        for row in rows:
+            self.add_lifetime_stat_conn(conn, row["client_id"], "robbery_count", int(row["total"] or 0))
+            self.add_lifetime_stat_conn(conn, row["client_id"], "robbery_success_count", int(row["success_total"] or 0))
+
+        rows = conn.execute(
+            """
+            SELECT target_id AS client_id, COUNT(*) AS total
+            FROM robbery_records
+            WHERE datetime(replace(created_at, 'T', ' ')) >= datetime(replace(?, 'T', ' '))
+              AND datetime(replace(created_at, 'T', ' ')) < datetime(replace(?, 'T', ' '))
+            GROUP BY target_id
+            """,
+            (start_at, cutoff_at),
+        ).fetchall()
+        for row in rows:
+            self.add_lifetime_stat_conn(conn, row["client_id"], "robbed_count", int(row["total"] or 0))
+
+    def _cleanup_lifetime_source_records_conn(self, conn: sqlite3.Connection, cutoff_at: str) -> None:
+        """清理已经能由长期统计承接的明细流水。"""
+
+        conn.execute(
+            """
+            DELETE FROM game_logs
+            WHERE datetime(replace(created_at, 'T', ' ')) < datetime(replace(?, 'T', ' '))
+            """,
+            (cutoff_at,),
+        )
+        for table in ("trade_records", "second_hand_records", "weapon_recycle_records", "gem_recycle_records", "book_recycle_records"):
+            conn.execute(
+                f"""
+                DELETE FROM {table}
+                WHERE datetime(replace(created_at, 'T', ' ')) < datetime(replace(?, 'T', ' '))
+                """,
+                (cutoff_at,),
+            )
+        conn.execute(
+            """
+            DELETE FROM exploration_records
+            WHERE claimed = 1
+              AND datetime(replace(COALESCE(finished_at, ready_at, started_at), 'T', ' ')) < datetime(replace(?, 'T', ' '))
+            """,
+            (cutoff_at,),
+        )
+        conn.execute(
+            """
+            DELETE FROM duel_records
+            WHERE datetime(replace(created_at, 'T', ' ')) < datetime(replace(?, 'T', ' '))
+            """,
+            (cutoff_at,),
+        )
+        conn.execute(
+            """
+            DELETE FROM robbery_records
+            WHERE datetime(replace(created_at, 'T', ' ')) < datetime(replace(?, 'T', ' '))
+            """,
+            (cutoff_at,),
+        )
+        conn.execute(
+            """
+            DELETE FROM wormhole_participants
+            WHERE reward_claimed = 1
+              AND datetime(replace(updated_at, 'T', ' ')) < datetime(replace(?, 'T', ' '))
+            """,
+            (cutoff_at,),
+        )
+        conn.execute(
+            """
+            DELETE FROM wormhole_notices
+            WHERE wormhole_id IN (
+                SELECT w.wormhole_id FROM wormholes w
+                WHERE datetime(replace(w.closes_at, 'T', ' ')) < datetime(replace(?, 'T', ' '))
+                  AND NOT EXISTS (
+                      SELECT 1 FROM wormhole_participants p
+                      WHERE p.wormhole_id = w.wormhole_id
+                  )
+            )
+            """,
+            (cutoff_at,),
+        )
+        conn.execute(
+            """
+            DELETE FROM wormholes
+            WHERE datetime(replace(closes_at, 'T', ' ')) < datetime(replace(?, 'T', ' '))
+              AND NOT EXISTS (
+                  SELECT 1 FROM wormhole_participants p
+                  WHERE p.wormhole_id = wormholes.wormhole_id
+              )
+            """,
+            (cutoff_at,),
+        )
+        conn.execute(
+            """
+            DELETE FROM seasonal_boss_participants
+            WHERE reward_claimed = 1
+              AND datetime(replace(updated_at, 'T', ' ')) < datetime(replace(?, 'T', ' '))
+            """,
+            (cutoff_at,),
+        )
+        conn.execute(
+            """
+            DELETE FROM seasonal_boss_events
+            WHERE datetime(replace(closes_at, 'T', ' ')) < datetime(replace(?, 'T', ' '))
+              AND NOT EXISTS (
+                  SELECT 1 FROM seasonal_boss_participants p
+                  WHERE p.event_id = seasonal_boss_events.event_id
+              )
+            """,
+            (cutoff_at,),
+        )
+
+    @staticmethod
+    def add_lifetime_stat_conn(
+        conn: sqlite3.Connection,
+        client_id: str,
+        stat_key: str,
+        delta: int,
+        *,
+        updated_at: str | None = None,
+    ) -> None:
+        """累加玩家长期统计；只给清理汇总和后续新功能复用。"""
+
+        amount = int(delta)
+        if not client_id or not stat_key or amount == 0:
+            return
+        current = updated_at or ts()
+        conn.execute(
+            """
+            INSERT INTO player_lifetime_stats (client_id, stat_key, stat_value, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(client_id, stat_key)
+            DO UPDATE SET
+                stat_value = stat_value + excluded.stat_value,
+                updated_at = excluded.updated_at
+            """,
+            (client_id, stat_key, amount, current),
+        )
+
+    @staticmethod
+    def lifetime_stat_conn(conn: sqlite3.Connection, client_id: str, stat_key: str) -> int:
+        """读取事务内玩家长期统计值。"""
+
+        row = conn.execute(
+            "SELECT stat_value FROM player_lifetime_stats WHERE client_id = ? AND stat_key = ?",
+            (client_id, stat_key),
+        ).fetchone()
+        return int(row["stat_value"] or 0) if row else 0
+
+    def lifetime_stat(self, client_id: str, stat_key: str) -> int:
+        """读取玩家长期统计值。"""
+
+        row = self.db.fetch_one(
+            "SELECT stat_value FROM player_lifetime_stats WHERE client_id = ? AND stat_key = ?",
+            (client_id, stat_key),
+        )
+        return int(row["stat_value"] or 0) if row else 0
+
+    def stat_count(self, client_id: str, stat_key: str, sql: str, params: tuple[Any, ...]) -> int:
+        """长期统计加当前明细计数。"""
+
+        row = self.db.fetch_one(sql, params)
+        live = int(row["count"] or 0) if row else 0
+        return self.lifetime_stat(client_id, stat_key) + live
+
+    def stat_total(self, client_id: str, stat_key: str, sql: str, params: tuple[Any, ...]) -> int:
+        """长期统计加当前明细求和。"""
+
+        row = self.db.fetch_one(sql, params)
+        live = int(row["total"] or 0) if row else 0
+        return self.lifetime_stat(client_id, stat_key) + live
+
+    def stat_count_conn(
+        self,
+        conn: sqlite3.Connection,
+        client_id: str,
+        stat_key: str,
+        table: str,
+        where: str,
+        params: tuple[Any, ...],
+    ) -> int:
+        """事务内长期统计加当前明细计数。"""
+
+        return self.lifetime_stat_conn(conn, client_id, stat_key) + self._count_conn(conn, table, where, params)
+
+    def stat_total_conn(
+        self,
+        conn: sqlite3.Connection,
+        client_id: str,
+        stat_key: str,
+        sql: str,
+        params: tuple[Any, ...],
+    ) -> int:
+        """事务内长期统计加当前明细求和。"""
+
+        row = conn.execute(sql, params).fetchone()
+        live = int(row["total"] or 0) if row else 0
+        return self.lifetime_stat_conn(conn, client_id, stat_key) + live
+
     def create_player(self, client_id: str, display_name: str) -> str:
         """创建玩家。"""
-        # TODO 按钮审查：这里会生成回复文本，按需把命令写成 <命令>。
 
 
         if self.player(client_id):
-            return hint("你已经创建过用户了。", "发送：修仙信息 查看角色，或发送：改名 新名称<指南><探险><修仙帮助>")
+            return T.hint("你已经创建过用户了。", "发送：修仙信息 查看角色，或发送：改名 新名称<指南><探险><修仙帮助>")
         ok, result = validate_name(display_name)
         if not ok:
-            return hint(result, "请换一个 2 到 12 个字符、且不含空白的名称。")
+            return T.hint(result, "请换一个 2 到 12 个字符、且不含空白的名称。")
         if self.player_name_taken(result):
-            return hint("这个名称已经被使用了。", "请换一个不重复的名称后再创建用户。")
+            return T.hint("这个名称已经被使用了。", "请换一个不重复的名称后再创建用户。")
 
         hp = max_hp(1, 0)
         mp = max_mp(1)
@@ -375,10 +937,10 @@ class CoreService:
             )
             if cursor.rowcount <= 0:
                 if conn.execute("SELECT 1 FROM players WHERE client_id = ?", (client_id,)).fetchone():
-                    return hint("你已经创建过用户了。", "发送：修仙信息 查看角色，或发送：改名 新名称")
+                    return T.hint("你已经创建过用户了。", "发送：修仙信息 查看角色，或发送：改名 新名称")
                 if conn.execute("SELECT 1 FROM players WHERE display_name = ?", (result,)).fetchone():
-                    return hint("这个名称刚刚被别人使用了。", "请换一个不重复的名称后再创建用户。")
-                return hint("创建用户失败。", "请稍后重试，或换一个不重复的名称。")
+                    return T.hint("这个名称刚刚被别人使用了。", "请换一个不重复的名称后再创建用户。")
+                return T.hint("创建用户失败。", "请稍后重试，或换一个不重复的名称。")
             conn.execute(
                 """
                 INSERT INTO source_vaults (client_id, level, balance, last_settle_at)
@@ -398,7 +960,6 @@ class CoreService:
 
     def rename_player(self, client_id: str, display_name: str) -> str:
         """修改展示名称。"""
-        # TODO 按钮审查：这里会生成回复文本，按需把命令写成 <命令>。
 
         player, error = self.require_player(client_id)
         if error:
@@ -407,17 +968,17 @@ class CoreService:
 
         ok, result = validate_name(display_name)
         if not ok:
-            return hint(result, "请换一个 2 到 12 个字符、且不含空白的名称。")
+            return T.hint(result, "请换一个 2 到 12 个字符、且不含空白的名称。")
         if result == player["display_name"]:
-            return "名称没有变化。<指南><探险><修仙帮助>"
+            return T.hint("名称没有变化。", "发送：改名 新名称，或发送：修仙信息 查看当前角色。<指南><探险><修仙帮助>")
         if self.player_name_taken(result, client_id):
-            return hint("这个名称已经被使用了。", "请换一个不重复的新名称。<指南><探险><修仙帮助>")
+            return T.hint("这个名称已经被使用了。", "请换一个不重复的新名称。<指南><探险><修仙帮助>")
 
         last = dt(player.get("last_rename_at"))
         if last and now() - last < timedelta(hours=RENAME_COOLDOWN_HOURS):
             left = timedelta(hours=RENAME_COOLDOWN_HOURS) - (now() - last)
             hours = max(1, int(left.total_seconds() // 3600) + 1)
-            return hint(f"改名太频繁，请约 {hours} 小时后再试。", "冷却结束后发送：改名 新名称<指南><探险><修仙帮助>")
+            return T.hint(f"改名太频繁，请约 {hours} 小时后再试。", "冷却结束后发送：改名 新名称<指南><探险><修仙帮助>")
 
         with self.db.transaction() as conn:
             cursor = conn.execute(
@@ -432,7 +993,7 @@ class CoreService:
                 (result, ts(), client_id, result, client_id),
             )
             if cursor.rowcount <= 0:
-                return hint("这个名称刚刚被别人使用了。", "请换一个不重复的新名称。")
+                return T.hint("这个名称刚刚被别人使用了。", "请换一个不重复的新名称。")
             conn.execute(
                 "INSERT INTO game_logs (client_id, action, detail, created_at) VALUES (?, '改名', ?, ?)",
                 (client_id, result, ts()),
@@ -593,6 +1154,10 @@ class CoreService:
             for key, value in load_json(fortune["effect"], {}).items():
                 if isinstance(value, int | float):
                     bonuses[key] = bonuses.get(key, 0) + float(value)
+        for key, value in world_state_for_day()["effect"].items():
+            bonuses[key] = bonuses.get(key, 0) + value
+        for key, cap in PERCENT_BONUS_CAPS.items():
+            bonuses[key] = soft_cap_percent_bonus(float(bonuses.get(key, 0)), cap)
         return bonuses
 
     def ensure_daily_fortune(self, client_id: str) -> dict[str, Any]:
@@ -661,56 +1226,34 @@ class CoreService:
     def refresh_titles_conn(self, conn: sqlite3.Connection, client_id: str, player: dict[str, Any]) -> str:
         """在事务里刷新称号，并返回自动佩戴的称号。"""
 
+        stats = self._title_stats_conn(conn, client_id, player)
+        rules = self._title_rules(stats)
+        current = ts()
+        valid = self._save_valid_titles_conn(conn, client_id, rules, current)
+
+        conn.execute("UPDATE player_titles SET active = 0 WHERE client_id = ?", (client_id,))
+        if not valid:
+            return ""
+        active_title = max(valid, key=lambda item: item[0])[1]
+        conn.execute(
+            """
+            UPDATE player_titles
+            SET active = 1, updated_at = ?
+            WHERE client_id = ? AND title = ?
+            """,
+            (current, client_id, active_title),
+        )
+        return active_title
+
+    def _title_stats_conn(self, conn: sqlite3.Connection, client_id: str, player: dict[str, Any]) -> dict[str, Any]:
+        """收集称号判断需要的玩家统计。"""
+
         def count(table: str, where: str, params: tuple[Any, ...]) -> int:
             return self._count_conn(conn, table, where, params)
-
-        def total(sql: str, params: tuple[Any, ...]) -> int:
-            row = conn.execute(sql, params).fetchone()
-            if not row:
-                return 0
-            return int(row["total"] or 0)
 
         vault = conn.execute("SELECT balance FROM source_vaults WHERE client_id = ?", (client_id,)).fetchone()
         vault_balance = int(vault["balance"]) if vault else 0
         source_stones = int(player["source_stones"])
-        total_assets = source_stones + vault_balance
-        sign_count = count("game_logs", "client_id = ? AND action = '签到'", (client_id,))
-        explore_count = count("exploration_records", "client_id = ?", (client_id,))
-        trade_sell_count = count("trade_records", "client_id = ? AND action = 'sell'", (client_id,))
-        trade_net = total(
-            """
-            SELECT COALESCE(SUM(total_price - fee), 0) AS total
-            FROM trade_records
-            WHERE client_id = ? AND action = 'sell'
-            """,
-            (client_id,),
-        )
-        weapon_count = count("player_weapons", "owner_id = ?", (client_id,))
-        weapon_recycle_count = count("weapon_recycle_records", "client_id = ?", (client_id,))
-        gem_recycle_count = count("gem_recycle_records", "client_id = ?", (client_id,))
-        book_recycle_count = count("book_recycle_records", "client_id = ?", (client_id,))
-        wormhole_count = count("wormhole_participants", "client_id = ?", (client_id,))
-        wormhole_damage = total(
-            "SELECT COALESCE(SUM(damage), 0) AS total FROM wormhole_participants WHERE client_id = ?",
-            (client_id,),
-        )
-        boss_count = count("seasonal_boss_participants", "client_id = ?", (client_id,))
-        boss_damage = total(
-            "SELECT COALESCE(SUM(damage), 0) AS total FROM seasonal_boss_participants WHERE client_id = ?",
-            (client_id,),
-        )
-        duel_win_count = count("duel_records", "winner_id = ?", (client_id,))
-        inscription_count = count(
-            "game_logs",
-            "client_id = ? AND action IN ('铭刻装备', '铭刻武器', '铭刻附魔')",
-            (client_id,),
-        )
-        rare_weapon = self._exists_conn(
-            conn,
-            "player_weapons",
-            "owner_id = ? AND quality IN ('稀品', '珍品')",
-            (client_id,),
-        )
         max_weapon = conn.execute(
             """
             SELECT max_level, level
@@ -724,31 +1267,108 @@ class CoreService:
         max_weapon_level = int(max_weapon["max_level"]) if max_weapon else 0
         highest_weapon_level = int(max_weapon["level"]) if max_weapon else 0
 
+        return {
+            "source_stones": source_stones,
+            "vault_balance": vault_balance,
+            "total_assets": source_stones + vault_balance,
+            "sign_count": self.stat_count_conn(conn, client_id, "sign_count", "game_logs", "client_id = ? AND action = '签到'", (client_id,)),
+            "explore_count": self.stat_count_conn(conn, client_id, "explore_count", "exploration_records", "client_id = ?", (client_id,)),
+            "trade_sell_count": self.stat_count_conn(conn, client_id, "trade_sell_count", "trade_records", "client_id = ? AND action = 'sell'", (client_id,)),
+            "trade_net": self.stat_total_conn(
+                conn,
+                client_id,
+                "trade_net",
+                """
+                SELECT COALESCE(SUM(
+                    CASE
+                        WHEN action = 'sell' THEN total_price - fee
+                        WHEN action = 'buy' THEN -(total_price + fee)
+                        ELSE 0
+                    END
+                ), 0) AS total
+                FROM trade_records
+                WHERE client_id = ? AND action IN ('buy', 'sell')
+                """,
+                (client_id,),
+            ),
+            "weapon_count": count("player_weapons", "owner_id = ?", (client_id,)),
+            "weapon_recycle_count": self.stat_count_conn(conn, client_id, "weapon_recycle_count", "weapon_recycle_records", "client_id = ?", (client_id,)),
+            "gem_recycle_count": self.stat_count_conn(conn, client_id, "gem_recycle_count", "gem_recycle_records", "client_id = ?", (client_id,)),
+            "book_recycle_count": self.stat_count_conn(conn, client_id, "book_recycle_count", "book_recycle_records", "client_id = ?", (client_id,)),
+            "wormhole_count": self.stat_count_conn(conn, client_id, "wormhole_count", "wormhole_participants", "client_id = ?", (client_id,)),
+            "wormhole_damage": self.stat_total_conn(
+                conn,
+                client_id,
+                "wormhole_damage",
+                "SELECT COALESCE(SUM(damage), 0) AS total FROM wormhole_participants WHERE client_id = ?",
+                (client_id,),
+            ),
+            "boss_count": self.stat_count_conn(conn, client_id, "boss_count", "seasonal_boss_participants", "client_id = ?", (client_id,)),
+            "boss_damage": self.stat_total_conn(
+                conn,
+                client_id,
+                "boss_damage",
+                "SELECT COALESCE(SUM(damage), 0) AS total FROM seasonal_boss_participants WHERE client_id = ?",
+                (client_id,),
+            ),
+            "duel_win_count": self.stat_count_conn(conn, client_id, "duel_win_count", "duel_records", "winner_id = ?", (client_id,)),
+            "inscription_count": self.stat_count_conn(
+                conn,
+                client_id,
+                "inscription_count",
+                "game_logs",
+                "client_id = ? AND action IN ('铭刻装备', '铭刻武器', '铭刻附魔', '铭刻自带技能')",
+                (client_id,),
+            ),
+            "rare_weapon": self._exists_conn(
+                conn,
+                "player_weapons",
+                "owner_id = ? AND quality IN ('稀品', '珍品')",
+                (client_id,),
+            ),
+            "max_weapon_level": max_weapon_level,
+            "highest_weapon_level": highest_weapon_level,
+        }
+
+    @staticmethod
+    def _title_rules(stats: dict[str, Any]) -> tuple[tuple[int, str, str, bool], ...]:
+        """把玩家统计转成称号规则。"""
+
         rules = (
             (10, "初入仙途", "已经创建修仙角色", True),
-            (18, "晨钟常客", f"累计签到 {sign_count} 次", sign_count >= 7),
-            (20, "小富即安", "随身源石达到 5 万", source_stones >= 50_000),
-            (24, "藏源有道", "源库余额达到 10 万", vault_balance >= 100_000),
-            (28, "财气盈门", "明面资产达到 30 万", total_assets >= 300_000),
-            (30, "探险常客", f"累计探险 {explore_count} 次", explore_count >= 5),
-            (34, "山河熟客", f"累计探险 {explore_count} 次", explore_count >= 30),
-            (35, "跑商老手", f"普通跑商出售 {trade_sell_count} 次", trade_sell_count >= 20),
-            (38, "商路识途", f"跑商净收入 {money(trade_net)}", trade_net >= 100_000),
-            (40, "兵器收藏家", f"拥有武器 {weapon_count} 把", weapon_count >= 5),
-            (43, "百炼持刃", f"最高武器等级 {highest_weapon_level}", highest_weapon_level >= 40),
-            (45, "铸剑客", f"回收武器 {weapon_recycle_count} 次", weapon_recycle_count >= 3),
-            (46, "藏经归客", f"回收技能书 {book_recycle_count} 次", book_recycle_count >= 3),
-            (47, "琢玉散人", f"回收宝石 {gem_recycle_count} 次", gem_recycle_count >= 3),
-            (50, "虫洞先锋", f"参与异界虫洞 {wormhole_count} 次", wormhole_count > 0),
-            (52, "虫洞鏖战者", f"虫洞累计伤害 {wormhole_damage}", wormhole_damage >= 20_000),
-            (55, "欧气外露", "拥有稀品或珍品武器", rare_weapon),
-            (58, "满锋候选", f"最高武器上限 {max_weapon_level}", max_weapon_level >= 80),
-            (60, "岁时赴约人", f"挑战岁时首领 {boss_count} 次", boss_count > 0),
-            (62, "情劫破阵者", f"首领累计伤害 {boss_damage}", boss_damage >= 20_000),
-            (64, "斗法胜手", f"对战胜利 {duel_win_count} 次", duel_win_count >= 3),
-            (66, "羽墨留名", f"铭刻 {inscription_count} 次", inscription_count >= 1),
+            (18, "晨钟常客", f"累计签到 {stats['sign_count']} 次", stats["sign_count"] >= 7),
+            (20, "小富即安", "随身源石达到 5 万", stats["source_stones"] >= 50_000),
+            (24, "藏源有道", "源库余额达到 10 万", stats["vault_balance"] >= 100_000),
+            (28, "财气盈门", "明面资产达到 30 万", stats["total_assets"] >= 300_000),
+            (30, "探险常客", f"累计探险 {stats['explore_count']} 次", stats["explore_count"] >= 5),
+            (34, "山河熟客", f"累计探险 {stats['explore_count']} 次", stats["explore_count"] >= 30),
+            (35, "跑商老手", f"普通跑商出售 {stats['trade_sell_count']} 次", stats["trade_sell_count"] >= 20),
+            (38, "商路识途", f"跑商净利润 {money(stats['trade_net'])}", stats["trade_net"] >= 100_000),
+            (40, "兵器收藏家", f"拥有武器 {stats['weapon_count']} 把", stats["weapon_count"] >= 5),
+            (43, "百炼持刃", f"最高武器等级 {stats['highest_weapon_level']}", stats["highest_weapon_level"] >= 40),
+            (45, "铸剑客", f"回收武器 {stats['weapon_recycle_count']} 次", stats["weapon_recycle_count"] >= 3),
+            (46, "藏经归客", f"回收技能书 {stats['book_recycle_count']} 次", stats["book_recycle_count"] >= 3),
+            (47, "琢玉散人", f"回收宝石 {stats['gem_recycle_count']} 次", stats["gem_recycle_count"] >= 3),
+            (50, "虫洞先锋", f"参与异界虫洞 {stats['wormhole_count']} 次", stats["wormhole_count"] > 0),
+            (52, "虫洞鏖战者", f"虫洞累计伤害 {stats['wormhole_damage']}", stats["wormhole_damage"] >= 20_000),
+            (55, "欧气外露", "拥有稀品或珍品武器", stats["rare_weapon"]),
+            (58, "满锋候选", f"最高武器上限 {stats['max_weapon_level']}", stats["max_weapon_level"] >= 80),
+            (60, "岁时赴约人", f"挑战岁时首领 {stats['boss_count']} 次", stats["boss_count"] > 0),
+            (62, "情劫破阵者", f"首领累计伤害 {stats['boss_damage']}", stats["boss_damage"] >= 20_000),
+            (64, "斗法胜手", f"对战胜利 {stats['duel_win_count']} 次", stats["duel_win_count"] >= 3),
+            (66, "羽墨留名", f"铭刻 {stats['inscription_count']} 次", stats["inscription_count"] >= 1),
         )
-        current = ts()
+        return rules
+
+    @staticmethod
+    def _save_valid_titles_conn(
+        conn: sqlite3.Connection,
+        client_id: str,
+        rules: tuple[tuple[int, str, str, bool], ...],
+        current: str,
+    ) -> list[tuple[int, str]]:
+        """写入已达成称号，并返回可佩戴称号列表。"""
+
         valid: list[tuple[int, str]] = []
         for score, title, reason, ok in rules:
             if not ok:
@@ -765,19 +1385,7 @@ class CoreService:
                 (client_id, title, reason, current, current),
             )
 
-        conn.execute("UPDATE player_titles SET active = 0 WHERE client_id = ?", (client_id,))
-        if not valid:
-            return ""
-        active_title = max(valid, key=lambda item: item[0])[1]
-        conn.execute(
-            """
-            UPDATE player_titles
-            SET active = 1, updated_at = ?
-            WHERE client_id = ? AND title = ?
-            """,
-            (current, client_id, active_title),
-        )
-        return active_title
+        return valid
 
     @staticmethod
     def _count_conn(conn: sqlite3.Connection, table: str, where: str, params: tuple[Any, ...]) -> int:
@@ -917,7 +1525,7 @@ class CoreService:
 
     @staticmethod
     def _skill_interval(skill: dict[str, Any] | None, weapon: dict[str, Any] | None, effects: dict[str, float]) -> int:
-        """计算武器技能速度基准。
+        """计算武器技能蓄势基准。
 
         数值越小，技能蓄力越快。它不再表示“固定每 N 回合触发一次”。
         """
@@ -956,10 +1564,10 @@ class CoreService:
 
         weapon_type = str(weapon.get("weapon_type") if weapon else "")
         type_factor = WEAPON_TYPE_INTERVAL_FACTORS.get(weapon_type, 1.0)
-        type_speed = (1.0 / max(0.75, type_factor) - 1.0) * 32
+        type_speed = (1.0 / max(0.72, type_factor) - 1.0) * 42
         effect_speed = float(effects.get("dodge_bonus", 0)) * 90 + float(effects.get("hit_bonus", 0)) * 45
         attack_load = CoreService._weapon_attack_load(weapon)
-        load_penalty = min(28.0, attack_load * 36.0)
+        load_penalty = min(34.0, attack_load * 44.0)
         speed = 96 + min(42, max(0, int(level)) * 0.42) + type_speed + effect_speed - load_penalty
         return max(68.0, min(168.0, speed))
 
@@ -981,9 +1589,73 @@ class CoreService:
         interval = CoreService._skill_interval(skill, weapon, effects)
         speed_rate = max(0.7, min(1.7, actor_speed / 100))
         attack_load = CoreService._weapon_attack_load(weapon)
-        load_rate = max(0.72, 1.0 - min(0.28, attack_load * 0.32))
-        gain = (0.78 / interval + 0.18) * speed_rate * load_rate
-        return max(0.22, min(0.72, gain))
+        load_rate = max(0.66, 1.0 - min(0.34, attack_load * 0.42))
+        gain = (0.92 / interval + 0.16) * speed_rate * load_rate
+        return max(0.22, min(0.78, gain))
+
+    @staticmethod
+    def _speed_grade(speed: float) -> str:
+        """把行动速度翻译成玩家一眼能懂的档位。"""
+
+        if speed >= 126:
+            return "极快"
+        if speed >= 112:
+            return "快"
+        if speed >= 96:
+            return "均衡"
+        if speed >= 84:
+            return "慢"
+        return "极慢"
+
+    @staticmethod
+    def _skill_tempo_text(gain: float) -> str:
+        """把技能蓄势速度翻译成触发节奏。"""
+
+        if gain <= 0:
+            return "无"
+        attacks = max(2, int(round(1 / max(0.01, gain))))
+        if attacks <= 2:
+            grade = "高频"
+        elif attacks <= 3:
+            grade = "偏快"
+        elif attacks <= 4:
+            grade = "适中"
+        elif attacks <= 5:
+            grade = "偏慢"
+        else:
+            grade = "很慢"
+        return f"{grade}，约每 {attacks} 次出手触发"
+
+    @staticmethod
+    def _weapon_style_text(weapon: dict[str, Any] | None) -> str:
+        """按武器类型说明打法定位。"""
+
+        if not weapon:
+            return "未装备武器，只有基础出手"
+        weapon_type = str(weapon.get("weapon_type") or "")
+        return WEAPON_TYPE_STYLE_TEXT.get(weapon_type, "通用兵器，打法较均衡")
+
+    @staticmethod
+    def combat_profile(
+        level: int,
+        weapon: dict[str, Any] | None,
+        skill: dict[str, Any] | None,
+        effects: dict[str, float] | None = None,
+    ) -> dict[str, Any]:
+        """生成面板和武器详情共用的速度/技能节奏描述。"""
+
+        active_effects = effects or {}
+        speed = CoreService._actor_speed(level, weapon, active_effects)
+        gain = CoreService._skill_charge_gain(skill, weapon, active_effects, speed)
+        interval = CoreService._skill_interval(skill, weapon, active_effects)
+        return {
+            "speed": round(speed, 1),
+            "speed_grade": CoreService._speed_grade(speed),
+            "skill_charge_gain": round(gain, 3),
+            "skill_interval": interval,
+            "skill_tempo": CoreService._skill_tempo_text(gain),
+            "weapon_style": CoreService._weapon_style_text(weapon),
+        }
 
     @staticmethod
     def _skill_initial_charge(
@@ -1246,7 +1918,7 @@ class CoreService:
             (item_id,),
         ).fetchone()
         if not player or not item:
-            return False, hint("玩家或物品不存在。", "确认已创建用户，并检查物品名称是否正确。")
+            return False, T.hint("玩家或物品不存在。", "确认已创建用户，并检查物品名称是否正确。")
 
         weight_row = conn.execute(
             """
@@ -1259,7 +1931,7 @@ class CoreService:
         ).fetchone()
         weight_after = int(weight_row["total"]) + int(item["weight"]) * quantity
         if weight_after > int(player["weight_limit"]):
-            return False, hint(
+            return False, T.hint(
                 f"背包负重不足，放入后会变成 {weight_after}/{player['weight_limit']}。",
                 "先发送：商场出售 商品名 数量，或发送：商场自动出售 清理跑商货物。<商场自动出售><特殊自动出售>",
             )
@@ -1270,7 +1942,7 @@ class CoreService:
         ).fetchone()
         current_quantity = int(current["quantity"]) if current else 0
         if current_quantity + quantity > int(item["stack_limit"]):
-            return False, hint(
+            return False, T.hint(
                 f"{item['name']} 堆叠上限不足，最多 {item['stack_limit']}。",
                 "先出售或使用一部分同名物品，再重新领取或购买。",
             )
@@ -1281,7 +1953,7 @@ class CoreService:
                 (client_id,),
             ).fetchone()
             if int(kind_row["total"]) + 1 > int(player["backpack_limit"]):
-                return False, hint(
+                return False, T.hint(
                     f"背包格子不足，最多 {player['backpack_limit']} 种物品。",
                     "先出售不需要的背包物品，再重新领取或购买。",
                 )
@@ -1526,7 +2198,7 @@ class CoreService:
         level = int(rows[-1]["level"])
         example = example_template.format(name=gem_name, level=level)
         options = "、".join(f"{row['level']}级x{row['quantity']}" for row in rows)
-        return None, hint(
+        return None, T.hint(
             f"纳戒里有多种等级的 {gem_name}。",
             f"请写清等级，例如：{example}。现有：{options}",
         )
@@ -1550,10 +2222,10 @@ class CoreService:
         return f"{current}/{need}"
 
 
-def format_effect(effect_text: str) -> str:
-    """把物品效果 JSON 转成展示文本。"""
+def format_effect(effect_text: Any) -> str:
+    """把效果配置转成展示文本，支持 JSON 字符串和 dict。"""
 
-    effect = load_json(effect_text, {})
+    effect = dict(effect_text) if isinstance(effect_text, dict) else load_json(effect_text, {})
     parts: list[str] = []
     if effect.get("exp_delta"):
         parts.append(f"经验+{effect['exp_delta']}")
@@ -1622,7 +2294,7 @@ def format_effect(effect_text: str) -> str:
     interval_delta = effect.get("interval_delta")
     if isinstance(interval_delta, int | float) and interval_delta:
         direction = "变慢" if interval_delta > 0 else "变快"
-        parts.append(f"技能速度基准{int(interval_delta):+d}({direction})")
+        parts.append(f"技能蓄势基准{int(interval_delta):+d}({direction})")
     trade_bonus = effect.get("trade_bonus")
     if isinstance(trade_bonus, int | float) and trade_bonus:
         if trade_bonus > 0:
@@ -1652,11 +2324,12 @@ __all__ = [
     "enchant_label_name",
     "fixed_equipment_label",
     "format_effect",
-    "hint",
     "load_json",
+    "merge_numeric_effects",
     "money",
     "now",
     "parse_name_level",
+    "parse_name_quantity_optional",
     "quality_factor",
     "random",
     "random_quality",
@@ -1668,4 +2341,5 @@ __all__ = [
     "ts",
     "validate_name",
     "weapon_label_name",
+    "world_state_for_day",
 ]

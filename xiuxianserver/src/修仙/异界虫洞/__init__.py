@@ -22,7 +22,7 @@ async def ws_wormhole_state(client_id: str, message: str) -> None:
     await send_reply(client_id, service.status(client_id), ws_manager, service)
 
 
-@WsMessageHandler.handler(cmd=("挑战虫洞","虫洞挑战"), priority=100, block=True)
+@WsMessageHandler.handler(cmd="挑战虫洞", priority=100, block=True)
 async def ws_wormhole_challenge(client_id: str, message: str) -> None:
     """挑战当前虫洞 Boss。"""
 
