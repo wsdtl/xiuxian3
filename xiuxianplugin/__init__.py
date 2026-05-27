@@ -6,6 +6,7 @@ from pathlib import Path
 from nonebot import logger
 from nonebot import on_message
 from nonebot import get_driver
+from nonebot.plugin.on import on_command
 
 try:
     from nonebot.adapters.onebot.v11 import GroupMessageEvent, PrivateMessageEvent
@@ -13,7 +14,7 @@ try:
 
     ENABLE_ADAPTER_ONEBOT_V11 = True
 except ImportError:
-    logger.warning("没有成功加载QQ官方机器人适配器，尝试前往安装nonebot-adapter-onebot")
+    logger.warning("没有成功加载OneBot V11机器人适配器，尝试前往安装nonebot-adapter-onebot")
     GroupMessageEvent = None
     PrivateMessageEvent = None
     MessageSegmentOneBotV11 = None
@@ -114,8 +115,10 @@ async def handle_ws_reply_qq(reply, matcher):
         if reply["type"] == "markdown":
             #  这里不是json格式 是{'key': 'value'} 疑似直接str(dict)的，要用ast解析
             message = ast.literal_eval(reply['message'])
-            keyboard = MessageKeyboard.model_validate(message['keyboard'])
-            msg = MessageSegmentQQ.markdown(message['content']) + MessageSegmentQQ.keyboard(keyboard)
+            msg = MessageSegmentQQ.markdown(message['content'])
+            if "keyboard" in message:
+                keyboard = MessageKeyboard.model_validate(message['keyboard'])
+                msg += MessageSegmentQQ.keyboard(keyboard)
             await matcher.finish(msg)
     elif reply["code"] == 404:
         logger.error(reply["message"])
@@ -132,10 +135,11 @@ async def handle_ws_reply_onebot_v11(reply, matcher):
             if ENSURE_MARKDOWN:
                 data = {
                     "markdown": {
-                        "content": message['content'],
-                        "keyboard": message['keyboard']
+                        "content": message['content']
                     }
                 }
+                if "keyboard" in message:
+                    data['markdown']['keyboard'] = message['keyboard']
                 msg = MessageSegmentOneBotV11("markdown", {"data": data})
                 await matcher.finish(msg)
             else:
