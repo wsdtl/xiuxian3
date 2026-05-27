@@ -18,7 +18,18 @@ async def ws_xiuxian_guide(client_id: str, message: str) -> None:
     """查看新手指引。"""
 
     if not HELP_IMAGE.exists():
-        await send_reply(client_id, service.command_guide(), ws_manager, service)
+        await send_reply(
+            client_id,
+            {
+                "code": 202,
+                "type": "text",
+                "message": service.command_guide(),
+                "auto_buttons": False,
+                "default_buttons": False,
+            },
+            ws_manager,
+            service,
+        )
         return
 
     image_bytes = HELP_IMAGE.read_bytes()
@@ -39,7 +50,18 @@ async def ws_xiuxian_guide(client_id: str, message: str) -> None:
 async def ws_command_guide(client_id: str, message: str) -> None:
     """查看关键组件按钮导航。"""
 
-    await send_reply(client_id, service.command_guide(), ws_manager, service)
+    await send_reply(
+        client_id,
+        {
+            "code": 202,
+            "type": "text",
+            "message": service.command_guide(),
+            "auto_buttons": False,
+            "default_buttons": False,
+        },
+        ws_manager,
+        service,
+    )
 
 
 @WsMessageHandler.handler(cmd="创建用户", priority=100, block=True)
@@ -56,11 +78,18 @@ async def ws_rename_player(client_id: str, message: str) -> None:
     await send_reply(client_id, service.rename(client_id, message), ws_manager, service)
 
 
-@WsMessageHandler.handler(cmd=("修仙信息","状态"), priority=100, block=True)
+@WsMessageHandler.handler(cmd="修仙信息", priority=100, block=True)
 async def ws_profile(client_id: str, message: str) -> None:
-    """查看玩家信息。"""
-
+    """查看玩家详细信息。"""
+    
     await send_reply(client_id, service.profile(client_id), ws_manager, service)
+
+
+@WsMessageHandler.handler(cmd="状态", priority=100, block=True)
+async def ws_status(client_id: str, message: str) -> None:
+    """查看玩家关键状态。"""
+
+    await send_reply(client_id, service.status(client_id), ws_manager, service)
 
 
 @WsMessageHandler.handler(cmd="修仙日记", priority=100, block=True)
@@ -75,6 +104,13 @@ async def ws_auto_medicine(client_id: str, message: str) -> None:
     """查看或修改探险自动用药开关。"""
 
     await send_reply(client_id, service.auto_medicine(client_id, message), ws_manager, service)
+
+
+@WsMessageHandler.handler(cmd="战斗日志", priority=100, block=True)
+async def ws_battle_log(client_id: str, message: str) -> None:
+    """查看或修改战斗日志展示模式。"""
+
+    await send_reply(client_id, service.battle_log(client_id, message), ws_manager, service)
 
 
 @WsMessageHandler.handler(cmd="签到", priority=100, block=True)

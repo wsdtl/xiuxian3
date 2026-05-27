@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from datetime import timedelta
 
+from .. import combat_log_text
 from ..combat_core import service as combat_service
-from ..common import CoreService, dump_json, hint, load_json, now, random, ts
+from ..common import CoreService, dump_json, load_json, now, random, ts
 from ..constants import ENCOUNTER_SECONDS, EXPLORE_MINUTES
-from ..markdown_utils import append_suggest_commands
+from ..format_text import T
 from ..sql import db
 from ..weapon_core import service as weapon_service
 
@@ -17,24 +18,32 @@ class ExplorationService(CoreService):
 
     def locations(self, client_id: str) -> str:
         """查看探险地点。"""
-        # TODO 按钮审查：这里会生成回复文本，按需把命令写成 <命令>。
 
         _, error = self.require_player(client_id)
         if error:
             return error
         rows = self.db.fetch_all("SELECT * FROM exploration_locations ORDER BY recommended_level")
-        return "\n".join(f"{row['name']}：推荐{row['recommended_level']}级，怪物{row['min_level']}-{row['max_level']}级，{row['desc']}" for row in rows)
+        panel = T.panel()
+        panel.section("探险地点")
+        for row in rows:
+            panel.line(
+                f"{row['name']}｜推荐 **{row['recommended_level']}** 级｜"
+                f"怪物 {row['min_level']}-{row['max_level']} 级｜{row['desc']}"
+            )
+        return panel.render()
 
     def current_location(self, client_id: str) -> str:
         """查看当前位置。"""
-        # TODO 按钮审查：这里会生成回复文本，按需把命令写成 <命令>。
 
         player, error = self.require_player(client_id)
         if error:
             return error
         assert player is not None
+        panel = T.panel()
+        panel.section("当前位置")
+        panel.line(f"{player['location_name']} ({player['x']},{player['y']})")
         return (
-            f"当前位置：{player['location_name']} ({player['x']},{player['y']})"
+            panel.render()
             + "<去 天枢城><去 青岚坊><去 赤霞港><去 玄铁岭><去 万药谷><去 云梦泽><去 流沙海市>"
             "<去 寒霜关><去 雷泽城><去 碧潮岛><去 星陨墟>"
         )
@@ -45,7 +54,6 @@ class ExplorationService(CoreService):
         不带地点时使用玩家当前位置；带地点时先切到该探险地点再开始。
         移动没有时间成本，所以这里直接更新位置，避免用户还要先发一次导航。
         """
-        # TODO 按钮审查：这里会生成回复文本，按需把命令写成 <命令>。
 
         player, error = self.require_player(client_id)
         if error:
@@ -54,17 +62,17 @@ class ExplorationService(CoreService):
         assert player is not None
         active = self._active_record(client_id)
         if active:
-            return hint("你已经在探险中或有待领取结果。", "发送：探险状态 查看进度；30 分钟后发送：结束探险<探险状态><结束探险>")
+            return T.hint("你已经在探险中或有待领取结果。", "发送：探险状态 查看进度；30 分钟后发送：结束探险<探险状态><结束探险>")
         if player["status"] != "空闲":
-            return hint(f"当前状态为 {player['status']}，不能开始探险。", "先处理当前状态")
+            return T.hint(f"当前状态为 {player['status']}，不能开始探险。", "先处理当前状态")
         if player["hp"] <= 0:
-            return hint("血气不足，不能开始探险。", "发送：休息，时间到后发送：结束休息")
+            return T.hint("血气不足，不能开始探险。", "发送：休息，时间到后发送：结束休息")
         target_name = location_name.strip() or player["location_name"]
         location = self._exploration_location(target_name)
         if not location:
             if location_name.strip():
-                return hint(f"没有找到探险地点：{target_name}。", "发送：探险列表 查看可探险地点。<探险列表>")
-            return hint("当前位置不是探险地点。", "发送：探险列表 查看可探险地点，或发送：探险 地点名<探险列表>")
+                return T.hint(f"没有找到探险地点：{target_name}。", "发送：探险列表 查看可探险地点。<探险列表>")
+            return T.hint("当前位置不是探险地点。", "发送：探险列表 查看可探险地点，或发送：探险 地点名<探险列表>")
 
         weapon_service.ensure_starter_weapon(client_id)
         explore_player = dict(player)
@@ -84,14 +92,14 @@ class ExplorationService(CoreService):
                 (client_id,),
             ).fetchone()
             if active:
-                return hint("你已经在探险中或有待领取结果。", "发送：探险状态 查看进度；30 分钟后发送：结束探险<探险状态><结束探险>")
+                return T.hint("你已经在探险中或有待领取结果。", "发送：探险状态 查看进度；30 分钟后发送：结束探险<探险状态><结束探险>")
             for item_id, quantity in result.get("medicine_used", {}).items():
                 row = conn.execute(
                     "SELECT quantity FROM ring_items WHERE client_id = ? AND equipment_item_id = ?",
                     (client_id, item_id),
                 ).fetchone()
                 if not row or int(row["quantity"]) < int(quantity):
-                    return hint("自动用药库存已变化，无法开始探险。", "发送：纳戒 确认恢复药数量后，再发送：探险<纳戒>")
+                    return T.hint("自动用药库存已变化，无法开始探险。", "发送：纳戒 确认恢复药数量后，再发送：探险<纳戒>")
             cursor = conn.execute(
                 """
                 UPDATE players
@@ -101,7 +109,7 @@ class ExplorationService(CoreService):
                 (location["name"], location["x"], location["y"], client_id),
             )
             if cursor.rowcount <= 0:
-                return hint("当前状态已变化，不能开始探险。", "发送：修仙信息 查看当前状态后再操作。<修仙信息>")
+                return T.hint("当前状态已变化，不能开始探险。", "发送：修仙信息 查看当前状态后再操作。<修仙信息>")
             for item_id, quantity in result.get("medicine_used", {}).items():
                 self.remove_ring_conn(conn, client_id, item_id, int(quantity))
             conn.execute(
@@ -117,7 +125,6 @@ class ExplorationService(CoreService):
 
     def status(self, client_id: str) -> str:
         """查看探险状态。"""
-        # TODO 按钮审查：这里会生成回复文本，按需把命令写成 <命令>。
 
         player, error = self.require_player(client_id)
         if error:
@@ -125,7 +132,7 @@ class ExplorationService(CoreService):
         assert player is not None
         record = self._active_record(client_id)
         if not record:
-            return hint("当前没有探险。", "发送：探险列表 选地点，再发送：探险<探险列表>")
+            return T.hint("当前没有探险。", "发送：探险列表 选地点，再发送：探险<探险列表>")
         result = load_json(record["result"], {})
         events = list(result.get("events", []))
         current = now()
@@ -154,28 +161,26 @@ class ExplorationService(CoreService):
             action = f"{left} 分钟后发送：结束探险"
             time_text = f"还需约 {left} 分钟"
 
-        summary = self._status_summary(player, result, events)
-        lines = [
-            f"☆探险状态·{record['location_name']}☆",
-            f"状态：{state}",
-            f"时间：已过 {done // 60}/{EXPLORE_MINUTES} 分钟，{time_text}",
-            f"原因：{reason}",
-            f"战斗：{summary['fight_text']}",
-            f"预计经验：+{summary['exp_total']}",
-            f"最后状态：血气 {summary['hp_left']}/{player['max_hp']}，精神 {summary['mp_left']}/{player['max_mp']}",
-        ]
+        display_player = self._result_display_player(result, player)
+        summary = self._status_summary(display_player, result, events)
+        panel = T.panel()
+        panel.section(f"探险状态·{record['location_name']}")
+        panel.line(f"状态：{state}")
+        panel.line(f"时间：已过 **{done // 60}/{EXPLORE_MINUTES}** 分钟｜{time_text}")
+        panel.line(f"原因：{reason}")
+        panel.line(f"战斗：{summary['fight_text']}")
+        panel.line(f"预计经验：**+{summary['exp_total']}**")
+        panel.line(f"最后状态：血气 **{summary['hp_left']}/{display_player['max_hp']}**｜精神 **{summary['mp_left']}/{display_player['max_mp']}**")
         if summary["drop_text"]:
-            lines.append(f"预计收获：{summary['drop_text']}")
+            panel.line(f"预计收获：{summary['drop_text']}")
         else:
-            lines.append("预计收获：暂无掉落")
+            panel.line("预计收获：暂无掉落")
         if summary["medicine_text"]:
-            lines.append(f"自动用药：{summary['medicine_text']}")
-        lines.append(f"下一步：{action}<结束探险>")
-        return append_suggest_commands("\n".join(lines), action)
+            panel.line(f"自动用药：{summary['medicine_text']}")
+        return T.attach(panel.render(), f"{action}<结束探险>")
 
-    def claim(self, client_id: str) -> str:
+    def claim(self, client_id: str) -> str | dict:
         """领取探险结果。"""
-        # TODO 按钮审查：这里会生成回复文本，按需把命令写成 <命令>。
 
         player, error = self.require_player(client_id)
         if error:
@@ -183,11 +188,11 @@ class ExplorationService(CoreService):
         assert player is not None
         record = self._active_record(client_id)
         if not record:
-            return hint("当前没有可领取探险。", "发送：探险 开始一轮，或发送：探险记录 查看历史。<探险>")
+            return T.hint("当前没有可领取探险。", "发送：探险 开始一轮，或发送：探险记录 查看历史。<探险>")
         ready_at = self._time(record["ready_at"])
         if ready_at and now() < ready_at:
             left = max(1, int((ready_at - now()).total_seconds() // 60) + 1)
-            return hint(f"探险还没有到 30 分钟冷却，{left} 分钟后才能结束探险。", "先发送：探险状态 查看预计算结果。<探险状态>")
+            return T.hint(f"探险还没有到 30 分钟冷却，{left} 分钟后才能结束探险。", "先发送：探险状态 查看预计算结果。<探险状态>")
         result = load_json(record["result"], {})
         events = list(result.get("events", []))
 
@@ -220,11 +225,11 @@ class ExplorationService(CoreService):
                 (record["record_id"],),
             ).fetchone()
             if not active:
-                return hint("当前没有可领取探险。", "发送：探险 开始一轮，或发送：探险记录 查看历史。<探险>")
+                return T.hint("当前没有可领取探险。", "发送：探险 开始一轮，或发送：探险记录 查看历史。<探险>")
             for item_id, quantity in drops.items():
                 ok, reason = self.can_add_backpack_conn(conn, client_id, item_id, quantity)
                 if not ok:
-                    return f"背包空间不足，无法领取探险结果。\n{reason}<特殊自动出售>"
+                    return T.hint("背包空间不足，无法领取探险结果。", f"{reason}<特殊自动出售>")
             old_level, new_level = self.add_exp_conn(conn, client_id, exp_total)
             for item_id, quantity in drops.items():
                 self.add_backpack_conn(conn, client_id, item_id, quantity)
@@ -277,9 +282,10 @@ class ExplorationService(CoreService):
             )
 
         final_player = self.player(client_id) or player
+        log_player = self._result_display_player(result, final_player)
         return self._claim_log_block(
             record=record,
-            player=final_player,
+            player=log_player,
             events=events,
             exp_total=exp_total,
             old_level=old_level,
@@ -294,7 +300,6 @@ class ExplorationService(CoreService):
 
     def records(self, client_id: str) -> str:
         """查看最近探险记录。"""
-        # TODO 按钮审查：这里会生成回复文本，按需把命令写成 <命令>。
 
         _, error = self.require_player(client_id)
         if error:
@@ -310,8 +315,12 @@ class ExplorationService(CoreService):
             (client_id,),
         )
         if not rows:
-            return hint("暂无探险记录。", "发送：探险 开始第一次探险。<探险>")
-        return "\n".join(f"#{row['record_id']} {row['location_name']} {row['status']} {row['started_at']}" for row in rows)
+            return T.hint("暂无探险记录。", "发送：探险 开始第一次探险。<探险>")
+        panel = T.panel()
+        panel.section("探险记录")
+        for row in rows:
+            panel.line(f"#{row['record_id']}｜{row['location_name']}｜{row['status']}｜{row['started_at']}")
+        return panel.render()
 
     def _precompute(self, client_id: str, player: dict) -> dict:
         """预计算 30 分钟探险事件。"""
@@ -370,6 +379,7 @@ class ExplorationService(CoreService):
                     explore_bonus,
                     dead=True,
                     bag_full=False,
+                    client_id=client_id,
                 )
             hp_left, mp_left = self._auto_use_medicine(
                 hp_left,
@@ -399,6 +409,7 @@ class ExplorationService(CoreService):
                         explore_bonus,
                         dead=False,
                         bag_full=True,
+                        client_id=client_id,
                     )
             if random.random() < 0.22 + explore_bonus * 0.5:
                 location_drop = self._roll_location_drop(player["location_name"])
@@ -420,6 +431,7 @@ class ExplorationService(CoreService):
                             explore_bonus,
                             dead=False,
                             bag_full=True,
+                            client_id=client_id,
                         )
                     event["location_drop_item_id"] = location_drop
             if random.random() < 0.16 + explore_bonus * 0.3:
@@ -432,6 +444,7 @@ class ExplorationService(CoreService):
             explore_bonus,
             dead=False,
             bag_full=False,
+            client_id=client_id,
         )
 
     def _precompute_result(
@@ -443,6 +456,7 @@ class ExplorationService(CoreService):
         *,
         dead: bool,
         bag_full: bool,
+        client_id: str = "",
     ) -> dict:
         """整理预计算结果，并按整轮探险判定武器掉落。
 
@@ -455,10 +469,69 @@ class ExplorationService(CoreService):
             "bag_full": bag_full,
             "medicine_used": medicine_used,
             "events": events,
+            "player_snapshot": self._player_snapshot(player),
         }
+        if client_id:
+            result["combat_snapshot"] = self._combat_snapshot(client_id, player)
         if any(event.get("win") for event in events) and random.random() < self._weapon_drop_chance(explore_bonus):
             result["weapon_drop"] = weapon_service.roll_weapon_drop(player["level"], player["location_name"])
         return result
+
+    @staticmethod
+    def _player_snapshot(player: dict) -> dict:
+        """保存本轮探险开始时会影响展示的玩家状态。"""
+
+        fields = (
+            "client_id",
+            "display_name",
+            "level",
+            "exp",
+            "hp",
+            "mp",
+            "max_hp",
+            "max_mp",
+            "base_attack",
+            "defense",
+            "source_stones",
+            "status",
+            "location_name",
+            "x",
+            "y",
+            "auto_use_medicine",
+            "battle_log_detail",
+        )
+        return {key: player[key] for key in fields if key in player}
+
+    def _combat_snapshot(self, client_id: str, player: dict) -> dict:
+        """保存探险开始时用于玩家对战的完整战斗快照。"""
+
+        weapon = weapon_service.equipped_weapon(client_id)
+        skill = weapon_service.skill(weapon["skill_id"]) if weapon else None
+        equipment_effects = self.equipment_bonuses(client_id)
+        weapon_effects = self._weapon_effects(weapon)
+        return {
+            "player": self._player_snapshot(player),
+            "weapon": dict(weapon) if weapon else {},
+            "skill": dict(skill) if skill else {},
+            "skill_label": weapon_service.weapon_skill_label(int(weapon["weapon_id"]), skill) if weapon and skill else "",
+            "equipment_effects": equipment_effects,
+            "weapon_effects": weapon_effects,
+            "effects": self._merge_effects(equipment_effects, weapon_effects),
+        }
+
+    @staticmethod
+    def _result_display_player(result: dict, player: dict) -> dict:
+        """用开始快照修正探险展示用状态，避免领取时面板变化影响日志。"""
+
+        snapshot = result.get("player_snapshot")
+        if not isinstance(snapshot, dict):
+            return player
+
+        display_player = dict(player)
+        for key in ("level", "max_hp", "max_mp", "location_name", "x", "y", "auto_use_medicine"):
+            if key in snapshot:
+                display_player[key] = snapshot[key]
+        return display_player
 
     @staticmethod
     def _weapon_drop_chance(explore_bonus: float) -> float:
@@ -703,8 +776,24 @@ class ExplorationService(CoreService):
         medicine_used: dict[str, int],
         dead: bool,
         bag_full: bool,
-    ) -> str:
+    ) -> str | dict:
         """把结束探险的战斗过程和最终结算整理成代码块文本。"""
+
+        if not combat_log_text.wants_detail(player):
+            return combat_log_text.exploration_brief(
+                record=record,
+                player=player,
+                events=events,
+                exp_total=exp_total,
+                old_level=old_level,
+                new_level=new_level,
+                drops_text=self._format_backpack_awards(drops),
+                ring_drops_text=self._format_ring_awards(ring_drops),
+                weapon_drops_text=self._format_weapon_awards(weapon_drops),
+                medicine_text=self._format_medicine_used(medicine_used) if medicine_used else "无",
+                stop_reason=self._stop_reason(dead, bag_full),
+                event_drop_text=self._event_drop_text,
+            )
 
         wins = sum(1 for event in events if event.get("win"))
         losses = max(0, len(events) - wins)

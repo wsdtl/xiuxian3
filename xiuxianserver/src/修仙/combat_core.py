@@ -125,6 +125,52 @@ class CombatCore(CoreService):
         right_weapon = weapon_core.equipped_weapon(right_id)
         left_state = self._player_combat_state(left_id, left, left_weapon, hp=int(left["max_hp"]), mp=int(left["max_mp"]))
         right_state = self._player_combat_state(right_id, right, right_weapon, hp=int(right["max_hp"]), mp=int(right["max_mp"]))
+        return self._duel_from_states(left_id, right_id, left_state, right_state, left_weapon, right_weapon, write_log)
+
+    def duel_with_snapshot(self, attacker_id: str, defender_snapshot: dict, write_log: bool = False) -> dict:
+        """真实玩家和快照玩家对战。
+
+        抢劫探险玩家时，进攻方读取当前真实状态；防守方使用探险开始时写入的战斗快照。
+        """
+
+        attacker = self.player(attacker_id)
+        defender = defender_snapshot.get("player") if isinstance(defender_snapshot, dict) else None
+        if not attacker or not isinstance(defender, dict):
+            return {"winner_id": "", "loser_id": "", "summary": "玩家不存在", "actions": []}
+
+        defender_id = str(defender.get("client_id", ""))
+        attacker_weapon = weapon_core.equipped_weapon(attacker_id)
+        defender_weapon = defender_snapshot.get("weapon") if isinstance(defender_snapshot.get("weapon"), dict) else None
+        attacker_state = self._player_combat_state(
+            attacker_id,
+            attacker,
+            attacker_weapon,
+            hp=int(attacker["hp"]),
+            mp=int(attacker["mp"]),
+        )
+        defender_state = self._snapshot_player_combat_state(defender_snapshot)
+        return self._duel_from_states(
+            attacker_id,
+            defender_id,
+            attacker_state,
+            defender_state,
+            attacker_weapon,
+            defender_weapon,
+            write_log,
+        )
+
+    def _duel_from_states(
+        self,
+        left_id: str,
+        right_id: str,
+        left_state: dict,
+        right_state: dict,
+        left_weapon: dict | None,
+        right_weapon: dict | None,
+        write_log: bool,
+    ) -> dict:
+        """用已经准备好的双方战斗状态结算玩家对战。"""
+
         rounds = 0
         actions = []
 
@@ -188,10 +234,44 @@ class CombatCore(CoreService):
             "right_hp_left": max(0, right_hp),
             "left_mp_left": max(0, left_mp),
             "right_mp_left": max(0, right_mp),
-            "left_max_hp": int(left["max_hp"]),
-            "right_max_hp": int(right["max_hp"]),
-            "left_max_mp": int(left["max_mp"]),
-            "right_max_mp": int(right["max_mp"]),
+            "left_max_hp": int(left_state["max_hp"]),
+            "right_max_hp": int(right_state["max_hp"]),
+            "left_max_mp": int(left_state["max_mp"]),
+            "right_max_mp": int(right_state["max_mp"]),
+        }
+
+    def _snapshot_player_combat_state(self, snapshot: dict) -> dict:
+        """把探险开始时保存的玩家快照还原成战斗状态。"""
+
+        player = dict(snapshot.get("player") or {})
+        weapon = snapshot.get("weapon") if isinstance(snapshot.get("weapon"), dict) else None
+        skill = snapshot.get("skill") if isinstance(snapshot.get("skill"), dict) else None
+        effects = snapshot.get("effects") if isinstance(snapshot.get("effects"), dict) else {}
+        client_id = str(player.get("client_id", ""))
+        speed = self._actor_speed(int(player["level"]), weapon, effects)
+        return {
+            "kind": "player",
+            "id": client_id,
+            "name": self.format_player_name(client_id),
+            "player": player,
+            "weapon": weapon,
+            "skill": skill,
+            "skill_label": str(snapshot.get("skill_label") or (skill or {}).get("name") or ""),
+            "effects": effects,
+            "hp": int(player["hp"]),
+            "max_hp": int(player["max_hp"]),
+            "mp": int(player["mp"]),
+            "max_mp": int(player["max_mp"]),
+            "attack": int(player["base_attack"]) + (int(weapon["attack"]) if weapon else 0),
+            "defense": int(player["defense"]),
+            "cost": self._skill_cost(skill, effects) if skill else 0,
+            "speed": speed,
+            "meter": random.uniform(35, 95),
+            "charge": self._skill_initial_charge(skill, weapon, effects, speed),
+            "charge_gain": self._skill_charge_gain(skill, weapon, effects, speed),
+            "guard": False,
+            "guard_effects": {},
+            "skill_times": 0,
         }
 
     def _player_combat_state(self, client_id: str, player: dict, weapon: dict | None, *, hp: int, mp: int) -> dict:
@@ -316,32 +396,108 @@ class CombatCore(CoreService):
         actor["guard"] = True
         return True
 
+    def _player_damage_parts(
+        self,
+        actor: dict,
+        target: dict,
+        effects: dict[str, float],
+        skill_used: bool,
+    ) -> tuple[int, int, int, int]:
+        """计算玩家本次出手的基础伤害。
+
+        返回值依次是：
+        - raw：原始攻击值。
+        - damage：扣防御后的主伤害。
+        - combo_damage：连击追加伤害。
+        - total_damage：主伤害 + 连击伤害，尚未计算护身和流血灼烧。
+        """
+
+        raw = self._attack_raw(int(actor["attack"]), int(actor["player"]["level"]), effects)
+        if skill_used:
+            raw = int(raw * self._skill_power(actor["skill"], effects))
+
+        damage = damage_after_defense(raw, int(target["defense"]), self._pierce_rate(effects))
+        combo_damage = self._combo_damage(raw, int(target["defense"]), effects)
+        return raw, damage, combo_damage, damage + combo_damage
+
+    @staticmethod
+    def _enemy_damage_raw(actor: dict, target: dict, effects: dict[str, float], skill_used: bool) -> int:
+        """计算怪物或 Boss 本次出手的扣防御伤害。"""
+
+        attack = int(actor["attack"])
+        raw = random.randint(max(1, int(attack * 0.78)), max(1, int(attack * 1.18)))
+        if skill_used:
+            raw = int(raw * float(actor["skill"].get("power", 1.0)))
+        return damage_after_defense(raw, int(target["defense"]), float(effects.get("pierce_bonus", 0)))
+
+    def _apply_hit_effects(
+        self,
+        actor: dict,
+        target: dict,
+        damage: int,
+        heal_effects: dict[str, float],
+        extra_effects: dict[str, float],
+    ) -> dict[str, int]:
+        """结算一次命中后的真实效果。
+
+        damage 是已经经过防御和护身后的伤害。
+        heal_effects 用来算攻击方回血；extra_effects 用来算目标受到的额外影响。
+        """
+
+        target["hp"] -= damage
+        life_steal = self._heal_from_damage(actor, damage, heal_effects)
+        mp_suppressed = self._suppress_target_mp(target, extra_effects)
+        meter_reduced = self._reduce_target_meter(target, extra_effects)
+        burn_damage = self._extra_hp_damage(target, extra_effects, "burn_rate", 0.035)
+        bleed_damage = self._extra_hp_damage(target, extra_effects, "bleed_rate", 0.03)
+        total_damage = damage + burn_damage + bleed_damage
+
+        if target["hp"] <= 0:
+            target["mp"] = 0
+
+        return {
+            "total_damage": total_damage,
+            "life_steal": life_steal,
+            "mp_suppressed": mp_suppressed,
+            "meter_reduced": meter_reduced,
+            "burn_damage": burn_damage,
+            "bleed_damage": bleed_damage,
+        }
+
+    def _activate_guard_effects(self, actor: dict, skill_used: bool, skill_effects: dict[str, float]) -> dict[str, float]:
+        """记录本次技能给自己留下的临时防守效果。"""
+
+        actor["guard_effects"] = skill_effects if skill_used else {}
+        return {
+            "self_guard_rate": self._guard_rate(actor) if skill_used else 0,
+            "self_dodge_rate": float(skill_effects.get("dodge_bonus", 0)) if skill_used else 0,
+        }
+
+    @staticmethod
+    def _empty_hit_effects() -> dict[str, int]:
+        """生成未命中或未造成附加效果时使用的空结果。"""
+
+        return {
+            "total_damage": 0,
+            "life_steal": 0,
+            "mp_suppressed": 0,
+            "meter_reduced": 0,
+            "burn_damage": 0,
+            "bleed_damage": 0,
+        }
+
     def _player_vs_enemy_action(self, action_no: int, actor: dict, target: dict) -> dict:
         """结算玩家打怪或打 Boss 的一次行动。"""
 
         skill_used = self._skill_ready(actor)
         skill_effects = self._weapon_skill_effects(actor["skill"]) if skill_used else {}
         merged_effects = self._merge_effects(actor["effects"], skill_effects)
-        raw = self._attack_raw(int(actor["attack"]), int(actor["player"]["level"]), merged_effects)
-        if skill_used:
-            raw = int(raw * self._skill_power(actor["skill"], merged_effects))
-        pierce_rate = self._pierce_rate(merged_effects)
-        damage = damage_after_defense(raw, int(target["defense"]), pierce_rate)
-        combo_damage = self._combo_damage(raw, int(target["defense"]), merged_effects)
-        total_damage = damage + combo_damage
+        raw, damage, combo_damage, total_damage = self._player_damage_parts(actor, target, merged_effects, skill_used)
         guard_reduce_rate = self._guard_rate(target) if bool(target["guard"]) else 0
         total_damage = self._damage_after_guard(total_damage, target)
-        target["hp"] -= total_damage
-        life_steal = self._heal_from_damage(actor, total_damage, merged_effects)
-        mp_suppressed = self._suppress_target_mp(target, skill_effects)
-        meter_reduced = self._reduce_target_meter(target, skill_effects)
-        burn_damage = self._extra_hp_damage(target, skill_effects, "burn_rate", 0.035)
-        bleed_damage = self._extra_hp_damage(target, skill_effects, "bleed_rate", 0.03)
-        total_damage += burn_damage + bleed_damage
-        if target["hp"] <= 0:
-            target["mp"] = 0
-        actor["guard_effects"] = skill_effects if skill_used else {}
-        self_guard_rate = self._guard_rate(actor) if skill_used else 0
+        hit_effects = self._apply_hit_effects(actor, target, total_damage, merged_effects, skill_effects)
+        guard_effects = self._activate_guard_effects(actor, skill_used, skill_effects)
+        total_damage = hit_effects["total_damage"]
         return {
             "round": action_no,
             "actor": "player",
@@ -351,15 +507,15 @@ class CombatCore(CoreService):
             "player_damage": damage,
             "player_total_damage": total_damage,
             "combo_damage": combo_damage,
-            "life_steal": life_steal,
-            "mp_suppressed": mp_suppressed,
-            "meter_reduced": meter_reduced,
-            "burn_damage": burn_damage,
-            "bleed_damage": bleed_damage,
+            "life_steal": hit_effects["life_steal"],
+            "mp_suppressed": hit_effects["mp_suppressed"],
+            "meter_reduced": hit_effects["meter_reduced"],
+            "burn_damage": hit_effects["burn_damage"],
+            "bleed_damage": hit_effects["bleed_damage"],
             "skill_effects": skill_effects,
             "guard_reduce_rate": guard_reduce_rate,
-            "self_guard_rate": self_guard_rate,
-            "self_dodge_rate": float(skill_effects.get("dodge_bonus", 0)) if skill_used else 0,
+            "self_guard_rate": guard_effects["self_guard_rate"],
+            "self_dodge_rate": guard_effects["self_dodge_rate"],
             "skill_used": skill_used,
             "skill_name": actor["skill_label"] if skill_used else "",
             "mp_cost": int(actor["cost"]) if skill_used else 0,
@@ -385,29 +541,14 @@ class CombatCore(CoreService):
         skill_effects = dict(actor["effects"]) if skill_used else {}
         dodged = random.random() < min(0.55, float(self._defense_effects(target).get("dodge_bonus", 0)))
         hurt_raw = 0
-        hurt = 0
-        mp_suppressed = 0
-        meter_reduced = 0
-        burn_damage = 0
-        bleed_damage = 0
+        hit_effects = self._empty_hit_effects()
         guard_reduce_rate = self._guard_rate(target) if bool(target["guard"]) else 0
         if not dodged:
-            attack = int(actor["attack"])
-            raw = random.randint(max(1, int(attack * 0.78)), max(1, int(attack * 1.18)))
-            if skill_used:
-                raw = int(raw * float(actor["skill"].get("power", 1.0)))
-            hurt_raw = damage_after_defense(raw, int(target["defense"]), float(skill_effects.get("pierce_bonus", 0)))
+            hurt_raw = self._enemy_damage_raw(actor, target, skill_effects, skill_used)
             hurt = self._damage_after_guard(hurt_raw, target)
-            target["hp"] -= hurt
-            mp_suppressed = self._suppress_target_mp(target, skill_effects)
-            meter_reduced = self._reduce_target_meter(target, skill_effects)
-            burn_damage = self._extra_hp_damage(target, skill_effects, "burn_rate", 0.035)
-            bleed_damage = self._extra_hp_damage(target, skill_effects, "bleed_rate", 0.03)
-            hurt += burn_damage + bleed_damage
-            if target["hp"] <= 0:
-                target["mp"] = 0
-        actor["guard_effects"] = skill_effects if skill_used else {}
-        self_guard_rate = self._guard_rate(actor) if skill_used else 0
+            hit_effects = self._apply_hit_effects(actor, target, hurt, {}, skill_effects)
+        guard_effects = self._activate_guard_effects(actor, skill_used, skill_effects)
+        hurt = hit_effects["total_damage"]
         return {
             "round": action_no,
             "actor": "enemy",
@@ -423,13 +564,13 @@ class CombatCore(CoreService):
             "boss_damage": max(0, hurt),
             "monster_hurt_raw": max(0, hurt_raw),
             "boss_hurt_raw": max(0, hurt_raw),
-            "mp_suppressed": mp_suppressed,
-            "meter_reduced": meter_reduced,
-            "burn_damage": burn_damage,
-            "bleed_damage": bleed_damage,
+            "mp_suppressed": hit_effects["mp_suppressed"],
+            "meter_reduced": hit_effects["meter_reduced"],
+            "burn_damage": hit_effects["burn_damage"],
+            "bleed_damage": hit_effects["bleed_damage"],
             "skill_effects": skill_effects,
             "guard_reduce_rate": guard_reduce_rate,
-            "self_guard_rate": self_guard_rate,
+            "self_guard_rate": guard_effects["self_guard_rate"],
             "monster_hp_left": max(0, int(actor["hp"])),
             "monster_hp_max": int(actor["max_hp"]),
             "boss_hp_left": max(0, int(actor["hp"])),
@@ -448,7 +589,7 @@ class CombatCore(CoreService):
         skill_effects = self._weapon_skill_effects(actor["skill"]) if skill_used else {}
         dodged = random.random() < float(self._defense_effects(target).get("dodge_bonus", 0))
         if dodged:
-            actor["guard_effects"] = skill_effects if skill_used else {}
+            guard_effects = self._activate_guard_effects(actor, skill_used, skill_effects)
             return self._duel_action_result(
                 actor,
                 target,
@@ -460,42 +601,40 @@ class CombatCore(CoreService):
                 True,
                 {
                     "skill_effects": skill_effects,
-                    "self_guard_rate": self._guard_rate(actor) if skill_used else 0,
-                    "self_dodge_rate": float(skill_effects.get("dodge_bonus", 0)) if skill_used else 0,
+                    "self_guard_rate": guard_effects["self_guard_rate"],
+                    "self_dodge_rate": guard_effects["self_dodge_rate"],
                 },
                 0,
             )
 
         merged_effects = self._merge_effects(actor["effects"], skill_effects)
-        raw = self._attack_raw(int(actor["attack"]), int(actor["player"]["level"]), merged_effects)
-        if skill_used:
-            raw = int(raw * self._skill_power(actor["skill"], merged_effects))
-        base_damage = damage_after_defense(raw, int(target["defense"]), self._pierce_rate(merged_effects))
-        combo_damage = self._combo_damage(raw, int(target["defense"]), merged_effects)
-        before_reduce = base_damage + combo_damage
+        raw, base_damage, combo_damage, before_reduce = self._player_damage_parts(actor, target, merged_effects, skill_used)
         guard_reduce_rate = self._guard_rate(target) if bool(target["guard"]) else 0
         final_damage = self._damage_after_guard(before_reduce, target)
-        target["hp"] -= final_damage
-        life_steal = self._heal_from_damage(actor, final_damage, merged_effects)
-        mp_suppressed = self._suppress_target_mp(target, merged_effects)
-        meter_reduced = self._reduce_target_meter(target, merged_effects)
-        burn_damage = self._extra_hp_damage(target, merged_effects, "burn_rate", 0.035)
-        bleed_damage = self._extra_hp_damage(target, merged_effects, "bleed_rate", 0.03)
-        final_damage += burn_damage + bleed_damage
-        if target["hp"] <= 0:
-            target["mp"] = 0
-        actor["guard_effects"] = skill_effects if skill_used else {}
+        hit_effects = self._apply_hit_effects(actor, target, final_damage, merged_effects, merged_effects)
+        guard_effects = self._activate_guard_effects(actor, skill_used, skill_effects)
         extras = {
-            "mp_suppressed": mp_suppressed,
-            "meter_reduced": meter_reduced,
-            "burn_damage": burn_damage,
-            "bleed_damage": bleed_damage,
+            "mp_suppressed": hit_effects["mp_suppressed"],
+            "meter_reduced": hit_effects["meter_reduced"],
+            "burn_damage": hit_effects["burn_damage"],
+            "bleed_damage": hit_effects["bleed_damage"],
             "skill_effects": skill_effects,
             "guard_reduce_rate": guard_reduce_rate,
-            "self_guard_rate": self._guard_rate(actor) if skill_used else 0,
-            "self_dodge_rate": float(skill_effects.get("dodge_bonus", 0)) if skill_used else 0,
+            "self_guard_rate": guard_effects["self_guard_rate"],
+            "self_dodge_rate": guard_effects["self_dodge_rate"],
         }
-        return self._duel_action_result(actor, target, skill_used, final_damage, combo_damage, life_steal, raw, False, extras, before_reduce)
+        return self._duel_action_result(
+            actor,
+            target,
+            skill_used,
+            hit_effects["total_damage"],
+            combo_damage,
+            hit_effects["life_steal"],
+            raw,
+            False,
+            extras,
+            before_reduce,
+        )
 
     @staticmethod
     def _duel_action_result(

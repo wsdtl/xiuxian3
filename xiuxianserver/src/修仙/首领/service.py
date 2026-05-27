@@ -13,17 +13,18 @@ from typing import Any
 
 from lunardate import LunarDate
 
-from ..common import CoreService, dt, dump_json, hint, load_json, money, now, random, ts
+from .. import combat_log_text
+from ..combat_core import service as combat_service
+from ..common import CoreService, dt, dump_json, load_json, money, now, random, ts
 from ..constants import (
     DAY_RESET_HOUR,
     MAX_LEVEL,
     SEASONAL_BOSS_CHALLENGE_COOLDOWN_MINUTES,
     SEASONAL_BOSS_MAX_CHALLENGES,
 )
-from ..markdown_utils import append_suggest_commands
+from ..format_text import T
 from ..rules import damage_after_defense, monster_exp
 from ..sql import db
-from ..combat_core import service as combat_service
 from ..weapon_core import service as weapon_service
 
 
@@ -506,7 +507,6 @@ class SeasonalBossService(CoreService):
 
     def status(self, client_id: str) -> str:
         """查看今日岁时情劫。"""
-        #TODO 按钮审查：这里会生成回复文本，按需把命令写成 <命令>。
 
         _, error = self.require_player(client_id)
         if error:
@@ -516,35 +516,34 @@ class SeasonalBossService(CoreService):
             pending = self._latest_rewardable(client_id)
             next_info = self._next_boss_text()
             if pending:
-                return hint("今日无岁时情劫，但你有首领奖励待领取。", "发送：首领奖励<首领奖励>")
-            return f"今日无岁时情劫。\n{next_info}"
+                return T.hint("今日无岁时情劫，但你有首领奖励待领取。", "发送：首领奖励<首领奖励>")
+            return T.hint("今日无岁时情劫。", next_info)
         return self._format_status(event)
 
     def ranking(self, client_id: str) -> str:
         """查看今日或最近首领排行。"""
-        #TODO 按钮审查：这里会生成回复文本，按需把命令写成 <命令>。
 
         _, error = self.require_player(client_id)
         if error:
             return error
         event = self._today_event(create=False, update=True) or self._latest_event()
         if not event:
-            return hint("暂无岁时情劫记录。", self._next_boss_text())
+            return T.hint("暂无岁时情劫记录。", self._next_boss_text())
         rows = self._participants(event["event_id"])
         if not rows:
-            return hint(f"{event['boss_name']} 暂无挑战记录。", "发送：挑战首领 参与今日岁时情劫。<挑战首领>")
-        lines = [f"☆岁时情劫排行·{event['boss_name']}☆"]
+            return T.hint(f"{event['boss_name']} 暂无挑战记录。", "发送：挑战首领 参与今日岁时情劫。<挑战首领>")
+        panel = T.panel()
+        panel.section(f"岁时情劫排行·{event['boss_name']}")
         for index, row in enumerate(rows[:10], start=1):
-            lines.append(
+            panel.line(
                 f"{index}. {self.format_player_name(row['client_id'])} "
-                f"伤害{row['damage']} 贡献{self._contribution(row['damage'], event):.1%} "
+                f"伤害 **{row['damage']}**｜贡献 {self._contribution(row['damage'], event):.1%}｜"
                 f"挑战{row['challenge_count']}/{SEASONAL_BOSS_MAX_CHALLENGES}次"
             )
-        return "\n".join(lines)
+        return panel.render()
 
-    def challenge(self, client_id: str) -> str:
+    def challenge(self, client_id: str) -> str | dict:
         """挑战今日岁时情劫。"""
-        #TODO 按钮审查：这里会生成回复文本，按需把命令写成 <命令>。
 
         player, error = self.require_player(client_id)
         if error:
@@ -554,13 +553,13 @@ class SeasonalBossService(CoreService):
 
         event = self._today_event(create=True, update=True)
         if not event:
-            return hint("今日无岁时情劫。", self._next_boss_text())
+            return T.hint("今日无岁时情劫。", self._next_boss_text())
         if event["status"] != "开启":
-            return hint(f"{event['boss_name']} 已经{event['status']}，不能继续挑战。", "发送：首领奖励 查看是否可以领取奖励。<首领奖励>")
+            return T.hint(f"{event['boss_name']} 已经{event['status']}，不能继续挑战。", "发送：首领奖励 查看是否可以领取奖励。<首领奖励>")
         if player["status"] != "空闲":
             return self._busy_challenge_hint(player["status"])
         if int(player["hp"]) <= 0:
-            return hint("血气不足，无法挑战首领。", "发送：休息，时间到后发送：结束休息")
+            return T.hint("血气不足，无法挑战首领。", "发送：休息，时间到后发送：结束休息")
 
         check = self._challenge_check(event["event_id"], client_id)
         if check:
@@ -575,7 +574,7 @@ class SeasonalBossService(CoreService):
                 (event["event_id"],),
             ).fetchone()
             if not fresh:
-                return hint("今日岁时情劫已经结束。", "发送：首领奖励 查看是否可以领取奖励。<首领奖励>")
+                return T.hint("今日岁时情劫已经结束。", "发送：首领奖励 查看是否可以领取奖励。<首领奖励>")
             current = conn.execute(
                 """
                 SELECT challenge_count, last_challenge_at
@@ -585,13 +584,13 @@ class SeasonalBossService(CoreService):
                 (event["event_id"], client_id),
             ).fetchone()
             if current and int(current["challenge_count"]) >= SEASONAL_BOSS_MAX_CHALLENGES:
-                return hint("今日挑战次数已用完。", "等下一次岁时情劫出现后再挑战。")
+                return T.hint("今日挑战次数已用完。", "等下一次岁时情劫出现后再挑战。")
             if current:
                 last = dt(current["last_challenge_at"])
                 left = timedelta(minutes=SEASONAL_BOSS_CHALLENGE_COOLDOWN_MINUTES) - (now() - last) if last else timedelta()
                 if left > timedelta():
                     seconds = max(1, int(left.total_seconds()))
-                    return hint(f"岁时旧念尚未重新凝形，还需 {seconds // 60}分{seconds % 60}秒。", "稍后再发送：挑战首领<挑战首领>")
+                    return T.hint(f"岁时旧念尚未重新凝形，还需 {seconds // 60}分{seconds % 60}秒。", "稍后再发送：挑战首领<挑战首领>")
 
             damage = min(damage, int(fresh["hp"]))
             left_hp = max(0, int(fresh["hp"]) - damage)
@@ -660,7 +659,6 @@ class SeasonalBossService(CoreService):
 
     def reward(self, client_id: str) -> str:
         """领取最近一次可领取的首领奖励。"""
-        #TODO 按钮审查：这里会生成回复文本，按需把命令写成 <命令>。
 
         player, error = self.require_player(client_id)
         if error:
@@ -671,17 +669,17 @@ class SeasonalBossService(CoreService):
         if not event:
             active = self._today_event(create=False, update=False)
             if active:
-                return hint("今日岁时情劫还没有结束。", "继续挑战，或等其被击破/次日 04:00 退去后再发送：首领奖励<首领奖励>")
-            return hint("没有可领取的首领奖励。", "发送：首领 查看今日是否有岁时情劫。<首领>")
+                return T.hint("今日岁时情劫还没有结束。", "继续挑战，或等其被击破/次日 04:00 退去后再发送：首领奖励<首领奖励>")
+            return T.hint("没有可领取的首领奖励。", "发送：首领 查看今日是否有岁时情劫。<首领>")
 
         participant = self.db.fetch_one(
             "SELECT * FROM seasonal_boss_participants WHERE event_id = ? AND client_id = ?",
             (event["event_id"], client_id),
         )
         if not participant:
-            return hint("你没有参与这次岁时情劫。", "下一次出现时发送：挑战首领<挑战首领>")
+            return T.hint("你没有参与这次岁时情劫。", "下一次出现时发送：挑战首领<挑战首领>")
         if int(participant["reward_claimed"]):
-            return participant["reward_text"] or "奖励已经领取。"
+            return participant["reward_text"] or T.hint("奖励已经领取。", "发送：首领 查看今日状态。<首领>")
 
         reward = self._roll_reward(event, participant, player)
         with self.db.transaction() as conn:
@@ -690,7 +688,7 @@ class SeasonalBossService(CoreService):
                 (event["event_id"], client_id),
             ).fetchone()
             if not fresh or int(fresh["reward_claimed"]):
-                return "奖励已经领取。"
+                return T.hint("奖励已经领取。", "发送：首领 查看今日状态。<首领>")
             old_level, new_level = self.add_exp_conn(conn, client_id, reward["exp"])
             conn.execute(
                 "UPDATE players SET source_stones = source_stones + ? WHERE client_id = ?",
@@ -890,7 +888,7 @@ class SeasonalBossService(CoreService):
         if not row:
             return ""
         if int(row["challenge_count"]) >= SEASONAL_BOSS_MAX_CHALLENGES:
-            return hint("今日挑战次数已用完。", "等下一次岁时情劫出现后再挑战。")
+            return T.hint("今日挑战次数已用完。", "等下一次岁时情劫出现后再挑战。")
         last = dt(row["last_challenge_at"])
         if not last:
             return ""
@@ -898,18 +896,18 @@ class SeasonalBossService(CoreService):
         if left <= timedelta():
             return ""
         seconds = max(1, int(left.total_seconds()))
-        return hint(f"岁时旧念尚未重新凝形，还需 {seconds // 60}分{seconds % 60}秒。", "稍后再发送：挑战首领")
+        return T.hint(f"岁时旧念尚未重新凝形，还需 {seconds // 60}分{seconds % 60}秒。", "稍后再发送：挑战首领")
 
     @staticmethod
     def _busy_challenge_hint(status: str) -> str:
         """玩家本体忙碌时，解释为什么不能挑战首领。"""
 
         if status == "探险中":
-            return hint(
+            return T.hint(
                 "本体正在探险，不能挑战首领。",
                 "行商化身仍可跑商；先发送：探险状态，30 分钟后发送：结束探险，再发送：挑战首领",
             )
-        return hint(f"当前状态为 {status}，不能挑战首领。", "先结束当前状态，再发送：挑战首领")
+        return T.hint(f"当前状态为 {status}，不能挑战首领。", "先结束当前状态，再发送：挑战首领")
 
     def _fight_boss(self, player: dict[str, Any], event: dict[str, Any]) -> dict[str, Any]:
         """结算一次挑战；只算数值和逐次出手日志，不写数据库。"""
@@ -947,8 +945,25 @@ class SeasonalBossService(CoreService):
         hurt_text: str,
         reward_command: str,
         challenge_command: str,
-    ) -> str:
-        """把首领挑战整理成包含逐次出手的代码块。"""
+    ) -> str | dict:
+        """按玩家设置返回首领挑战简要摘要或逐次出手代码块。"""
+
+        if not combat_log_text.wants_detail(player):
+            return combat_log_text.boss_brief(
+                title=title,
+                subtitle=subtitle,
+                boss_name=boss_name,
+                boss_label="首领",
+                player=player,
+                result=result,
+                damage=damage,
+                left_hp=left_hp,
+                max_hp=max_hp,
+                killed=killed,
+                killed_text=killed_text,
+                alive_text=alive_text,
+                hurt_text=hurt_text,
+            )
 
         lines = [
             title,
@@ -987,7 +1002,7 @@ class SeasonalBossService(CoreService):
             suggestions.append(f"稍后再发送：{challenge_command}")
 
         block = "```javascript\r\n" + "\r\n".join(lines) + "\r\n```"
-        return append_suggest_commands(block, "；".join(suggestions))
+        return T.attach(block, "；".join(suggestions))
 
     @staticmethod
     def _boss_action_lines(action: dict[str, Any], boss_name: str, player: dict[str, Any]) -> list[str]:
@@ -1289,23 +1304,19 @@ class SeasonalBossService(CoreService):
         extra = "\n今日为人间重节，旧愿尤深，铭刻之羽更易遗落。" if event["weight_type"] == "高权重传统节日" else ""
         boss_def = ALL_BOSS_DEFS.get(str(event["boss_key"]))
         location = boss_def.location if boss_def else "未知旧地"
-        lines = [
-            f"☆今日岁时情劫·{event['boss_name']}☆\n"
-            f"{event['title']}，现于{location}。\n"
-            f"{event['scene']}\n"
-            f"等级:{event['level']} 血量:{event['hp']}/{event['max_hp']} 状态:{event['status']}\n"
-            f"剩余约 {left} 分钟，挑战冷却 {SEASONAL_BOSS_CHALLENGE_COOLDOWN_MINUTES} 分钟，"
-            f"每日最多 {SEASONAL_BOSS_MAX_CHALLENGES} 次。\n"
-            f"{event['story']}{extra}"
-        ]
+        panel = T.panel()
+        panel.section(f"今日岁时情劫·{event['boss_name']}")
+        panel.line(f"{event['title']}，现于{location}。")
+        panel.line(event["scene"])
+        panel.line(f"等级：**{event['level']}**｜血量：**{event['hp']}/{event['max_hp']}**｜状态：{event['status']}")
+        panel.line(f"剩余约 **{left}** 分钟｜挑战冷却 {SEASONAL_BOSS_CHALLENGE_COOLDOWN_MINUTES} 分钟｜每日最多 {SEASONAL_BOSS_MAX_CHALLENGES} 次")
+        panel.line(f"{event['story']}{extra}")
         status = str(event["status"])
         if status == "开启":
-            lines.append("下一步：发送：挑战首领<挑战首领>")
-            return append_suggest_commands("\n".join(lines), "发送：挑战首领<挑战首领>")
+            return T.attach(panel.render(), "发送：挑战首领<挑战首领>")
         if status in {"已击破", "已退去"}:
-            lines.append("下一步：发送：首领奖励<首领奖励>")
-            return append_suggest_commands("\n".join(lines), "发送：首领奖励<首领奖励>")
-        return "\n".join(lines)
+            return T.attach(panel.render(), "发送：首领奖励<首领奖励>")
+        return panel.render()
 
 
 service = SeasonalBossService(db)

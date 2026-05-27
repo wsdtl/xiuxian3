@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from ..format_text import T
+
 from ..common import (
     CoreService,
-    hint,
     load_json,
     money,
     parse_name_level,
@@ -25,7 +26,6 @@ class SecondHandService(CoreService):
 
     def list_items(self, client_id: str) -> str:
         """查看当前上架。"""
-        #TODO 按钮审查：这里会生成回复文本，按需把命令写成 <命令>。
 
         _, error = self.require_player(client_id)
         if error:
@@ -40,21 +40,21 @@ class SecondHandService(CoreService):
             """
         )
         if not rows:
-            return hint(
+            return T.hint(
                 "二手市场暂无上架。",
                 "背包/纳戒物品：二手市场上架 名称 数量 总价；宝石可写等级；武器：二手市场上架 武器#ID 总价",
             )
-        lines = ["☆二手市场☆"]
+        panel = T.panel()
+        panel.section("二手市场")
         for row in rows:
             name = self._item_name(row["item_type"], row["item_id"])
             seller = row["display_name"] or "未知道友"
             quantity = "" if row["item_type"] == "weapon" else f" x{row['quantity']}"
-            lines.append(f"{seller}：{name}{quantity}，总价 {money(row['total_price'])}")
-        return "\n".join(lines)
+            panel.line(f"{seller}：{name}{quantity}｜总价 **{money(row['total_price'])}**")
+        return panel.render()
 
     def sell(self, client_id: str, message: str) -> str:
         """上架一包商品。"""
-        #TODO 按钮审查：这里会生成回复文本，按需把命令写成 <命令>。
 
         _, error = self.require_player(client_id)
         if error:
@@ -63,10 +63,10 @@ class SecondHandService(CoreService):
         weapon_id, weapon_price = self._parse_weapon_listing(parts)
         if weapon_id:
             if weapon_price <= 0:
-                return hint("武器上架价格必须大于 0。", "发送：二手市场上架 武器#ID 总价，例如：二手市场上架 武器#12 50000")
+                return T.hint("武器上架价格必须大于 0。", "发送：二手市场上架 武器#ID 总价，例如：二手市场上架 武器#12 50000")
             return self._sell_weapon(client_id, weapon_id, weapon_price)
         if len(parts) < 3:
-            return hint(
+            return T.hint(
                 "上架格式不正确。",
                 "背包/纳戒物品：二手市场上架 名称 数量 总价；宝石可写等级；武器：二手市场上架 武器#ID 总价",
             )
@@ -74,7 +74,7 @@ class SecondHandService(CoreService):
         quantity = int(parts[-2]) if parts[-2].isdigit() else 0
         total_price = int(parts[-1]) if parts[-1].isdigit() else 0
         if quantity <= 0 or total_price <= 0:
-            return hint("数量和总价必须大于 0。", "重新发送：二手市场上架 名称 数量 总价")
+            return T.hint("数量和总价必须大于 0。", "重新发送：二手市场上架 名称 数量 总价")
 
         item = self.item_def_by_name(item_name)
         item_type = "backpack"
@@ -84,7 +84,7 @@ class SecondHandService(CoreService):
             item_type = "gem" if item and item["category"] == "宝石" else "ring"
             item_id = item["equipment_item_id"] if item else ""
         if not item:
-            return hint(f"没有找到可上架物品：{item_name}。", "发送：背包、纳戒 或 武器，复制准确名称或武器 ID。")
+            return T.hint(f"没有找到可上架物品：{item_name}。", "发送：背包、纳戒 或 武器，复制准确名称或武器 ID。")
 
         with self.db.transaction() as conn:
             exists = conn.execute(
@@ -92,7 +92,7 @@ class SecondHandService(CoreService):
                 (client_id,),
             ).fetchone()
             if exists:
-                return hint("你已经有一包商品在上架。", "先发送：二手市场下架，或等其他玩家购买。<二手市场下架>")
+                return T.hint("你已经有一包商品在上架。", "先发送：二手市场下架，或等其他玩家购买。<二手市场下架>")
             if item_type == "backpack":
                 removed = self.remove_backpack_conn(conn, client_id, item_id, quantity)
                 listing_item_id = item_id
@@ -117,7 +117,7 @@ class SecondHandService(CoreService):
                 listing_item_id = item_id
                 item_label = item["name"]
             if not removed:
-                return hint(f"库存不足，无法上架 {item_label} x{quantity}。", "发送：背包 或 纳戒 确认库存数量。<背包><纳戒>")
+                return T.hint(f"库存不足，无法上架 {item_label} x{quantity}。", "发送：背包 或 纳戒 确认库存数量。<背包><纳戒>")
             conn.execute(
                 """
                 INSERT INTO second_hand_listings
@@ -130,7 +130,6 @@ class SecondHandService(CoreService):
 
     def cancel(self, client_id: str) -> str:
         """下架自己的商品。"""
-        #TODO 按钮审查：这里会生成回复文本，按需把命令写成 <命令>。
 
         _, error = self.require_player(client_id)
         if error:
@@ -141,11 +140,11 @@ class SecondHandService(CoreService):
                 (client_id,),
             ).fetchone()
             if not row:
-                return hint("你当前没有上架商品。", "发送：二手市场 查看当前市场，或发送：二手市场上架 名称 数量 总价。<二手市场>")
+                return T.hint("你当前没有上架商品。", "发送：二手市场 查看当前市场，或发送：二手市场上架 名称 数量 总价。<二手市场>")
             if row["item_type"] == "backpack":
                 ok, reason = self.can_add_backpack_conn(conn, client_id, row["item_id"], row["quantity"])
                 if not ok:
-                    return "背包空间不足，暂时无法下架。\n" + reason
+                    return T.hint("背包空间不足，暂时无法下架。", reason)
                 self.add_backpack_conn(conn, client_id, row["item_id"], row["quantity"])
             elif row["item_type"] == "gem":
                 gem_id, gem_level = self._split_gem_listing_id(row["item_id"])
@@ -155,24 +154,23 @@ class SecondHandService(CoreService):
             elif row["item_type"] == "weapon":
                 restored = self._restore_market_weapon_conn(conn, client_id, row)
                 if not restored:
-                    return hint("这把武器没有在市场托管中，无法下架。", "请查看二手市场，或重新整理市场数据。<二手市场>")
+                    return T.hint("这把武器没有在市场托管中，无法下架。", "请查看二手市场，或重新整理市场数据。<二手市场>")
             else:
-                return hint("该上架类型当前不支持下架。", "请先查看二手市场确认商品类型。")
+                return T.hint("该上架类型当前不支持下架。", "请先查看二手市场确认商品类型。")
             conn.execute("DELETE FROM second_hand_listings WHERE listing_id = ?", (row["listing_id"],))
         return "下架成功，物品已退回。"
 
     def buy(self, client_id: str, message: str) -> str:
         """购买某个卖家的当前商品。"""
-        #TODO 按钮审查：这里会生成回复文本，按需把命令写成 <命令>。
 
         buyer, error = self.require_player(client_id)
         if error:
             return error
-        seller_id = self._seller_id_from_last_arg(message)
+        seller_id = self.player_id_from_last_arg(message)
         if not seller_id:
-            return hint("没有找到这个卖家。", "发送：二手市场 查看卖家名称，再发送：二手市场购买 卖家名称，也可以直接@卖家。<二手市场>")
+            return T.hint("没有找到这个卖家。", "发送：二手市场 查看卖家名称，再发送：二手市场购买 卖家名称，也可以直接@卖家。<二手市场>")
         if seller_id == client_id:
-            return hint("不能购买自己的商品。", "想收回商品请发送：二手市场下架<二手市场下架>")
+            return T.hint("不能购买自己的商品。", "想收回商品请发送：二手市场下架<二手市场下架>")
 
         with self.db.transaction() as conn:
             row = conn.execute(
@@ -180,7 +178,7 @@ class SecondHandService(CoreService):
                 (seller_id,),
             ).fetchone()
             if not row:
-                return hint("该玩家当前没有上架商品。", "发送：二手市场 查看当前可购买列表。<二手市场>")
+                return T.hint("该玩家当前没有上架商品。", "发送：二手市场 查看当前可购买列表。<二手市场>")
             if row["item_type"] == "backpack":
                 ok, reason = self.can_add_backpack_conn(conn, client_id, row["item_id"], row["quantity"])
                 if not ok:
@@ -189,11 +187,11 @@ class SecondHandService(CoreService):
                 weapon = self._market_weapon_conn(conn, row)
                 if not weapon:
                     conn.execute("DELETE FROM second_hand_listings WHERE listing_id = ?", (row["listing_id"],))
-                    return hint("这把武器已经不在市场托管中。", "该上架已清理，请重新查看二手市场。<二手市场><二手市场下架>")
+                    return T.hint("这把武器已经不在市场托管中。", "该上架已清理，请重新查看二手市场。<二手市场><二手市场下架>")
             elif row["item_type"] not in {"ring", "gem"}:
-                return hint("该上架类型当前不支持购买。", "请重新查看二手市场，选择背包物品、纳戒物品或武器。<二手市场><背包><纳戒>")
+                return T.hint("该上架类型当前不支持购买。", "请重新查看二手市场，选择背包物品、纳戒物品或武器。<二手市场><背包><纳戒>")
             if not self.spend_stones_conn(conn, client_id, row["total_price"]):
-                return hint("随身源石不足。", "发送：源库 查看存量，或发送：取出源石 数量。<源库>")
+                return T.hint("随身源石不足。", "发送：源库 查看存量，或发送：取出源石 数量。<源库>")
             fee = int(row["total_price"] * MARKET_FEE_RATE)
             seller_gain = row["total_price"] - fee
             conn.execute(
@@ -255,24 +253,8 @@ class SecondHandService(CoreService):
         quantity = "" if row["item_type"] == "weapon" else f" x{row['quantity']}"
         return f"购买成功：{name}{quantity}，花费 {money(row['total_price'])}。"
 
-    def _seller_id_from_last_arg(self, message: str) -> str:
-        """取最后一个参数，并按 client_id / 名称查卖家。"""
-
-        parts = split_words(message)
-        if not parts:
-            return ""
-        value = parts[-1].strip()
-        if self.player(value):
-            return value
-        row = self.db.fetch_one(
-            "SELECT client_id FROM players WHERE display_name = ?",
-            (value,),
-        )
-        return str(row["client_id"]) if row else ""
-
     def _sell_weapon(self, client_id: str, weapon_id: int, total_price: int) -> str:
         """按武器实例 ID 上架一把具体武器。"""
-        #TODO 按钮审查：这里会生成回复文本，按需把命令写成 <命令>。
 
         with self.db.transaction() as conn:
             exists = conn.execute(
@@ -280,20 +262,20 @@ class SecondHandService(CoreService):
                 (client_id,),
             ).fetchone()
             if exists:
-                return hint("你已经有一包商品在上架。", "先发送：二手市场下架，或等其他玩家购买。<二手市场下架>")
+                return T.hint("你已经有一包商品在上架。", "先发送：二手市场下架，或等其他玩家购买。<二手市场下架>")
 
             weapon = self._seller_weapon_conn(conn, client_id, weapon_id)
             if not weapon:
-                return hint("没有找到这把武器。", "发送：武器 查看自己的武器 ID，再用：二手市场上架 武器#ID 总价<武器>")
+                return T.hint("没有找到这把武器。", "发送：武器 查看自己的武器 ID，再用：二手市场上架 武器#ID 总价<武器>")
             if int(weapon["equipped"]):
-                return hint("已装备武器不能上架。", "先切换到其他武器，再上架这把备用武器。<武器>")
+                return T.hint("已装备武器不能上架。", "先切换到其他武器，再上架这把备用武器。<武器>")
 
             count = conn.execute(
                 "SELECT COUNT(*) AS total FROM player_weapons WHERE owner_id = ?",
                 (client_id,),
             ).fetchone()
             if int(count["total"]) <= 1:
-                return hint("不能上架最后一把武器。", "至少保留一把自用武器，避免重要家当全部被卖掉。")
+                return T.hint("不能上架最后一把武器。", "至少保留一把自用武器，避免重要家当全部被卖掉。")
 
             cursor = conn.execute(
                 """

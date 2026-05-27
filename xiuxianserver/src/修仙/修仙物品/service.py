@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from ..common import CoreService, format_effect, hint, load_json
+from ..format_text import T
+
+from ..common import CoreService, format_effect, load_json
 from ..sql import db
 
 
@@ -25,7 +27,7 @@ class TreasureService(CoreService):
             return error
         name = item_name.strip()
         if not name:
-            return hint("缺少物品名称。", "发送：查看修仙物品 福袋")
+            return T.hint("缺少物品名称。", "发送：查看修仙物品 福袋")
 
         item = self.item_def_by_name(name)
         if item:
@@ -51,7 +53,7 @@ class TreasureService(CoreService):
         if physique:
             return self._physique_text(physique)
 
-        return hint(
+        return T.hint(
             f"没有找到修仙物品：{name}。",
             "发送：背包、纳戒、武器，复制准确名称后再查；武器实例请发送：查看武器 武器ID。<背包><纳戒><武器>",
         )
@@ -60,30 +62,29 @@ class TreasureService(CoreService):
     def _backpack_item_text(item: dict) -> str:
         """格式化背包物品定义。"""
 
-        return (
-            f"☆{item['name']}☆\n"
-            f"存放:背包 分类:{item['category']} 品级:{item['quality']} 重量:{item['weight']}\n"
-            f"跑商:{'可' if item['tradeable'] else '不可'} 使用:{'可' if item['usable'] else '不可'}\n"
-            f"基准价:{item['base_price']}\n"
-            f"效果:{format_effect(item['effect'])}\n"
-            f"说明:{item['desc']}"
-        )
+        panel = T.panel()
+        panel.section(item["name"])
+        panel.line(f"存放：背包｜分类：{item['category']}｜品级：{item['quality']}｜重量：**{item['weight']}**")
+        panel.line(f"跑商：{'可' if item['tradeable'] else '不可'}｜使用：{'可' if item['usable'] else '不可'}")
+        panel.line(f"基准价：**{item['base_price']}**")
+        panel.line(f"效果：{format_effect(item['effect'])}")
+        panel.line(f"说明：{item['desc']}")
+        return panel.render()
 
     def _ring_item_text(self, item: dict) -> str:
         """格式化纳戒物品定义。"""
 
-        lines = [
-            f"☆{item['name']}☆\n"
-            f"存放:纳戒 分类:{item['category']} 品级:{item['quality']}\n"
-            f"目标:{item['target_type']} 使用:{'可' if item['usable'] else '不可'}\n"
-            f"效果:{format_effect(item['effect'])}\n"
-            f"说明:{item['desc']}"
-        ]
+        panel = T.panel()
+        panel.section(item["name"])
+        panel.line(f"存放：纳戒｜分类：{item['category']}｜品级：{item['quality']}")
+        panel.line(f"目标：{item['target_type']}｜使用：{'可' if item['usable'] else '不可'}")
+        panel.line(f"效果：{format_effect(item['effect'])}")
+        panel.line(f"说明：{item['desc']}")
         enchant_id = load_json(item["effect"], {}).get("enchant_id")
         enchant = self._weapon_enchant_by_id(enchant_id) if enchant_id else None
         if enchant:
-            lines.append(f"附魔效果:{format_effect(enchant['effect'])}，精神消耗变化:{enchant['mp_delta']:+d}")
-        return "\n".join(lines)
+            panel.line(f"附魔效果：{format_effect(enchant['effect'])}｜精神消耗变化：{enchant['mp_delta']:+d}")
+        return panel.render()
 
     def _weapon_text(self, weapon: dict) -> str:
         """格式化武器模板定义。"""
@@ -93,49 +94,50 @@ class TreasureService(CoreService):
         if skill:
             skill_text = (
                 f"{skill['name']} | 威力{skill['power']}倍 | "
-                f"消耗精神{skill['cost_mp']} | 每{skill['interval']}次攻击触发 | {skill['effect_desc']}"
+                f"消耗精神{skill['cost_mp']} | 蓄势基准：{skill['interval']}（越小越快） | {skill['effect_desc']}"
             )
-        return (
-            f"☆{weapon['name']}☆\n"
-            f"类型:武器模板 武器类型:{weapon['weapon_type']} 掉落:{weapon['drop_location']}\n"
-            f"模板基础攻击:{weapon['base_attack']}\n"
-            f"自带技能:{skill_text}\n"
-            f"武器详情:发送 查看武器 武器ID"
-        )
+        panel = T.panel()
+        panel.section(weapon["name"])
+        panel.line(f"类型：武器模板｜武器类型：{weapon['weapon_type']}｜掉落：{weapon['drop_location']}")
+        panel.line(f"模板基础攻击：**{weapon['base_attack']}**")
+        panel.line(f"自带技能：{skill_text}")
+        panel.line("武器详情：发送 查看武器 武器ID")
+        return panel.render()
 
     @staticmethod
     def _weapon_skill_text(skill: dict) -> str:
         """格式化武器自带技能定义。"""
 
-        return (
-            f"☆{skill['name']}☆\n"
-            f"类型:武器自带技能\n"
-            f"威力:{skill['power']}倍 消耗精神:{skill['cost_mp']} 触发间隔:每{skill['interval']}次攻击\n"
-            f"说明:{skill['effect_desc']}"
-        )
+        panel = T.panel()
+        panel.section(skill["name"])
+        panel.line("类型：武器自带技能")
+        panel.line(f"威力：**{skill['power']}倍**｜消耗精神：**{skill['cost_mp']}**")
+        panel.line(f"蓄势基准：**{skill['interval']}**（越小越快）")
+        panel.line(f"说明：{skill['effect_desc']}")
+        return panel.render()
 
     @staticmethod
     def _weapon_enchant_text(enchant: dict) -> str:
         """格式化武器附魔定义。"""
 
-        return (
-            f"☆{enchant['name']}☆\n"
-            f"类型:武器附魔/技能书效果\n"
-            f"效果:{format_effect(enchant['effect'])}\n"
-            f"精神消耗变化:{enchant['mp_delta']:+d}"
-        )
+        panel = T.panel()
+        panel.section(enchant["name"])
+        panel.line("类型：武器附魔/技能书效果")
+        panel.line(f"效果：{format_effect(enchant['effect'])}")
+        panel.line(f"精神消耗变化：{enchant['mp_delta']:+d}")
+        return panel.render()
 
     @staticmethod
     def _physique_text(physique: dict) -> str:
         """格式化体质定义。"""
 
-        return (
-            f"☆{physique['name']}☆\n"
-            f"类型:体质资料 阶位:{physique['grade']} 路线:{physique['kind']}\n"
-            f"体质值:{physique['physique_value']} 稀有等级:{physique['level']}\n"
-            f"效果:{format_effect(physique['effect'])}\n"
-            f"说明:{physique['desc']}"
-        )
+        panel = T.panel()
+        panel.section(physique["name"])
+        panel.line(f"类型：体质资料｜阶位：{physique['grade']}｜路线：{physique['kind']}")
+        panel.line(f"体质值：**{physique['physique_value']}**｜稀有等级：**{physique['level']}**")
+        panel.line(f"效果：{format_effect(physique['effect'])}")
+        panel.line(f"说明：{physique['desc']}")
+        return panel.render()
 
     def _weapon_def_by_name(self, name: str) -> dict | None:
         """按名称读取武器模板。"""

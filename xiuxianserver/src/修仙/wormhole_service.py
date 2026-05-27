@@ -11,7 +11,9 @@ from datetime import timedelta
 from statistics import median
 from typing import Any
 
-from .common import CoreService, business_day, dt, dump_json, hint, load_json, money, now, ts
+from . import combat_log_text
+from .combat_core import service as combat_service
+from .common import CoreService, business_day, dt, dump_json, load_json, money, now, ts
 from .constants import (
     MAX_LEVEL,
     WORMHOLE_ACTIVE_WINDOW_DAYS,
@@ -23,10 +25,9 @@ from .constants import (
     WORMHOLE_DURATION_MINUTES,
     WORMHOLE_NOTICE_COOLDOWN_MINUTES,
 )
-from .markdown_utils import append_suggest_commands
+from .format_text import T
 from .rules import damage_after_defense, monster_exp
 from .sql import db
-from .combat_core import service as combat_service
 from .weapon_core import service as weapon_service
 
 BOSS_POOL = (
@@ -53,7 +54,6 @@ class WormholeService(CoreService):
 
     def status(self, client_id: str) -> str:
         """查看当前异界虫洞。"""
-        # TODO 按钮审查：这里会生成回复文本，按需把命令写成 <命令>。
 
 
         _, error = self.require_player(client_id)
@@ -63,24 +63,23 @@ class WormholeService(CoreService):
         if not event:
             pending = self._latest_rewardable(client_id)
             if pending:
-                return hint("当前没有开启的异界虫洞，但你有虫洞奖励待领取。", "发送：虫洞奖励<虫洞奖励>")
+                return T.hint("当前没有开启的异界虫洞，但你有虫洞奖励待领取。", "发送：虫洞奖励<虫洞奖励>")
             snapshot = self._world_snapshot()
             opened_today = self._today_opened_count()
             daily_limit = self._daily_event_limit(snapshot["active_count"])
             if opened_today >= daily_limit:
-                return hint(
+                return T.hint(
                     f"今日异界虫洞次数已满：{opened_today}/{daily_limit}。",
                     "明日 04:00 后会重新计算；活跃人数越多，每日虫洞上限越高。",
                 )
-            return hint(
+            return T.hint(
                 f"当前没有开启的异界虫洞，今日已出现 {opened_today}/{daily_limit}。",
                 "跑商、导航或特殊出售时有概率发现虫洞。",
             )
         return self._format_status(event)
 
-    def challenge(self, client_id: str) -> str:
+    def challenge(self, client_id: str) -> str | dict:
         """挑战当前虫洞 Boss。"""
-        # TODO 按钮审查：这里会生成回复文本，按需把命令写成 <命令>。
 
         player, error = self.require_player(client_id)
         if error:
@@ -90,18 +89,18 @@ class WormholeService(CoreService):
 
         event = self._active_event()
         if not event:
-            return hint("当前没有开启的异界虫洞。", "跑商、导航或特殊出售时有概率发现虫洞。")
+            return T.hint("当前没有开启的异界虫洞。", "跑商、导航或特殊出售时有概率发现虫洞。")
         if event["status"] != "开启":
-            return hint(f"{event['boss_name']} 已经{event['status']}，不能继续挑战。", "发送：虫洞奖励 查看是否可以领取奖励。<虫洞奖励>")
+            return T.hint(f"{event['boss_name']} 已经{event['status']}，不能继续挑战。", "发送：虫洞奖励 查看是否可以领取奖励。<虫洞奖励>")
         if player["status"] != "空闲":
             return self._busy_challenge_hint(player["status"])
         if player["location_name"] != event["location_name"]:
-            return hint(
+            return T.hint(
                 f"虫洞位于 {event['location_name']}，你当前在 {player['location_name']}。",
                 f"发送：导航 {event['location_name']}，到达后发送：挑战虫洞"+ f"<导航 {event['location_name']}><挑战虫洞><虫洞奖励>",
             )
         if int(player["hp"]) <= 0:
-            return hint("血气不足，无法挑战虫洞。", "发送：休息，时间到后发送：结束休息")
+            return T.hint("血气不足，无法挑战虫洞。", "发送：休息，时间到后发送：结束休息")
 
         check = self._challenge_check(event["wormhole_id"], client_id)
         if check:
@@ -115,7 +114,7 @@ class WormholeService(CoreService):
                 (event["wormhole_id"],),
             ).fetchone()
             if not fresh:
-                return hint("异界虫洞已经关闭。", "发送：虫洞奖励 查看是否可以领取奖励。<虫洞奖励>")
+                return T.hint("异界虫洞已经关闭。", "发送：虫洞奖励 查看是否可以领取奖励。<虫洞奖励>")
 
             current = conn.execute(
                 """
@@ -130,7 +129,7 @@ class WormholeService(CoreService):
                 left = timedelta(minutes=WORMHOLE_CHALLENGE_COOLDOWN_MINUTES) - (now() - last) if last else timedelta()
                 if left > timedelta():
                     seconds = max(1, int(left.total_seconds()))
-                    return hint(f"挑战虫洞冷却中，还需 {seconds // 60}分{seconds % 60}秒。", "<挑战虫洞>")
+                    return T.hint(f"挑战虫洞冷却中，还需 {seconds // 60}分{seconds % 60}秒。", "<挑战虫洞>")
 
             damage = min(max(1, int(result["damage"])), int(fresh["hp"]))
             left_hp = max(0, int(fresh["hp"]) - damage)
@@ -197,29 +196,28 @@ class WormholeService(CoreService):
 
     def ranking(self, client_id: str) -> str:
         """查看当前或最近虫洞排行。"""
-        # TODO 按钮审查：这里会生成回复文本，按需把命令写成 <命令>。
 
         _, error = self.require_player(client_id)
         if error:
             return error
         event = self._active_event() or self._latest_event()
         if not event:
-            return hint("暂无异界虫洞记录。", "跑商、导航或特殊出售时有概率发现虫洞。")
+            return T.hint("暂无异界虫洞记录。", "跑商、导航或特殊出售时有概率发现虫洞。")
         rows = self._participants(event["wormhole_id"])
         if not rows:
-            return hint(f"{event['boss_name']} 暂无挑战记录。", "发送：挑战虫洞 参与本次虫洞。<挑战虫洞>")
-        lines = [f"☆异界虫洞排行·{event['boss_name']}☆"]
+            return T.hint(f"{event['boss_name']} 暂无挑战记录。", "发送：挑战虫洞 参与本次虫洞。<挑战虫洞>")
+        panel = T.panel()
+        panel.section(f"异界虫洞排行·{event['boss_name']}")
         for index, row in enumerate(rows[:10], start=1):
-            lines.append(
+            panel.line(
                 f"{index}. {self.format_player_name(row['client_id'])} "
-                f"伤害{row['damage']} 贡献{self._contribution(row['damage'], event):.1%} "
+                f"伤害 **{row['damage']}**｜贡献 {self._contribution(row['damage'], event):.1%}｜"
                 f"挑战{row['challenge_count']}次"
             )
-        return "\n".join(lines)
+        return panel.render()
 
     def reward(self, client_id: str) -> str:
         """领取最近一次可领取的虫洞奖励。"""
-        # TODO 按钮审查：这里会生成回复文本，按需把命令写成 <命令>。
 
         player, error = self.require_player(client_id)
         if error:
@@ -230,17 +228,17 @@ class WormholeService(CoreService):
         if not event:
             active = self._active_event()
             if active:
-                return hint("当前异界虫洞还没有结束。", "继续挑战，或等 Boss 被击杀/虫洞退去后再发送：虫洞奖励")
-            return hint("没有可领取的虫洞奖励。", "发送：虫洞 查看当前是否有异界虫洞。<虫洞>")
+                return T.hint("当前异界虫洞还没有结束。", "继续挑战，或等 Boss 被击杀/虫洞退去后再发送：虫洞奖励")
+            return T.hint("没有可领取的虫洞奖励。", "发送：虫洞 查看当前是否有异界虫洞。<虫洞>")
 
         participant = self.db.fetch_one(
             "SELECT * FROM wormhole_participants WHERE wormhole_id = ? AND client_id = ?",
             (event["wormhole_id"], client_id),
         )
         if not participant:
-            return hint("你没有参与这次虫洞。", "下一次发现虫洞后发送：挑战虫洞")
+            return T.hint("你没有参与这次虫洞。", "下一次发现虫洞后发送：挑战虫洞")
         if int(participant["reward_claimed"]):
-            return participant["reward_text"] or "虫洞奖励已经领取。"
+            return participant["reward_text"] or T.hint("虫洞奖励已经领取。", "发送：虫洞 查看当前虫洞状态。<虫洞>")
 
         reward = self._roll_reward(event, participant, player)
         with self.db.transaction() as conn:
@@ -249,7 +247,7 @@ class WormholeService(CoreService):
                 (event["wormhole_id"], client_id),
             ).fetchone()
             if not fresh or int(fresh["reward_claimed"]):
-                return "虫洞奖励已经领取。"
+                return T.hint("虫洞奖励已经领取。", "发送：虫洞 查看当前虫洞状态。<虫洞>")
 
             old_level, new_level = self.add_exp_conn(conn, client_id, reward["exp"])
             conn.execute(
@@ -328,7 +326,6 @@ class WormholeService(CoreService):
 
     def notice(self, client_id: str, event: dict[str, Any] | None = None, force: bool = False) -> str:
         """给玩家追加虫洞提示；同一玩家有提示冷却，避免刷屏。"""
-        # TODO 按钮审查：这里会生成回复文本，按需把命令写成 <命令>。
 
         event = event or self._active_event()
         if not event:
@@ -356,7 +353,7 @@ class WormholeService(CoreService):
                 (event["wormhole_id"], client_id, ts()),
             )
         text = f"\n异界虫洞撕开：{event['boss_name']} 出现在 {event['location_name']}。"
-        return append_suggest_commands(text, f"发送：导航 {event['location_name']}，再发送：挑战虫洞" + f"<导航 {event['location_name']}><挑战虫洞>")
+        return T.attach(text, f"发送：导航 {event['location_name']}，再发送：挑战虫洞" + f"<导航 {event['location_name']}><挑战虫洞>")
 
     def _open_event(self, opened_by: str, source: str, location_name: str) -> dict[str, Any]:
         """按当前服务器生态生成一只动态 Boss。"""
@@ -477,19 +474,18 @@ class WormholeService(CoreService):
         if left <= timedelta():
             return ""
         seconds = max(1, int(left.total_seconds()))
-        return hint(f"挑战虫洞冷却中，还需 {seconds // 60}分{seconds % 60}秒。", "<挑战虫洞>")
+        return T.hint(f"挑战虫洞冷却中，还需 {seconds // 60}分{seconds % 60}秒。", "<挑战虫洞>")
 
     @staticmethod
     def _busy_challenge_hint(status: str) -> str:
         """玩家本体忙碌时，解释为什么不能挑战虫洞。"""
-        # TODO 按钮审查：这里会生成回复文本，按需把命令写成 <命令>。
 
         if status == "探险中":
-            return hint(
+            return T.hint(
                 "本体正在探险，不能挑战虫洞。",
                 "行商化身仍可跑商；先发送：探险状态，30 分钟后发送：结束探险，再发送：挑战虫洞",
             )
-        return hint(f"当前状态为 {status}，不能挑战虫洞。", "先结束当前状态，再发送：挑战虫洞")
+        return T.hint(f"当前状态为 {status}，不能挑战虫洞。", "先结束当前状态，再发送：挑战虫洞")
 
     def _fight_boss(self, player: dict[str, Any], event: dict[str, Any]) -> dict[str, Any]:
         """结算一次虫洞挑战；只算数值和逐次出手日志，不写数据库。"""
@@ -518,8 +514,24 @@ class WormholeService(CoreService):
         hurt_text: str,
         reward_command: str,
         challenge_command: str,
-    ) -> str:
-        """把 Boss 挑战整理成包含逐次出手的代码块。"""
+    ) -> str | dict:
+        """按玩家设置返回 Boss 挑战简要摘要或逐次出手代码块。"""
+
+        if not combat_log_text.wants_detail(player):
+            return combat_log_text.boss_brief(
+                title=title,
+                boss_name=boss_name,
+                boss_label="Boss",
+                player=player,
+                result=result,
+                damage=damage,
+                left_hp=left_hp,
+                max_hp=max_hp,
+                killed=killed,
+                killed_text=killed_text,
+                alive_text=alive_text,
+                hurt_text=hurt_text,
+            )
 
         lines = [
             title,
@@ -557,7 +569,7 @@ class WormholeService(CoreService):
             suggestions.append(f"稍后再发送：{challenge_command}")
 
         block = "```javascript\r\n" + "\r\n".join(lines) + "\r\n```"
-        return append_suggest_commands(block, "；".join(suggestions))
+        return T.attach(block, "；".join(suggestions))
 
     @staticmethod
     def _boss_action_lines(action: dict[str, Any], boss_name: str, player: dict[str, Any]) -> list[str]:
@@ -812,22 +824,20 @@ class WormholeService(CoreService):
 
     def _format_status(self, event: dict[str, Any]) -> str:
         """格式化虫洞状态。"""
-        # TODO 按钮审查：这里会生成回复文本，按需把命令写成 <命令>。
 
         closes = dt(event["closes_at"])
         left = max(0, int((closes - now()).total_seconds() // 60) + 1) if closes else 0
         snapshot = self._world_snapshot()
         opened_today = self._today_opened_count()
         daily_limit = self._daily_event_limit(snapshot["active_count"])
-        text = (
-            f"☆异界虫洞·{event['boss_name']}☆\n"
-            f"位置：{event['location_name']} ({event['x']},{event['y']})\n"
-            f"等级:{event['level']} 血量:{event['hp']}/{event['max_hp']} 状态:{event['status']}\n"
-            f"今日出现：{opened_today}/{daily_limit}，近{WORMHOLE_ACTIVE_WINDOW_DAYS}天活跃：{snapshot['active_count']}人\n"
-            f"剩余约 {left} 分钟，挑战冷却 {WORMHOLE_CHALLENGE_COOLDOWN_MINUTES} 分钟。\n"
-            f"下一步：发送：导航 {event['location_name']}，到达后发送：挑战虫洞"
-        )
-        return append_suggest_commands(text, f"发送：导航 {event['location_name']}，到达后发送：挑战虫洞")
+        panel = T.panel()
+        panel.section(f"异界虫洞·{event['boss_name']}")
+        panel.line(f"位置：{event['location_name']} ({event['x']},{event['y']})")
+        panel.line(f"等级：**{event['level']}**｜血量：**{event['hp']}/{event['max_hp']}**｜状态：{event['status']}")
+        panel.line(f"今日出现：**{opened_today}/{daily_limit}**｜近{WORMHOLE_ACTIVE_WINDOW_DAYS}天活跃：**{snapshot['active_count']}**人")
+        panel.line(f"剩余约 **{left}** 分钟｜挑战冷却 {WORMHOLE_CHALLENGE_COOLDOWN_MINUTES} 分钟")
+        text = panel.render()
+        return T.attach(text, f"发送：导航 {event['location_name']}，到达后发送：挑战虫洞")
 
 
 service = WormholeService(db)

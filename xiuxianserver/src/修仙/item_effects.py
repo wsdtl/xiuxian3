@@ -7,7 +7,8 @@ from __future__ import annotations
 
 import sqlite3
 
-from .common import CoreService, hint, load_json, money, random
+from .common import CoreService, load_json, money, random
+from .format_text import T
 from .sql import db
 
 
@@ -22,14 +23,61 @@ class ItemEffectService(CoreService):
 
     def apply_conn(self, conn: sqlite3.Connection, client_id: str, item_def: dict, source: str) -> str:
         """在当前事务里结算物品效果。"""
-        #TODO 按钮审查：这里会生成回复文本，按需把命令写成 <命令>。
+
+        return self.apply_many_conn(conn, client_id, item_def, source, 1)
+
+    def apply_many_conn(
+        self,
+        conn: sqlite3.Connection,
+        client_id: str,
+        item_def: dict,
+        source: str,
+        quantity: int,
+    ) -> str:
+        """在当前事务里批量结算物品效果。"""
+
+        if quantity <= 0:
+            return T.hint("使用数量必须大于 0。", "发送：使用 物品名 数量，例如：使用 福袋 5")
+
+        all_texts: list[str] = []
+        for _ in range(quantity):
+            texts = self._apply_one_conn(conn, client_id, item_def)
+            if isinstance(texts, str):
+                conn.rollback()
+                return texts
+            all_texts.extend(texts)
+
+        conn.execute(
+            "INSERT INTO game_logs (client_id, action, detail, created_at) VALUES (?, '使用物品', ?, datetime('now', 'localtime'))",
+            (client_id, f"{source}:{item_def['name']} x{quantity}"),
+        )
+        if not all_texts:
+            conn.rollback()
+            return T.hint(f"{item_def['name']} 暂无可生效效果。", "发送：查看修仙物品 物品名 查看用途，或换一个恢复类物品使用。")
+
+        suffix = f" x{quantity}" if quantity > 1 else ""
+        return f"使用 {item_def['name']}{suffix} 成功：" + "，".join(self._summarize_texts(all_texts))
+
+    def _apply_one_conn(self, conn: sqlite3.Connection, client_id: str, item_def: dict) -> list[str] | str:
+        """结算单个物品，返回效果文本或错误提示。"""
 
         player = conn.execute("SELECT * FROM players WHERE client_id = ?", (client_id,)).fetchone()
         if not player:
-            return hint("你还没有创建用户。", "发送：创建用户 名称，例如：创建用户 青衫客<指南><探险><修仙帮助>")
+            return T.hint("你还没有创建用户。", "发送：创建用户 名称，例如：创建用户 青衫客<指南><探险><修仙帮助>")
 
         effect = load_json(item_def["effect"], {})
         texts: list[str] = []
+        self._apply_exp_conn(conn, client_id, effect, texts)
+        self._apply_stones_conn(conn, client_id, effect, int(player["level"]), texts)
+        self._apply_recovery_conn(conn, client_id, effect, player, texts)
+        wash_error = self._apply_wash_conn(conn, client_id, effect, texts)
+        if wash_error:
+            return wash_error
+
+        return texts
+
+    def _apply_exp_conn(self, conn: sqlite3.Connection, client_id: str, effect: dict, texts: list[str]) -> None:
+        """结算经验类效果。"""
 
         exp_delta = int(effect.get("exp_delta") or 0)
         if effect.get("random_exp_min") is not None:
@@ -40,9 +88,19 @@ class ItemEffectService(CoreService):
             if new > old:
                 texts.append(f"等级提升到 {new}")
 
+    def _apply_stones_conn(
+        self,
+        conn: sqlite3.Connection,
+        client_id: str,
+        effect: dict,
+        player_level: int,
+        texts: list[str],
+    ) -> None:
+        """结算源石类效果。"""
+
         stones_delta = int(effect.get("source_stones_delta") or 0)
         if effect.get("random_stones_segments"):
-            stones_delta += self._random_stones_by_level(effect["random_stones_segments"], player["level"])
+            stones_delta += self._random_stones_by_level(effect["random_stones_segments"], player_level)
         if effect.get("random_stones_min") is not None:
             stones_delta += random.randint(int(effect["random_stones_min"]), int(effect["random_stones_max"]))
         if stones_delta:
@@ -51,6 +109,16 @@ class ItemEffectService(CoreService):
                 (stones_delta, client_id),
             )
             texts.append(f"源石+{money(stones_delta)}")
+
+    def _apply_recovery_conn(
+        self,
+        conn: sqlite3.Connection,
+        client_id: str,
+        effect: dict,
+        player: sqlite3.Row,
+        texts: list[str],
+    ) -> None:
+        """结算血气和精神恢复。"""
 
         hp_delta = int(effect.get("hp_delta") or 0)
         mp_delta = int(effect.get("mp_delta") or 0)
@@ -71,16 +139,17 @@ class ItemEffectService(CoreService):
             if mp_add:
                 texts.append(f"精神+{mp_add}")
 
+    def _apply_wash_conn(self, conn: sqlite3.Connection, client_id: str, effect: dict, texts: list[str]) -> str:
+        """结算洗髓液体质变化。"""
+
         if effect.get("wash_physique"):
-            texts.append(self._wash_physique_conn(conn, client_id))
+            ok, text = self._wash_physique_conn(conn, client_id)
+            if not ok:
+                return T.hint(text, "请先检查体质库配置，再重新使用洗髓液。")
+            texts.append(text)
+        return ""
 
-        conn.execute(
-            "INSERT INTO game_logs (client_id, action, detail, created_at) VALUES (?, '使用物品', ?, datetime('now', 'localtime'))",
-            (client_id, f"{source}:{item_def['name']}"),
-        )
-        return f"使用 {item_def['name']} 成功：" + ("，".join(texts) if texts else "暂无效果。")
-
-    def _wash_physique_conn(self, conn: sqlite3.Connection, client_id: str) -> str:
+    def _wash_physique_conn(self, conn: sqlite3.Connection, client_id: str) -> tuple[bool, str]:
         """使用洗髓液重置体质。
 
         规则很直接：大概率从更高体质里抽，小概率从更低体质里抽。
@@ -97,14 +166,14 @@ class ItemEffectService(CoreService):
             ).fetchall()
         ]
         if not rows:
-            return "体质库为空，暂时无法洗髓"
+            return False, "体质库为空，暂时无法洗髓。"
 
         player = conn.execute(
             "SELECT physique_id, physique FROM players WHERE client_id = ?",
             (client_id,),
         ).fetchone()
         if not player:
-            return "玩家不存在"
+            return False, "玩家不存在。"
 
         current = self._find_physique(rows, player["physique_id"]) or rows[0]
         target = self._choose_wash_target(rows, current)
@@ -125,7 +194,7 @@ class ItemEffectService(CoreService):
             trend = "稳定"
 
         delta = new_value - old_value
-        return (
+        return True, (
             f"洗髓{trend}："
             f"{current['name']}[{current['grade']}/{current['kind']}] -> "
             f"{target['name']}[{target['grade']}/{target['kind']}]，体质{delta:+d}"
@@ -209,6 +278,42 @@ class ItemEffectService(CoreService):
         if fallback:
             return random.randint(int(fallback.get("min", 0)), int(fallback.get("max", 0)))
         return 0
+
+    @staticmethod
+    def _summarize_texts(texts: list[str]) -> list[str]:
+        """把批量使用的同类数值合并，保留洗髓等描述性文本。"""
+
+        totals = {"经验": 0, "源石": 0, "血气": 0, "精神": 0}
+        level_text = ""
+        others: list[str] = []
+
+        for text in texts:
+            if text.startswith("经验+"):
+                totals["经验"] += int(text.removeprefix("经验+").replace(",", ""))
+            elif text.startswith("源石+"):
+                totals["源石"] += int(text.removeprefix("源石+").replace(",", ""))
+            elif text.startswith("血气+"):
+                totals["血气"] += int(text.removeprefix("血气+").replace(",", ""))
+            elif text.startswith("精神+"):
+                totals["精神"] += int(text.removeprefix("精神+").replace(",", ""))
+            elif text.startswith("等级提升到 "):
+                level_text = text
+            else:
+                others.append(text)
+
+        result: list[str] = []
+        if totals["经验"]:
+            result.append(f"经验+{totals['经验']}")
+        if level_text:
+            result.append(level_text)
+        if totals["源石"]:
+            result.append(f"源石+{money(totals['源石'])}")
+        if totals["血气"]:
+            result.append(f"血气+{totals['血气']}")
+        if totals["精神"]:
+            result.append(f"精神+{totals['精神']}")
+        result.extend(others)
+        return result
 
 
 service = ItemEffectService(db)
