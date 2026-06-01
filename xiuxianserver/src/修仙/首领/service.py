@@ -28,6 +28,15 @@ from ..sql import db
 from ..weapon_core import service as weapon_service
 
 
+SEASONAL_LOW_CONTRIBUTION_FLOORS = {
+    "feather": 0.025,
+    "material": 0.015,
+    "gem": 0.080,
+    "book": 0.030,
+    "weapon": 0.015,
+}
+
+
 @dataclass(frozen=True)
 class BossDef:
     """一只岁时情劫的文字和基础配置。"""
@@ -1082,17 +1091,20 @@ class SeasonalBossService(CoreService):
             ring_items.append((item_id, quantity))
             item_texts.append(text)
         gem = self._random_equipment_item("宝石")
-        if gem and random.random() < min(0.30, rates["gem_chance"] + contribution * 0.10):
+        gem_chance = max(rates["gem_chance"], SEASONAL_LOW_CONTRIBUTION_FLOORS["gem"])
+        if gem and random.random() < min(0.30, gem_chance + contribution * 0.10):
             level = 1 + (1 if random.random() < min(0.25, contribution) else 0)
             gems.append((gem["equipment_item_id"], level, 1))
             item_texts.append(f"宝石获得 {gem['name']} {level}级 x1")
         book = self._random_equipment_item("技能书")
-        if book and random.random() < min(0.22, rates["book_chance"] + contribution * 0.08):
+        book_chance = max(rates["book_chance"], SEASONAL_LOW_CONTRIBUTION_FLOORS["book"])
+        if book and random.random() < min(0.22, book_chance + contribution * 0.08):
             ring_items.append((book["equipment_item_id"], 1))
             item_texts.append(f"纳戒获得 {book['name']} x1")
         weapon = None
-        if random.random() < min(0.16, rates["weapon_chance"] + contribution * 0.06):
-            weapon = weapon_service.roll_weapon_drop(max(player["level"], event["level"]), "")
+        weapon_chance = max(rates["weapon_chance"], SEASONAL_LOW_CONTRIBUTION_FLOORS["weapon"])
+        if random.random() < min(0.16, weapon_chance + contribution * 0.06):
+            weapon = weapon_service.roll_weapon_drop()
         return {
             "rank": rank,
             "contribution": contribution,
@@ -1138,7 +1150,7 @@ class SeasonalBossService(CoreService):
     def _feather_count(weight_type: str, contribution: float, rank: int, rates: dict[str, float]) -> int:
         """计算铭刻之羽数量。"""
 
-        chance = rates["feather_chance"] + contribution * 0.08
+        chance = max(rates["feather_chance"], SEASONAL_LOW_CONTRIBUTION_FLOORS["feather"]) + contribution * 0.08
         if rank <= 3:
             chance += rates["feather_rank_chance"]
         if rank == 1 and weight_type == "高权重传统节日":
@@ -1161,7 +1173,8 @@ class SeasonalBossService(CoreService):
         """按贡献、排名和节日权重计算特殊材料概率。"""
 
         rank_bonus = rates["material_rank_chance"] if rank <= 3 else 0
-        return min(0.22, rates["material_chance"] + contribution * 0.10 + rank_bonus)
+        base = max(rates["material_chance"], SEASONAL_LOW_CONTRIBUTION_FLOORS["material"])
+        return min(0.22, base + contribution * 0.10 + rank_bonus)
 
     def _random_equipment_item(self, category: str) -> dict[str, Any] | None:
         """随机纳戒物品，不包含开孔器。"""

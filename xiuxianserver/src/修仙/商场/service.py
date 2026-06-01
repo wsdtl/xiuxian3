@@ -507,33 +507,41 @@ class TradeService(CoreService):
         return panel.render()
 
     def navigate(self, client_id: str, message: str) -> str:
-        """导航到最近地点。"""
+        """导航到地点或精确坐标。"""
 
         _, error = self.require_player(client_id)
         if error:
             return error
         parts = split_words(message)
         if len(parts) == 1:
-            location = self._location(parts[0]) or self._special_buyer(parts[0]) or self.recycle_location(parts[0])
-        elif len(parts) >= 2:
-            x = to_int(parts[0])
-            y = to_int(parts[1])
-            location = self._nearest_location(x, y)
+            location = self._navigation_location(parts[0])
+            if not location:
+                return T.hint("没有找到可导航地点。", "发送：商场列表 或 探险列表 查看地点名称。<商场列表><探险列表>")
+            name = str(location["name"])
+            x = int(location["x"])
+            y = int(location["y"])
+            wormhole_location = name
+        elif len(parts) == 2:
+            coordinate = self._parse_coordinates(parts)
+            if not coordinate:
+                return T.hint("导航格式不正确。", "发送：导航 地点名，或发送：导航 x y")
+            x, y = coordinate
+            location = self._known_location_at(x, y)
+            name = str(location["name"]) if location else self._wilderness_name(x, y)
+            wormhole_location = name if location else ""
         else:
             return T.hint("导航格式不正确。", "发送：导航 地点名，或发送：导航 x y")
-        if not location:
-            return T.hint("没有找到可导航地点。", "发送：商场列表 或 探险列表 查看地点名称。<商场列表><探险列表>")
-        name = location.get("name") or location.get("buyer_name")
         with self.db.transaction() as conn:
             conn.execute(
                 "UPDATE players SET location_name = ?, x = ?, y = ? WHERE client_id = ?",
-                (name, location["x"], location["y"], client_id),
+                (name, x, y, client_id),
             )
             conn.execute(
                 "INSERT INTO game_logs (client_id, action, detail, created_at) VALUES (?, '导航', ?, ?)",
-                (client_id, f"location={name}, x={location['x']}, y={location['y']}", ts()),
+                (client_id, f"location={name}, x={x}, y={y}", ts()),
             )
-        return f"已到达 {name} ({location['x']},{location['y']})。" + self.wormhole.try_discover(client_id, "navigate", name) + "<探险><商场推荐>"
+        notice = self.wormhole.try_discover(client_id, "navigate", wormhole_location) if wormhole_location else ""
+        return f"已到达 {name} ({x},{y})。" + notice + "<探险><商场推荐>"
 
     def price(self, location_name: str, item_id: str, save: bool = False) -> tuple[int, int]:
         """获取当天价格。
@@ -787,16 +795,75 @@ class TradeService(CoreService):
 
         return self.db.fetch_one("SELECT * FROM special_buyers WHERE buyer_name = ?", (name.strip(),))
 
+    def _navigation_location(self, name: str) -> dict | None:
+        """读取任意可命名导航地点。"""
+
+        location = self._location(name)
+        if location:
+            return {"name": location["name"], "x": int(location["x"]), "y": int(location["y"])}
+        buyer = self._special_buyer(name)
+        if buyer:
+            return {"name": buyer["buyer_name"], "x": int(buyer["x"]), "y": int(buyer["y"])}
+        recycle = self.recycle_location(name)
+        if recycle:
+            return {"name": recycle["name"], "x": int(recycle["x"]), "y": int(recycle["y"])}
+        return None
+
+    def _all_navigation_locations(self) -> list[dict]:
+        """合并商场、特殊收购和回收地点，供坐标导航使用。"""
+
+        rows: list[dict] = []
+        for row in self.db.fetch_all("SELECT name, x, y FROM trade_locations"):
+            rows.append({"name": row["name"], "x": int(row["x"]), "y": int(row["y"])})
+        for row in self.db.fetch_all("SELECT buyer_name, x, y FROM special_buyers"):
+            rows.append({"name": row["buyer_name"], "x": int(row["x"]), "y": int(row["y"])})
+        for row in self.db.fetch_all("SELECT name, x, y FROM recycle_locations"):
+            rows.append({"name": row["name"], "x": int(row["x"]), "y": int(row["y"])})
+        return rows
+
+    def _known_location_at(self, x: int, y: int) -> dict | None:
+        """读取精确坐标上的命名地点。"""
+
+        for location in self._all_navigation_locations():
+            if location["x"] == x and location["y"] == y:
+                return location
+        return None
+
     def _nearest_location(self, x: int, y: int) -> dict | None:
         """按坐标找最近地点。"""
 
-        trade_rows = self.db.fetch_all("SELECT name, x, y FROM trade_locations")
-        buyer_rows = self.db.fetch_all("SELECT buyer_name, x, y FROM special_buyers")
-        recycle_rows = self.db.fetch_all("SELECT name, x, y FROM recycle_locations")
-        rows = trade_rows + buyer_rows + recycle_rows
+        rows = self._all_navigation_locations()
         if not rows:
             return None
         return min(rows, key=lambda row: hypot(row["x"] - x, row["y"] - y))
+
+    @staticmethod
+    def _parse_coordinates(parts: list[str]) -> tuple[int, int] | None:
+        """严格解析坐标，避免文字参数被默认当成 0。"""
+
+        try:
+            return int(parts[0]), int(parts[1])
+        except (TypeError, ValueError):
+            return None
+
+    def _wilderness_name(self, x: int, y: int) -> str:
+        """给任意非命名坐标生成稳定的荒野地点名。"""
+
+        nearest = self._nearest_location(x, y)
+        if not nearest:
+            return "荒野"
+        direction = self._direction_from_anchor(x, y, nearest)
+        return f"荒野·{nearest['name']}{direction}"
+
+    @staticmethod
+    def _direction_from_anchor(x: int, y: int, anchor: dict) -> str:
+        """按坐标相对命名地点生成方位词。"""
+
+        dx = x - int(anchor["x"])
+        dy = y - int(anchor["y"])
+        horizontal = "东" if dx > 0 else "西" if dx < 0 else ""
+        vertical = "北" if dy > 0 else "南" if dy < 0 else ""
+        return horizontal + vertical or "附近"
 
     def _buyer_item_names(self, buyer: dict) -> list[str]:
         """把特殊收购配置里的物品 id 转成名称。"""

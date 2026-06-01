@@ -1469,7 +1469,12 @@ class CoreService:
         effects: dict[str, float] = {}
         if not isinstance(enchant_ids, list):
             return effects
+        seen: set[str] = set()
         for enchant_id in enchant_ids:
+            enchant_id = str(enchant_id)
+            if enchant_id in seen:
+                continue
+            seen.add(enchant_id)
             row = self.db.fetch_one("SELECT effect, mp_delta FROM weapon_enchants WHERE enchant_id = ?", (enchant_id,))
             if not row:
                 continue
@@ -2278,6 +2283,7 @@ def format_effect(effect_text: Any) -> str:
         "pierce_bonus": "防御穿透",
         "life_steal": "吸血",
         "shield_bonus": "技能护盾",
+        "counter_rate": "反击",
         "mp_suppress": "精神压制",
         "defense_suppress": "压低防御",
         "combo_bonus": "连击概率",
@@ -2286,6 +2292,9 @@ def format_effect(effect_text: Any) -> str:
         "heavy_bonus": "重击威力",
         "combo_damage_bonus": "连击伤害",
         "single_hit_bonus": "单次爆发",
+        "burn_rate": "灼烧",
+        "bleed_rate": "流血",
+        "stun_rate": "行动条压制",
     }
     for key, label in combat_labels.items():
         value = effect.get(key)

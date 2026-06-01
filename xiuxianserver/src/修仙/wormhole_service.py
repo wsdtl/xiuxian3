@@ -48,6 +48,13 @@ DISCOVERY_CHANCES = {
     "special_auto_sell": 0.035,
 }
 
+WORMHOLE_LOW_CONTRIBUTION_FLOORS = {
+    "xisuiye": 0.08,
+    "gem": 0.15,
+    "book": 0.06,
+    "weapon": 0.03,
+}
+
 
 class WormholeService(CoreService):
     """异界虫洞的开启、挑战、排行和奖励。"""
@@ -634,26 +641,26 @@ class WormholeService(CoreService):
             ring_items.append((recover["equipment_item_id"], 1))
             item_texts.append(f"纳戒获得 {recover['name']} x1")
 
-        if random.random() < 0.08 + contribution * 0.25:
+        if random.random() < WORMHOLE_LOW_CONTRIBUTION_FLOORS["xisuiye"] + contribution * 0.25:
             special = self.equipment_item_def("xisuiye")
             if special:
                 ring_items.append((special["equipment_item_id"], 1))
                 item_texts.append(f"纳戒获得 {special['name']} x1")
 
         gem = self._random_equipment_item("宝石")
-        if gem and random.random() < 0.15 + contribution * 0.3:
+        if gem and random.random() < WORMHOLE_LOW_CONTRIBUTION_FLOORS["gem"] + contribution * 0.3:
             level = 1 + (1 if random.random() < min(0.22, contribution) else 0)
             gems.append((gem["equipment_item_id"], level, 1))
             item_texts.append(f"宝石获得 {gem['name']} {level}级 x1")
 
         book = self._random_equipment_item("技能书")
-        if book and random.random() < 0.06 + contribution * 0.22:
+        if book and random.random() < WORMHOLE_LOW_CONTRIBUTION_FLOORS["book"] + contribution * 0.22:
             ring_items.append((book["equipment_item_id"], 1))
             item_texts.append(f"纳戒获得 {book['name']} x1")
 
         weapon = None
-        if random.random() < 0.03 + contribution * 0.16:
-            weapon = weapon_service.roll_weapon_drop(max(player["level"], event["level"]), "")
+        if random.random() < WORMHOLE_LOW_CONTRIBUTION_FLOORS["weapon"] + contribution * 0.16:
+            weapon = weapon_service.roll_weapon_drop()
 
         return {
             "rank": rank,

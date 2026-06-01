@@ -227,13 +227,26 @@ def weapon_enchant_slots(max_level: int, level: int) -> int:
 def weapon_upgrade_cost(next_level: int, quality_factor: float) -> int:
     """计算武器升级源石。"""
 
-    return floor(1500 * (int(next_level) ** 1.6) * float(quality_factor))
+    factor = max(1.0, float(quality_factor))
+    quality_cost = max(0.65, (factor**1.55) * 0.78)
+    return floor(1500 * (int(next_level) ** 1.6) * quality_cost)
 
 
 def equipment_upgrade_cost(next_level: int, slot_factor: float) -> int:
     """计算装备升级源石。"""
 
     return floor(800 * (int(next_level) ** 1.55) * float(slot_factor))
+
+
+def gem_upgrade_cost(next_level: int) -> int:
+    """计算已镶嵌宝石升级源石。
+
+    1-5 级保持平滑铺底，6 级后用立方段拉开长期消耗。
+    """
+
+    level = max(1, int(next_level))
+    late_level = max(0, level - 5)
+    return 5000 * (level**2) + 70000 * (late_level**3)
 
 
 def page_count(total: int, page_size: int) -> int:
@@ -253,6 +266,7 @@ __all__ = [
     "defense",
     "equipment_upgrade_cost",
     "exp_need",
+    "gem_upgrade_cost",
     "gem_recycle_price_rate",
     "gem_recycle_single_cap",
     "gem_recycle_soft_line",

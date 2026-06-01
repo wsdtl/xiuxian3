@@ -474,7 +474,7 @@ class ExplorationService(CoreService):
         if client_id:
             result["combat_snapshot"] = self._combat_snapshot(client_id, player)
         if any(event.get("win") for event in events) and random.random() < self._weapon_drop_chance(explore_bonus):
-            result["weapon_drop"] = weapon_service.roll_weapon_drop(player["level"], player["location_name"])
+            result["weapon_drop"] = weapon_service.roll_weapon_drop(player["location_name"])
         return result
 
     @staticmethod

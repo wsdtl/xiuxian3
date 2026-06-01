@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from ..format_text import T
-
 import sqlite3
+from datetime import timedelta
 
 from ..common import CoreService, business_day, dt, money, now, ts
 from ..constants import BANK_LEVELS, BANK_MAX_LEVEL
+from ..format_text import T
 from ..sql import db
 
 
@@ -75,7 +75,6 @@ class SourceVaultService(CoreService):
         if amount <= 0:
             return T.hint("存入数量必须大于 0。", "发送：存入源石 数量，例如：存入源石 1000<源库><源库结息>")
         with self.db.transaction() as conn:
-            self._settle_conn(conn, client_id)
             vault = self._vault_conn(conn, client_id)
             limit = BANK_LEVELS[vault["level"]]["limit"]
             can_deposit = min(amount, limit - vault["balance"])
@@ -83,9 +82,11 @@ class SourceVaultService(CoreService):
                 return T.hint("源库已经存满。", "可以发送：升级源库 提高容量，或发送：取出源石 数量。<升级源库><源库><源库结息>")
             if not self.spend_stones_conn(conn, client_id, can_deposit):
                 return T.hint("随身源石不足。", "发送：修仙信息 查看随身源石，或先签到、探险、出售物品。<签到><探险><源库><源库结息>")
+            new_balance = int(vault["balance"]) + can_deposit
+            last_settle_at = self._rebased_settle_at_after_deposit(vault, new_balance)
             conn.execute(
-                "UPDATE source_vaults SET balance = balance + ? WHERE client_id = ?",
-                (can_deposit, client_id),
+                "UPDATE source_vaults SET balance = ?, last_settle_at = ? WHERE client_id = ?",
+                (new_balance, last_settle_at, client_id),
             )
             conn.execute(
                 "INSERT INTO game_logs (client_id, action, detail, created_at) VALUES (?, '存入源石', ?, ?)",
@@ -180,6 +181,23 @@ class SourceVaultService(CoreService):
                 (reward, client_id),
             )
         return reward, hours
+
+    @staticmethod
+    def _rebased_settle_at_after_deposit(vault: dict, new_balance: int) -> str:
+        """存入时折算计息起点，保留旧余额已经累计的结息进度。"""
+
+        old_balance = max(0, int(vault.get("balance", 0)))
+        current = now()
+        if old_balance <= 0 or new_balance <= 0:
+            return ts(current)
+
+        last = dt(vault.get("last_settle_at")) or current
+        hours = max(0.0, min(24.0, (current - last).total_seconds() / 3600))
+        if hours <= 0:
+            return ts(current)
+
+        rebased_hours = min(24.0, hours * old_balance / new_balance)
+        return ts(current - timedelta(hours=rebased_hours))
 
 
 service = SourceVaultService(db)

@@ -21,10 +21,10 @@ class WeaponCore(CoreService):
             return
         self.create_weapon(client_id, "qinglan_duanjian", "凡品", 40, equipped=True)
 
-    def create_drop_weapon(self, client_id: str, player_level: int, location_name: str = "") -> str:
+    def create_drop_weapon(self, client_id: str, location_name: str = "") -> str:
         """直接创建一把掉落武器，并返回展示文本。"""
 
-        drop = self.roll_weapon_drop(player_level, location_name)
+        drop = self.roll_weapon_drop(location_name)
         weapon_id = self.create_weapon(
             client_id,
             drop["weapon_def_id"],
@@ -34,7 +34,7 @@ class WeaponCore(CoreService):
         )
         return f"#{weapon_id} {drop['name']}[{drop['quality']}] 上限{drop['max_level']}"
 
-    def roll_weapon_drop(self, player_level: int, location_name: str = "") -> dict:
+    def roll_weapon_drop(self, location_name: str = "") -> dict:
         """只随机出掉落结果，不写入数据库。
 
         探险预计算阶段会先记录掉落结果，等玩家发送“结束探险”时再真正发放。
@@ -50,7 +50,7 @@ class WeaponCore(CoreService):
             "weapon_def_id": weapon_def["weapon_def_id"],
             "name": weapon_def["name"],
             "quality": random_quality(),
-            "max_level": self.random_max_level(player_level),
+            "max_level": self.random_max_level(),
         }
 
     def create_weapon(
@@ -179,19 +179,25 @@ class WeaponCore(CoreService):
         return enchant_label_name(base_name, row["custom_name"] if row else "")
 
     @staticmethod
-    def random_max_level(player_level: int) -> int:
-        """按玩家等级随机武器等级上限。"""
+    def random_max_level() -> int:
+        """加权随机武器等级上限，不受玩家等级影响。"""
 
-        level = int(player_level)
-        if level <= 20:
-            return random.randint(20, 45)
-        if level <= 40:
-            return random.randint(35, 65)
-        if level <= 60:
-            return random.randint(50, 80)
-        if level <= 80:
-            return random.randint(65, 95)
-        return random.randint(80, 100)
+        band = random.choices(
+            ("20-40", "41-60", "61-80", "81-90", "91-99", "100"),
+            weights=(45, 28, 18, 6, 2.5, 0.5),
+            k=1,
+        )[0]
+        if band == "20-40":
+            return random.randint(20, 40)
+        if band == "41-60":
+            return random.randint(41, 60)
+        if band == "61-80":
+            return random.randint(61, 80)
+        if band == "81-90":
+            return random.randint(81, 90)
+        if band == "91-99":
+            return random.randint(91, 99)
+        return 100
 
 
 service = WeaponCore(db)

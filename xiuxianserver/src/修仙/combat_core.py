@@ -471,6 +471,7 @@ class CombatCore(CoreService):
         return {
             "self_guard_rate": self._guard_rate(actor) if skill_used else 0,
             "self_dodge_rate": float(skill_effects.get("dodge_bonus", 0)) if skill_used else 0,
+            "self_counter_rate": float(self._defense_effects(actor).get("counter_rate", 0)) if skill_used else 0,
         }
 
     @staticmethod
@@ -484,6 +485,7 @@ class CombatCore(CoreService):
             "meter_reduced": 0,
             "burn_damage": 0,
             "bleed_damage": 0,
+            "counter_damage": 0,
         }
 
     def _player_vs_enemy_action(self, action_no: int, actor: dict, target: dict) -> dict:
@@ -493,9 +495,12 @@ class CombatCore(CoreService):
         skill_effects = self._weapon_skill_effects(actor["skill"]) if skill_used else {}
         merged_effects = self._merge_effects(actor["effects"], skill_effects)
         raw, damage, combo_damage, total_damage = self._player_damage_parts(actor, target, merged_effects, skill_used)
-        guard_reduce_rate = self._guard_rate(target) if bool(target["guard"]) else 0
+        target_guarded = bool(target["guard"])
+        guard_reduce_rate = self._guard_rate(target) if target_guarded else 0
+        target_defense_effects = self._defense_effects(target)
         total_damage = self._damage_after_guard(total_damage, target)
-        hit_effects = self._apply_hit_effects(actor, target, total_damage, merged_effects, skill_effects)
+        hit_effects = self._apply_hit_effects(actor, target, total_damage, merged_effects, merged_effects)
+        counter_damage = self._counter_damage(target, actor, total_damage, target_defense_effects, target_guarded)
         guard_effects = self._activate_guard_effects(actor, skill_used, skill_effects)
         total_damage = hit_effects["total_damage"]
         return {
@@ -512,10 +517,12 @@ class CombatCore(CoreService):
             "meter_reduced": hit_effects["meter_reduced"],
             "burn_damage": hit_effects["burn_damage"],
             "bleed_damage": hit_effects["bleed_damage"],
+            "counter_damage": counter_damage,
             "skill_effects": skill_effects,
             "guard_reduce_rate": guard_reduce_rate,
             "self_guard_rate": guard_effects["self_guard_rate"],
             "self_dodge_rate": guard_effects["self_dodge_rate"],
+            "self_counter_rate": guard_effects["self_counter_rate"],
             "skill_used": skill_used,
             "skill_name": actor["skill_label"] if skill_used else "",
             "mp_cost": int(actor["cost"]) if skill_used else 0,
@@ -542,11 +549,14 @@ class CombatCore(CoreService):
         dodged = random.random() < min(0.55, float(self._defense_effects(target).get("dodge_bonus", 0)))
         hurt_raw = 0
         hit_effects = self._empty_hit_effects()
-        guard_reduce_rate = self._guard_rate(target) if bool(target["guard"]) else 0
+        target_guarded = bool(target["guard"])
+        guard_reduce_rate = self._guard_rate(target) if target_guarded else 0
         if not dodged:
+            target_defense_effects = self._defense_effects(target)
             hurt_raw = self._enemy_damage_raw(actor, target, skill_effects, skill_used)
             hurt = self._damage_after_guard(hurt_raw, target)
             hit_effects = self._apply_hit_effects(actor, target, hurt, {}, skill_effects)
+            hit_effects["counter_damage"] = self._counter_damage(target, actor, hurt, target_defense_effects, target_guarded)
         guard_effects = self._activate_guard_effects(actor, skill_used, skill_effects)
         hurt = hit_effects["total_damage"]
         return {
@@ -568,9 +578,11 @@ class CombatCore(CoreService):
             "meter_reduced": hit_effects["meter_reduced"],
             "burn_damage": hit_effects["burn_damage"],
             "bleed_damage": hit_effects["bleed_damage"],
+            "counter_damage": hit_effects["counter_damage"],
             "skill_effects": skill_effects,
             "guard_reduce_rate": guard_reduce_rate,
             "self_guard_rate": guard_effects["self_guard_rate"],
+            "self_counter_rate": guard_effects["self_counter_rate"],
             "monster_hp_left": max(0, int(actor["hp"])),
             "monster_hp_max": int(actor["max_hp"]),
             "boss_hp_left": max(0, int(actor["hp"])),
@@ -603,25 +615,31 @@ class CombatCore(CoreService):
                     "skill_effects": skill_effects,
                     "self_guard_rate": guard_effects["self_guard_rate"],
                     "self_dodge_rate": guard_effects["self_dodge_rate"],
+                    "self_counter_rate": guard_effects["self_counter_rate"],
                 },
                 0,
             )
 
         merged_effects = self._merge_effects(actor["effects"], skill_effects)
         raw, base_damage, combo_damage, before_reduce = self._player_damage_parts(actor, target, merged_effects, skill_used)
-        guard_reduce_rate = self._guard_rate(target) if bool(target["guard"]) else 0
+        target_guarded = bool(target["guard"])
+        guard_reduce_rate = self._guard_rate(target) if target_guarded else 0
+        target_defense_effects = self._defense_effects(target)
         final_damage = self._damage_after_guard(before_reduce, target)
         hit_effects = self._apply_hit_effects(actor, target, final_damage, merged_effects, merged_effects)
+        counter_damage = self._counter_damage(target, actor, final_damage, target_defense_effects, target_guarded)
         guard_effects = self._activate_guard_effects(actor, skill_used, skill_effects)
         extras = {
             "mp_suppressed": hit_effects["mp_suppressed"],
             "meter_reduced": hit_effects["meter_reduced"],
             "burn_damage": hit_effects["burn_damage"],
             "bleed_damage": hit_effects["bleed_damage"],
+            "counter_damage": counter_damage,
             "skill_effects": skill_effects,
             "guard_reduce_rate": guard_reduce_rate,
             "self_guard_rate": guard_effects["self_guard_rate"],
             "self_dodge_rate": guard_effects["self_dodge_rate"],
+            "self_counter_rate": guard_effects["self_counter_rate"],
         }
         return self._duel_action_result(
             actor,
@@ -685,21 +703,60 @@ class CombatCore(CoreService):
         if not skill:
             return {}
         return {
-            "bengshan": {"pierce_bonus": 0.06},
+            "liuguang": {"hit_bonus": 0.10, "pierce_bonus": 0.04},
+            "qiankun": {"stun_rate": 0.12, "damage_reduce": 0.05},
+            "tianji": {"stun_rate": 0.14, "mp_suppress": 0.05},
+            "fengren": {"hit_bonus": 0.08},
+            "wuxiang": {"skill_power_bonus": 0.10},
+            "lanzhao": {"combo_bonus": 0.16, "stun_rate": 0.05},
+            "chixia": {"burn_rate": 0.12},
+            "chaohuo": {"pierce_bonus": 0.08, "burn_rate": 0.08},
+            "yanbei": {"combo_bonus": 0.12, "hit_bonus": 0.05},
+            "bengshan": {"pierce_bonus": 0.08, "heavy_bonus": 0.05},
+            "zhenyue": {"damage_reduce": 0.10, "heavy_bonus": 0.06},
+            "heiyao": {"shield_bonus": 0.14, "damage_reduce": 0.04, "counter_rate": 0.22},
             "huichun": {"life_steal": 0.08},
+            "lingfeng": {"life_steal": 0.06, "combo_bonus": 0.10},
+            "yaowang": {"life_steal": 0.05, "damage_reduce": 0.05},
+            "duannian": {"mp_suppress": 0.12},
+            "mengwu": {"mp_suppress": 0.08, "stun_rate": 0.08},
+            "shuijing": {"hit_bonus": 0.06, "dodge_bonus": 0.04},
             "shaying": {"combo_bonus": 0.18, "combo_damage_bonus": 0.10},
-            "zhuixing": {"combo_bonus": 0.25, "combo_damage_bonus": 0.18},
-            "xueying": {"life_steal": 0.12},
-            "pojun": {"pierce_bonus": 0.12},
+            "jueying": {"dodge_bonus": 0.06, "hit_bonus": 0.04},
+            "duyun": {"burn_rate": 0.08, "bleed_rate": 0.08},
+            "xueying": {"life_steal": 0.12, "bleed_rate": 0.04},
             "liehun": {"mp_suppress": 0.10},
             "yueshi": {"defense_suppress": 0.10},
+            "pojun": {"pierce_bonus": 0.12},
+            "leiguang": {"stun_rate": 0.10, "hit_bonus": 0.04},
+            "zidian": {"heavy_bonus": 0.12, "pierce_bonus": 0.08},
             "xuandun": {"shield_bonus": 0.16},
-            "zhenyue": {"damage_reduce": 0.10},
-            "duannian": {"mp_suppress": 0.14},
+            "duanhai": {"single_hit_bonus": 0.12},
+            "chaoxi": {"stun_rate": 0.08, "mp_suppress": 0.06},
+            "dansha": {"burn_rate": 0.10, "hit_bonus": 0.04},
+            "zhuyan": {"burn_rate": 0.10, "single_hit_bonus": 0.08},
+            "luxin": {"heavy_bonus": 0.10, "burn_rate": 0.08},
+            "qingteng": {"stun_rate": 0.07, "life_steal": 0.04},
+            "lingmu": {"shield_bonus": 0.08, "life_steal": 0.05},
+            "luming": {"pierce_bonus": 0.08, "stun_rate": 0.06},
+            "jinghu": {"hit_bonus": 0.06, "dodge_bonus": 0.04},
+            "qingxin": {"mp_suppress": 0.08, "damage_reduce": 0.04},
+            "yingyue": {"mp_suppress": 0.08, "skill_power_bonus": 0.08},
+            "youhuang": {"hit_bonus": 0.05, "mp_suppress": 0.08},
+            "mozhu": {"combo_bonus": 0.10, "bleed_rate": 0.06},
+            "yingye": {"stun_rate": 0.08, "bleed_rate": 0.06},
+            "zhuixing": {"combo_bonus": 0.20, "combo_damage_bonus": 0.16},
             "chuanyun": {"pierce_bonus": 0.14},
-            "liuguang": {"hit_bonus": 0.10, "pierce_bonus": 0.04},
-            "xingluo": {"combo_bonus": 0.20, "combo_damage_bonus": 0.22},
-            "jueying": {"dodge_bonus": 0.06},
+            "xingluo": {"combo_bonus": 0.16, "combo_damage_bonus": 0.18},
+            "yujing": {"hit_bonus": 0.06, "pierce_bonus": 0.06},
+            "tianxiang": {"shield_bonus": 0.08, "life_steal": 0.04},
+            "jinlu": {"stun_rate": 0.10, "damage_reduce": 0.08},
+            "heishui": {"dodge_bonus": 0.05, "bleed_rate": 0.06},
+            "duhun": {"mp_suppress": 0.08, "life_steal": 0.05},
+            "wumu": {"shield_bonus": 0.10, "stun_rate": 0.06},
+            "langhao": {"combo_bonus": 0.14, "hit_bonus": 0.05},
+            "shouhun": {"stun_rate": 0.08, "damage_reduce": 0.05},
+            "lingjiao": {"pierce_bonus": 0.10, "single_hit_bonus": 0.08},
         }.get(str(skill.get("skill_id") or ""), {})
 
     @staticmethod
@@ -746,6 +803,29 @@ class CombatCore(CoreService):
         return damage
 
     @staticmethod
+    def _counter_damage(
+        defender: dict,
+        attacker: dict,
+        damage_taken: int,
+        effects: dict[str, float],
+        guarded: bool,
+    ) -> int:
+        """按护身反击效果结算一次反击伤害。
+
+        反击只根据本次实际承受的主伤害计算，不触发二次反击。
+        """
+
+        rate = min(0.5, float(effects.get("counter_rate", 0)))
+        if not guarded or rate <= 0 or damage_taken <= 0 or int(defender.get("hp", 0)) <= 0:
+            return 0
+
+        damage = max(1, int(int(damage_taken) * rate))
+        attacker["hp"] -= damage
+        if attacker["hp"] <= 0:
+            attacker["mp"] = 0
+        return damage
+
+    @staticmethod
     def _guard_rate(actor: dict) -> float:
         """读取本次技能后能提供的承伤比例。"""
 
@@ -789,8 +869,14 @@ class CombatCore(CoreService):
             texts.append(f"防御穿透 +{int(float(effects['pierce_bonus']) * 100)}%")
         if float(effects.get("defense_suppress", 0)) > 0:
             texts.append(f"压低防御 +{int(float(effects['defense_suppress']) * 100)}%")
+        if int(action.get("combo_damage", 0)) > 0:
+            texts.append(f"连击 {int(action['combo_damage'])}")
+        if int(action.get("life_steal", 0)) > 0:
+            texts.append(f"吸血 +{int(action['life_steal'])}")
         if float(action.get("self_dodge_rate", 0)) > 0:
             texts.append(f"获得闪避 +{int(float(action['self_dodge_rate']) * 100)}%")
+        if float(action.get("self_counter_rate", 0)) > 0:
+            texts.append(f"进入反击 +{int(float(action['self_counter_rate']) * 100)}%")
         if int(action.get("mp_suppressed", 0)) > 0:
             texts.append(f"精神压制 -{int(action['mp_suppressed'])}")
         if int(action.get("meter_reduced", 0)) > 0:
@@ -799,6 +885,8 @@ class CombatCore(CoreService):
             texts.append(f"灼烧 {int(action['burn_damage'])}")
         if int(action.get("bleed_damage", 0)) > 0:
             texts.append(f"流血 {int(action['bleed_damage'])}")
+        if int(action.get("counter_damage", 0)) > 0:
+            texts.append(f"反击 {int(action['counter_damage'])}")
         if float(action.get("guard_reduce_rate", 0)) > 0:
             texts.append(f"护身减伤 {int(float(action['guard_reduce_rate']) * 100)}%")
         if float(action.get("self_guard_rate", 0)) > 0:

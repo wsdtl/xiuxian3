@@ -112,7 +112,7 @@ class WeaponService(WeaponCore):
         return f"已切换武器：{weapon_label_name(weapon)}。"
 
     def upgrade(self, client_id: str, message: str) -> str:
-        """升级武器。"""
+        """升级武器；只受武器自身等级上限限制，不受玩家等级限制。"""
 
         _, error = self.require_player(client_id)
         if error:
@@ -423,6 +423,13 @@ class WeaponService(WeaponCore):
             if not weapon:
                 return T.hint("没有找到这把武器。", "发送：武器 查看自己的武器 ID。<武器>")
             current = load_json(weapon["enchant_effects"], [])
+            if not isinstance(current, list):
+                current = []
+            if str(enchant_id) in {str(item) for item in current}:
+                return T.hint(
+                    f"这把武器已经附魔过《{book['name']}》，同一本技能书不能重复附魔。",
+                    "可以选择同流派的其他技能书继续组合。",
+                )
             if len(current) >= weapon["enchant_slots"]:
                 return T.hint("这把武器没有空余附魔栏。", "升级武器可能解锁附魔栏，或换一把更高上限武器。")
             if not self.remove_ring_conn(conn, client_id, book["equipment_item_id"], 1):
@@ -606,11 +613,11 @@ class WeaponService(WeaponCore):
         total_value = sum(int(record["value"]) for record in records)
         panel = T.panel()
         panel.section("武器批量回收")
-        panel.line(f"回收成功：**{len(records)}** 把，获得源石 **{money(total_value)}**。")
+        panel.line(f"回收 **{len(records)}** 把，获得源石 **{money(total_value)}**。")
         for record in records:
             panel.line(
-                f"#{record['weapon_id']} {record['name']}[{record['quality']}] "
-                f"-> {money(int(record['value']))}，倍率 {int(float(record['rate']) * 100)}%"
+                f"#{record['weapon_id']} {record['name']}[{record['quality']}]｜"
+                f"收入 **{money(int(record['value']))}**｜倍率 {int(float(record['rate']) * 100)}%"
             )
         return panel.render()
 
@@ -789,6 +796,7 @@ class WeaponService(WeaponCore):
             "pierce_bonus": "防御穿透",
             "life_steal": "吸血",
             "shield_bonus": "技能护盾",
+            "counter_rate": "反击",
             "mp_suppress": "精神压制",
             "defense_suppress": "压低防御",
             "combo_bonus": "连击概率",
@@ -798,6 +806,9 @@ class WeaponService(WeaponCore):
             "combo_damage_bonus": "连击伤害",
             "single_hit_bonus": "单次爆发",
             "dodge_bonus": "闪避",
+            "burn_rate": "灼烧",
+            "bleed_rate": "流血",
+            "stun_rate": "行动条压制",
         }
         texts = []
         for key, label in labels.items():

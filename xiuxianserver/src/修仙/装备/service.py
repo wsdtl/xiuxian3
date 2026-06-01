@@ -16,7 +16,12 @@ from ..common import (
     ts,
 )
 from ..constants import EQUIPMENT_SLOTS, FIXED_EQUIPMENT_SLOT_FACTORS
-from ..rules import equipment_upgrade_cost, gem_recycle_price_rate, gem_recycle_single_cap
+from ..rules import (
+    equipment_upgrade_cost,
+    gem_recycle_price_rate,
+    gem_recycle_single_cap,
+    gem_upgrade_cost,
+)
 from ..sql import db
 
 DEFAULT_HOLES = 3
@@ -534,7 +539,7 @@ class EquipmentService(CoreService):
             if row["level"] >= 10:
                 return T.hint(f"{row['name']} 已经 10 级。", "可以升级其他宝石，或镶嵌到其他装备孔位。")
             next_level = row["level"] + 1
-            cost = 5000 * (next_level**2)
+            cost = gem_upgrade_cost(next_level)
             if not self.spend_stones_conn(conn, client_id, cost):
                 return T.hint(f"源石不足，升级需要 {money(cost)}。", "发送：源库 查看存量，或通过签到、探险、出售物品获取源石<商场自动出售><特殊自动出售>。")
             conn.execute(
