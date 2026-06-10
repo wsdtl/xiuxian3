@@ -57,7 +57,7 @@ class LoadRouter:
     def load_router_folders(folder: str) -> None:
         """收集某个目录下所有带 router 的子模块。
 
-        例：folder="src" 时，会收集 src.xxx、src.yyy。
+        例：folder="auto" 时，会收集 auto.cfg 这类子模块。
         """
 
         folders = [f for f in os.listdir(LoadRouter.module_to_path(folder)) if os.path.isdir(os.path.join(LoadRouter.module_to_path(folder), f))]
@@ -130,8 +130,8 @@ def module_tag(module_name: str) -> str:
 
     例如：
 
-        src.室温监控 -> 室温监控
-        src.user.api -> api
+        修仙 -> 修仙
+        修仙.修仙帮助 -> 修仙帮助
 
     以后想显示更完整的分类名，可以只改这里。
     """

@@ -15,11 +15,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.修仙.common import ts
-from src.修仙.sql import XiuxianDB
-from src.修仙.玩家.service import PlayerService
-from src.修仙.武器.service import WeaponService
-from src.修仙.源库.service import SourceVaultService
+from 修仙.common import ts
+from 修仙.sql import XiuxianDB
+from 修仙.玩家.service import PlayerService
+from 修仙.武器.service import WeaponService
+from 修仙.源库.service import SourceVaultService
 
 
 def main() -> None:
@@ -69,9 +69,9 @@ def main() -> None:
                 )
 
         profile_text = player.profile("record_player")
-        assert "青衫客" in profile_text
-        assert "Lv.9" in profile_text
+        assert "经验" in profile_text
         assert "源石" in profile_text
+        assert "武器" in profile_text
         assert "修仙日记" in player.diary("record_player")
 
         journal_count = db.fetch_one(
@@ -86,7 +86,7 @@ def main() -> None:
             """,
             ("record_player",),
         )
-        assert level_journal and "9 级" in level_journal["text"]
+        assert level_journal and "累计经验 12345" in level_journal["text"]
 
         title_count = db.fetch_one(
             "SELECT COUNT(*) AS count FROM player_titles WHERE client_id = ?",

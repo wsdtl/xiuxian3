@@ -8,7 +8,7 @@ from typing import Iterable
 from PIL import Image, ImageDraw, ImageFont
 
 ROOT = Path(__file__).resolve().parents[1]
-OUTPUT = ROOT / "src" / "修仙" / "玩家" / "help.png"
+OUTPUT = ROOT / "修仙" / "修仙帮助" / "help.png"
 
 FONT_REGULAR_PATHS = (
     Path(r"C:\Windows\Fonts\Noto Sans SC (TrueType).otf"),
@@ -23,10 +23,18 @@ FONT_BOLD_PATHS = (
 
 SECTIONS = [
     {
+        "title": "帮助",
+        "color": "#FFE9A8",
+        "lines": [
+            "帮助",
+            "修仙帮助",
+            "指南",
+        ],
+    },
+    {
         "title": "玩家",
         "color": "#FFD987",
         "lines": [
-            "帮助 / 修仙帮助",
             "创建用户 名称",
             "改名 新名称",
             "修仙信息",
@@ -43,8 +51,11 @@ SECTIONS = [
         "color": "#AFEBC0",
         "lines": [
             "背包",
-            "使用 恢复类物品名",
+            "使用 恢复类物品名 数量",
             "纳戒",
+            "保险箱 / 查看保险箱",
+            "存入保险箱 物品名 数量",
+            "取出保险箱 物品名 数量",
             "洗髓",
             "查看修仙物品 物品名",
         ],
@@ -156,6 +167,7 @@ SECTIONS = [
             "决斗 源石数量 对方名称 / 决斗@对方 源石数量",
             "接受决斗 发起人名称 / 接受决斗@发起人",
             "拒绝决斗 发起人名称 / 拒绝决斗@发起人",
+            "抢劫 对方名称 / 抢劫@对方",
             "决斗记录",
         ],
     },

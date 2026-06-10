@@ -5,7 +5,7 @@
     python test/修仙_架构业务自查.py
 
 这个脚本检查“能启动”以外的规则：
-- 修仙根目录不能反向导入中文二级包。
+- 修仙根目录不能反向导入中文玩法包；HTTP 路由组件例外。
 - 中文二级包之间不能互相导入。
 - 已删除的虫洞历史入口不能再被引用。
 - 基础配置都能落到真实数据库表。
@@ -25,11 +25,12 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.修仙.sql import XiuxianDB
-from src.修仙.修仙物品.service import TreasureService
+from 修仙.sql import XiuxianDB
+from 修仙.修仙物品.service import TreasureService
 
 
-XIUXIAN_ROOT = PROJECT_ROOT / "src" / "修仙"
+XIUXIAN_ROOT = PROJECT_ROOT / "修仙"
+ROOT_ROUTER_COMPONENTS = {"后台接口", "修仙帮助"}
 
 
 def main() -> None:
@@ -73,7 +74,8 @@ def _root_reverse_imports(file: Path, tree: ast.AST, child_dirs: set[str]) -> li
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
             module = node.module or ""
-            if node.level == 1 and module.split(".", 1)[0] in child_dirs:
+            target_child = module.split(".", 1)[0]
+            if node.level == 1 and target_child in child_dirs and target_child not in ROOT_ROUTER_COMPONENTS:
                 violations.append(f"{file}:{node.lineno}: from .{module} import ...")
             if node.level == 0 and _absolute_child_module(module, child_dirs):
                 violations.append(f"{file}:{node.lineno}: from {module} import ...")
@@ -107,10 +109,12 @@ def _child_cross_imports(file: Path, tree: ast.AST, current_child: str, child_di
 def _absolute_child_module(module: str, child_dirs: set[str], current_child: str = "") -> bool:
     """判断绝对导入是否指向其他中文二级包。"""
 
-    if not module.startswith("src.修仙."):
+    if not module.startswith("修仙."):
         return False
     parts = module.split(".")
     if len(parts) < 3 or parts[2] not in child_dirs:
+        return False
+    if not current_child and parts[2] in ROOT_ROUTER_COMPONENTS:
         return False
     return not current_child or parts[2] != current_child
 
@@ -201,8 +205,8 @@ def _check_seed_data() -> None:
                 """
                 SELECT e.name
                 FROM exploration_locations e
-                LEFT JOIN trade_locations t ON t.name = e.name
-                WHERE t.name IS NULL
+                LEFT JOIN world_locations w ON w.name = e.name
+                WHERE w.name IS NULL
                 """,
                 "探险地点不能导航到",
             )
@@ -294,6 +298,7 @@ def _check_weapon_enchant_effect_keys(conn) -> None:
         "pierce_bonus",
         "life_steal",
         "shield_bonus",
+        "counter_rate",
         "mp_suppress",
         "defense_suppress",
         "combo_bonus",
@@ -303,6 +308,9 @@ def _check_weapon_enchant_effect_keys(conn) -> None:
         "combo_damage_bonus",
         "single_hit_bonus",
         "dodge_bonus",
+        "burn_rate",
+        "bleed_rate",
+        "stun_rate",
         "interval_delta",
         "interval_rate",
     }
@@ -339,19 +347,17 @@ def _check_deprecated_commands_removed() -> None:
     """检查已经废弃的历史命令没有重新注册。
 
     当前修仙模块是“新开始”，只保留正式命令。
-    例外只有两个自然入口：`帮助/修仙帮助`、`结束休息/休息结束`。
+    例外包括自然入口和手动保留的顺口别名：
+    `帮助/修仙帮助`、`结束休息/休息结束`、
+    `修仙信息/状态`、`升级源库/源库升级`、`存入源石/源石存入`、`取出源石/源石取出`。
     """
 
     deprecated = {
         "用户创建",
-        "状态",
         "礼包",
         "获取源库",
         "源库获取",
         "结息源库",
-        "源库升级",
-        "源石存入",
-        "源石取出",
         "地点",
         "探索",
         "状态探险",
@@ -534,7 +540,7 @@ def _child_dirs() -> set[str]:
     return {
         path.name
         for path in XIUXIAN_ROOT.iterdir()
-        if path.is_dir() and not path.name.startswith("__")
+        if path.is_dir() and not path.name.startswith("__") and any("\u4e00" <= char <= "\u9fff" for char in path.name)
     }
 
 

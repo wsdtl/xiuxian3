@@ -20,10 +20,10 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from launch.adapter.ws import WsMessageHandler
-from src.修仙.common import business_day, dump_json, now, ts
-from src.修仙.sql import XiuxianDB
-from src.修仙.weapon_core import WeaponCore
-from src.修仙.首领.service import BOSS_DEFS
+from 修仙.common import business_day, dump_json, now, ts
+from 修仙.sql import XiuxianDB
+from 修仙.weapon_core import WeaponCore
+from 修仙.首领.service import BOSS_DEFS
 from 修仙_ws触发测试 import FakeManager, _dispatch, _patch_modules, _restore_modules
 
 
@@ -79,7 +79,7 @@ def _prepare_resources(db: XiuxianDB) -> int:
                 (client_id,),
             )
         conn.execute(
-            "UPDATE player_weapons SET level = 20, max_level = 45, enchant_slots = 5 WHERE owner_id = ?",
+            "UPDATE player_weapons SET level = 90, max_level = 100 WHERE owner_id = ?",
             ("stress_a",),
         )
         _add_common_items(conn, "stress_a")
@@ -154,8 +154,10 @@ def _command_cases(weapon_id: int) -> list[tuple[str, str]]:
         ("stress_a", "创建用户 青衫客"),
         ("stress_a", "改名 云游客"),
         ("stress_a", "修仙信息"),
+        ("stress_a", "状态"),
         ("stress_a", "修仙日记"),
         ("stress_a", "自动用药 开启"),
+        ("stress_a", "战斗日志 开启"),
         ("stress_a", "签到"),
         ("stress_a", "新手礼包"),
         ("stress_a", "休息"),
@@ -164,10 +166,21 @@ def _command_cases(weapon_id: int) -> list[tuple[str, str]]:
         ("stress_a", "源库"),
         ("stress_a", "源库结息"),
         ("stress_a", "升级源库"),
+        ("stress_a", "源库升级"),
         ("stress_a", "存入源石 100"),
+        ("stress_a", "源石存入 100"),
         ("stress_a", "取出源石 50"),
+        ("stress_a", "源石取出 50"),
         ("stress_a", "纳戒"),
         ("stress_a", "背包"),
+        ("stress_a", "保险箱"),
+        ("stress_a", "查看保险箱"),
+        ("stress_a", "存入保险箱 血契丹 1"),
+        ("stress_a", "取出保险箱 血契丹 1"),
+        ("stress_a", "存保险箱 血契丹 1"),
+        ("stress_a", "取保险箱 血契丹 1"),
+        ("stress_a", "放入保险箱 血契丹 1"),
+        ("stress_a", "取出保险箱 血契丹 1"),
         ("stress_a", "查看修仙物品 福袋"),
         ("stress_a", "查看修仙物品 星纹玉简"),
         ("stress_a", "修仙物品查看 福袋"),
@@ -220,6 +233,7 @@ def _command_cases(weapon_id: int) -> list[tuple[str, str]]:
         ("stress_a", "特殊自动出售"),
         ("stress_a", "自动出售战利品"),
         ("stress_a", "位置"),
+        ("stress_a", "地图"),
         ("stress_a", "探险列表"),
         ("stress_a", "探险"),
         ("stress_a", "探险状态"),
@@ -259,6 +273,7 @@ def _command_cases(weapon_id: int) -> list[tuple[str, str]]:
         ("stress_b", "拒绝决斗 云游客"),
         ("stress_a", "决斗 100 白衣客"),
         ("stress_b", "接受决斗 云游客"),
+        ("stress_a", "抢劫 白衣客"),
         ("stress_a", "决斗记录"),
         ("stress_a", "风云榜"),
         ("stress_a", "修仙早报"),
@@ -268,13 +283,13 @@ def _command_cases(weapon_id: int) -> list[tuple[str, str]]:
 
 
 def _assert_all_commands_covered(cases: list[tuple[str, str]]) -> None:
-    """确认当前 src.修仙 注册的命令都在压力测试里。"""
+    """确认当前 修仙 注册的命令都在压力测试里。"""
 
     tested = {message.partition(" ")[0] for _client_id, message in cases}
     registered = {
         cmd
         for cmd, rules in WsMessageHandler.func_dict.items()
-        if any(getattr(rule.func, "__module__", "").startswith("src.修仙") for rule in rules)
+        if any(getattr(rule.func, "__module__", "").startswith("修仙") for rule in rules)
     }
     missing = sorted(registered - tested)
     assert not missing, "压力测试缺少命令：" + "、".join(missing)
@@ -295,7 +310,7 @@ def _prepare_before_send(db: XiuxianDB, client_id: str, message: str) -> None:
 
     command = message.partition(" ")[0]
     with db.transaction() as conn:
-        if message in {"休息", "探险"} or message.startswith(("切磋 ", "决斗 ")):
+        if message in {"休息", "探险"} or message.startswith(("切磋 ", "决斗 ", "抢劫 ")):
             conn.execute("UPDATE players SET status = '空闲', status_until_at = NULL WHERE client_id IN ('stress_a', 'stress_b')")
         if message in {"结束休息", "休息结束"}:
             conn.execute(
@@ -390,18 +405,18 @@ def _prepare_before_send(db: XiuxianDB, client_id: str, message: str) -> None:
                 (client_id,),
             )
             _add_common_items(conn, client_id)
-        if command in {"使用", "洗髓"}:
+        if command in {"使用", "洗髓", "存入保险箱", "存保险箱", "放入保险箱"}:
             _add_common_items(conn, client_id)
         if command in {"镶嵌", "附魔武器"} or command.startswith("铭刻"):
             _add_common_items(conn, client_id)
         if command == "附魔武器":
             conn.execute(
-                "UPDATE player_weapons SET enchant_slots = 5 WHERE owner_id = ?",
+                "UPDATE player_weapons SET level = 90, max_level = 100 WHERE owner_id = ?",
                 (client_id,),
             )
         if command in {"铭刻附魔", "铭刻技能"}:
             conn.execute(
-                "UPDATE player_weapons SET enchant_slots = 5, enchant_effects = '[\"fengren_shu\"]' WHERE owner_id = ?",
+                "UPDATE player_weapons SET level = 90, max_level = 100, enchant_effects = '[\"fengren_shu\"]' WHERE owner_id = ?",
                 (client_id,),
             )
         if command == "回收武器":
@@ -428,8 +443,11 @@ def _prepare_before_send(db: XiuxianDB, client_id: str, message: str) -> None:
             "宝石升级",
             "升级武器",
             "升级源库",
+            "源库升级",
             "存入源石",
+            "源石存入",
             "决斗",
+            "源石取出",
         }:
             conn.execute(
                 "UPDATE players SET source_stones = source_stones + 5000000 WHERE client_id = ?",

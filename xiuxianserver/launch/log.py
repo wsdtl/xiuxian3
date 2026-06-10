@@ -164,9 +164,9 @@ class C:
         用法：
             logger.opt(colors=True).info(
                 C.join(
-                    C.warn("室温监控历史数据已更新"),
+                    C.warn("修仙帮助缓存已更新"),
                     C.kv("time", datetime.now()),
-                    C.kv("count", len(historydata)),
+                    C.kv("count", len(docs)),
                 )
             )
 

@@ -10,7 +10,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from .manager import current_request_id, manager
 from launch.log import C, logger
 from .schema import is_ws_code
-from .hander import WsMessageHandler
+from .handler import WsMessageHandler
 from .rule import RateLimiter, TaskLimiter
 
 router = APIRouter()

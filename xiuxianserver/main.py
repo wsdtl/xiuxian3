@@ -27,8 +27,8 @@ if __name__ == "__main__":
     uvicorn.run(
         app="main:create_app",
         factory=True,
-        host="0.0.0.0",
-        port=1234,
+        host=config.get("APP_HOST", "0.0.0.0"),
+        port=int(config.get("APP_PORT", "1234")),
         reload=True,
         log_config=LOGGING_CONFIG,
     )

@@ -63,8 +63,8 @@ def read_env_file(path: Path = ENV_FILE) -> dict[str, str]:
 
     支持写法：
 
-        APP_NAME=back_ai
-        APP_MODULES=["src.ws"]
+        APP_NAME=xiuxian
+        APP_ROUTER_GROUPS=["修仙"]
         zdy1=hello
 
     空行、# 注释、无等号的行会被忽略。
@@ -135,7 +135,7 @@ class Env:
 
         .env 中必须写成列表：
 
-            APP_MODULES=["src.ws"]
+            APP_ROUTER_GROUPS=["修仙"]
         """
 
         raw = self.get(name)
@@ -145,10 +145,10 @@ class Env:
         try:
             value = ast.literal_eval(raw)
         except (SyntaxError, ValueError) as exc:
-            raise ValueError(f"{name} 必须写成列表，例如：{name}=['src.ws']") from exc
+            raise ValueError(f"{name} 必须写成列表，例如：{name}=['修仙']") from exc
 
         if not isinstance(value, list):
-            raise ValueError(f"{name} 必须是列表，例如：{name}=['src.ws']")
+            raise ValueError(f"{name} 必须是列表，例如：{name}=['修仙']")
 
         for item in value:
             if not isinstance(item, str):
@@ -198,8 +198,8 @@ class RouterConfig:
 
     .env 中必须写成列表：
 
-        APP_MODULES=["src.ws"]
-        APP_ROUTER_GROUPS=[]
+        APP_MODULE_GROUPS=["auto"]
+        APP_ROUTER_GROUPS=["修仙"]
     """
 
     module_groups: List[str]
