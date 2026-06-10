@@ -15,8 +15,8 @@ HELP_IMAGE = Path(__file__).with_name("help.png")
 def _help_page_url() -> str:
     """按 .env 中配置的公开域名生成帮助页地址。"""
 
-    port = config.get("APP_PORT", "1234").strip() or "1234"
-    domain = (config.get("PROJECT_DOMAIN", "") or "127.0.0.1").strip().rstrip("/")
+    port = str(config.server.port)
+    domain = (config.project.domain or "127.0.0.1").strip().rstrip("/")
     base_url = _with_project_port(domain, port)
     return f"{base_url}/xiuxian/help"
 

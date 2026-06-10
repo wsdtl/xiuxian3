@@ -1,7 +1,7 @@
 """修仙数据库备份包。
 
 这个包没有 HTTP 路由，只负责在服务关闭时备份修仙数据库。
-APP_ROUTER_GROUPS 会导入中文子包，因此这里可以直接注册 OnEvent 回调。
+ROUTER_GROUPS 会导入中文子包，因此这里可以直接注册 OnEvent 回调。
 """
 
 from __future__ import annotations

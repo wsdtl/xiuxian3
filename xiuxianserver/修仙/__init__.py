@@ -1,7 +1,7 @@
 """修仙模块入口。
 
-作为 APP_ROUTER_GROUPS 根模块时，这里暴露 router 并注册生命周期。
-玩法包由 APP_ROUTER_GROUPS 加载器导入，并在各自包内注册 ws 触发器。
+作为 ROUTER_GROUPS 根模块时，这里暴露 router 并注册生命周期。
+玩法包由 ROUTER_GROUPS 加载器导入，并在各自包内注册 ws 触发器。
 """
 
 from importlib import import_module

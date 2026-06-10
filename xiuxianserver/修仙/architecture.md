@@ -1,15 +1,15 @@
 # 修仙模块架构和扩展教程
 
-本文按当前代码整理，冲突时以代码为准。`修仙` 是一个 `APP_ROUTER_GROUPS` 玩法模块：根目录放公共能力，中文二级包按玩法拆分并挂载 WS 命令。
+本文按当前代码整理，冲突时以代码为准。`修仙` 是玩法根模块：根目录放公共能力，中文二级包按玩法拆分并挂载 WS 命令。组件开发边界见 `开发约束.md`，本文偏架构和扩展流程。
 
-## 当前进度
+## 模块边界
 
-- 已落地修仙帮助、修仙百科、后台接口、玩家、背包、纳戒、保险箱、修仙物品、源库、二手市场、商场、探险、武器、装备、铭刻、对战、异界虫洞、首领、修仙界历史、数据库备份。
-- 当前 HTTP 路由由 `后台接口` 和 `修仙帮助` 中文二级组件承接；`后台接口` 暂时为空，`修仙帮助` 提供 Hexo/Vexos 风格 Markdown 文档站。
-- 数据库使用 sqlite3，schema 版本为 `SCHEMA_VERSION = 2026060302`；当前本地库已直接整理为最新结构，`player_weapons` 不再保存攻击、自带技能或附魔槽位这类可实时派生字段。
+- 修仙帮助、修仙百科、后台接口、玩家、背包、纳戒、保险箱、修仙物品、源库、二手市场、商场、探险、武器、装备、铭刻、对战、异界虫洞、首领、修仙界历史、数据库备份都是中文二级组件。
+- HTTP 路由由 `后台接口` 和 `修仙帮助` 承接；`后台接口` 是 web 后台 API 承接点，`修仙帮助` 提供 Hexo/Vexos 风格 Markdown 文档站。
+- 数据库使用 sqlite3，schema 版本为 `SCHEMA_VERSION = 2026060302`；`player_weapons` 不保存攻击、自带技能或附魔槽位这类可实时派生字段。
 - 行为沉淀使用长期表：`game_logs` 记关键行为流水，`player_lifetime_stats` 接清理前的累计统计，`player_journals` 记玩家日记摘要，`player_titles` 记动态称号，`daily_fortunes` 记每日气运，`weapon_legends` 记武器传奇。
-- 二级包都已补齐 `说明.md`，作为单个组件的使用和扩展说明。
-- 当前测试覆盖：冒烟测试、WS 触发测试、命令压力测试、架构业务自查、compileall。
+- 每个二级包保留 `说明.md`，作为单个组件的使用和扩展约束；帮助站会读取这些 Markdown。
+- 常用检查覆盖冒烟测试、WS 触发测试、命令压力测试和架构业务自查。
 
 ## 命名规则
 
@@ -38,8 +38,8 @@
   markdown_utils.py        markdown 和按钮工具
   reply.py                 修仙回复包装，文本回复统一升级 markdown 并附带玩家头和按钮
   富文本规则.md             修仙文本、提示、按钮和正文卡规则
-  完整设定.md             当前玩法总设定
-  architecture.md          当前架构说明
+  完整设定.md             玩法总设定
+  architecture.md          架构说明
 ```
 
 二级玩法包：
@@ -47,7 +47,7 @@
 ```text
 修仙帮助/        帮助网页、修仙帮助图、指南按钮、Markdown 文档站
 修仙百科/        修仙设定问答，启动时缓存 Markdown 和 xiuxian.db 结构化资料
-后台接口/        暂时只保留空 APIRouter，后续 web 后台接口使用
+后台接口/        web 后台 API 承接点，不注册玩家命令
 玩家/            创建用户、修仙信息、状态、修仙日记、签到、新手礼包、休息
 背包/            占负重库存和恢复类使用入口
 纳戒/            不占负重库存和洗髓入口
@@ -373,7 +373,7 @@ weapon_legends              武器传奇
 ```
 
 `导航 x y` 会精确写入玩家当前位置；坐标命中已知地点才使用该地点名，否则生成荒野坐标名，避免任意坐标被吸附到最近商场。
-修仙世界当前按 `100 x 100` 整数坐标设计，有效范围为 `-50..49`；数据库只保存商场、探险点、NPC 建筑、回收建筑等命名点，荒野空地不入库，后续洞府、地皮和藏宝图按坐标稀疏占用。
+修仙世界当前按 `100 x 100` 整数坐标设计，有效范围为 `-50..49`；数据库只保存商场、探险点、NPC 建筑、回收建筑等命名点，荒野空地不入库，洞府、地皮和藏宝图按坐标稀疏占用。
 
 探险：
 
@@ -488,9 +488,8 @@ weapon_legends              武器传奇
 ## 测试命令
 
 ```powershell
-& "D:\Program Files\miniconda\envs\ws\python.exe" -m compileall 修仙 test
-& "D:\Program Files\miniconda\envs\ws\python.exe" test\修仙_架构业务自查.py
-& "D:\Program Files\miniconda\envs\ws\python.exe" test\修仙_冒烟测试.py
-& "D:\Program Files\miniconda\envs\ws\python.exe" test\修仙_ws触发测试.py
-& "D:\Program Files\miniconda\envs\ws\python.exe" test\修仙_命令压力测试.py
+python -B test\修仙_架构业务自查.py
+python -B test\修仙_冒烟测试.py
+python -B test\修仙_ws触发测试.py
+python -B test\修仙_命令压力测试.py
 ```

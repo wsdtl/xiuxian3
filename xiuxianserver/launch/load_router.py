@@ -1,8 +1,8 @@
-import os
 from fastapi import APIRouter
 from abc import abstractmethod
+from pathlib import Path
 from importlib import import_module
-from typing import Callable, List, Tuple
+from typing import Callable, Iterator, List, Tuple
 
 from .log import C, logger
 from .config import config
@@ -45,35 +45,64 @@ class LoadRouter:
     """根据 RouterConfig 收集模块路径。"""
 
     @staticmethod
-    def module_to_path(folder: str) -> str:
+    def module_to_path(folder: str) -> Path:
         """把 Python 模块路径转成本地目录路径。"""
 
-        if "." in folder:
-            folder = os.path.join(*folder.split("."))
+        path = Path(*folder.split(".")) if "." in folder else Path(folder)
+        if path.is_absolute():
+            return path
 
-        return folder
+        return config.base_dir / path
+
+    @staticmethod
+    def package_children(folder: str) -> Iterator[str]:
+        """遍历某个目录下带 __init__.py 的子包。"""
+
+        base_path = LoadRouter.require_directory(folder)
+
+        for child in sorted(base_path.iterdir(), key=lambda item: item.name):
+            if child.is_dir() and (child / "__init__.py").exists():
+                yield child.name
+
+    @staticmethod
+    def require_directory(folder: str) -> Path:
+        """确认配置指向的是一个真实目录。"""
+
+        path = LoadRouter.module_to_path(folder)
+        if not path.is_dir():
+            raise FileNotFoundError(f"模块目录不存在或不是目录：{folder} -> {path}")
+
+        return path
+
+    @staticmethod
+    def require_package(folder: str) -> Path:
+        """确认配置指向的是一个 Python 包目录。"""
+
+        path = LoadRouter.require_directory(folder)
+        init_file = path / "__init__.py"
+        if not init_file.is_file():
+            raise FileNotFoundError(f"模块缺少 __init__.py：{folder} -> {init_file}")
+
+        return path
 
     @staticmethod
     def load_router_folders(folder: str) -> None:
         """收集某个目录下所有带 router 的子模块。
 
-        例：folder="auto" 时，会收集 auto.cfg 这类子模块。
+        例：folder="src" 时，会收集 src.xxx、src.yyy。
         """
 
-        folders = [f for f in os.listdir(LoadRouter.module_to_path(folder)) if os.path.isdir(os.path.join(LoadRouter.module_to_path(folder), f))]
-
-        for module in folders:
-            if "__init__.py" in os.listdir(os.path.join(LoadRouter.module_to_path(folder), module)):
-                Routers.router_list.append(f"{folder}.{module}")
-                Routers.module_list.append(f"{folder}.{module}")
+        for module in LoadRouter.package_children(folder):
+            Routers.router_list.append(f"{folder}.{module}")
+            Routers.module_list.append(f"{folder}.{module}")
 
     @staticmethod
     def load_router_folder(folder: str) -> None:
         """收集一个自身带 router 的模块。"""
 
-        if "__init__.py" in os.listdir(LoadRouter.module_to_path(folder)):
-            Routers.router_list.append(folder)
-            Routers.module_list.append(folder)
+        LoadRouter.require_package(folder)
+        Routers.router_list.append(folder)
+        Routers.module_list.append(folder)
 
     @staticmethod
     def load_router_group(folder: str) -> None:
@@ -83,10 +112,8 @@ class LoadRouter:
         """
 
         LoadRouter.load_router_folder(folder)
-        folders = [f for f in os.listdir(LoadRouter.module_to_path(folder)) if os.path.isdir(os.path.join(LoadRouter.module_to_path(folder), f))]
-        for module in folders:
-            if "__init__.py" in os.listdir(os.path.join(LoadRouter.module_to_path(folder), module)):
-                Routers.module_list.append(f"{folder}.{module}")
+        for module in LoadRouter.package_children(folder):
+            Routers.module_list.append(f"{folder}.{module}")
 
     @staticmethod
     def load_module(folder: str) -> None:
@@ -101,10 +128,8 @@ class LoadRouter:
         例：folder="auto" 时，会收集 auto.cfg 这类子模块。
         """
 
-        folders = [f for f in os.listdir(LoadRouter.module_to_path(folder)) if os.path.isdir(os.path.join(LoadRouter.module_to_path(folder), f))]
-        for module in folders:
-            if "__init__.py" in os.listdir(os.path.join(LoadRouter.module_to_path(folder), module)):
-                Routers.module_list.append(f"{folder}.{module}")
+        for module in LoadRouter.package_children(folder):
+            Routers.module_list.append(f"{folder}.{module}")
 
 
 def FastAPILoadRouter() -> None:
@@ -130,8 +155,8 @@ def module_tag(module_name: str) -> str:
 
     例如：
 
-        修仙 -> 修仙
-        修仙.修仙帮助 -> 修仙帮助
+        src.室温监控 -> 室温监控
+        src.user.api -> api
 
     以后想显示更完整的分类名，可以只改这里。
     """
@@ -166,9 +191,13 @@ def FastAPIIncludeRouter(app) -> None:
             )
             raise
 
-        if module_name in Routers.router_list and hasattr(module, "router"):
+        if module_name in Routers.router_list:
+            router = getattr(module, "router", None)
+            if router is None:
+                raise AttributeError(f"路由模块未暴露 router：{module_name}")
+
             tag = module_tag(module_name)
-            app.include_router(module.router, tags=[tag])
+            app.include_router(router, tags=[tag])
             logger.opt(colors=True).success(
                 C.join(
                     C.ok("Loaded module include router"),

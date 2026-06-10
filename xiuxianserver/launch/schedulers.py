@@ -13,7 +13,7 @@ def _get_scheduler_timezone() -> ZoneInfo:
     try:
         return ZoneInfo(config.project.timezone)
     except ZoneInfoNotFoundError as exc:
-        raise ValueError(f"APP_TIMEZONE 配置无效，当前值是：{config.project.timezone}") from exc
+        raise ValueError(f"PROJECT_TIMEZONE 配置无效，当前值是：{config.project.timezone}") from exc
 
 
 SCHEDULER_TIMEZONE = _get_scheduler_timezone()
