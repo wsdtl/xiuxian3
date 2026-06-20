@@ -8,6 +8,7 @@ from typing import Any
 
 from .common import business_day, dt, load_json, money, row_value
 from .constants import (
+    BANK_LEVELS,
     ENCOUNTER_SECONDS,
     EXPLORE_MINUTES,
     REST_FAST_SECONDS,
@@ -101,6 +102,9 @@ def collect_notifications(
     result.extend(_duel_request_notifications(client_id, database, current))
     result.extend(_world_material_notifications(client_id, database, current))
     result.extend(_second_hand_notifications(client_id, database, current))
+    result.extend(_source_vault_notifications(client_id, database, current))
+    result.extend(_newbie_gift_notifications(client_id, database))
+    result.extend(_daily_sign_notifications(client_id, database, current))
     return _dedupe_notifications(result)
 
 
@@ -342,6 +346,71 @@ def _second_hand_notifications(client_id: str, database: Any, current: datetime)
     gain = max(0, int(row_value(row, "total_price", 0) or 0) - int(row_value(row, "fee", 0) or 0))
     buyer = str(row_value(row, "buyer_name", "某位道友") or "某位道友")
     return [Notification("second_hand_sale", f"二手成交到账：{buyer}付来{money(gain)}", 90)]
+
+
+def _source_vault_notifications(client_id: str, database: Any, current: datetime) -> list[Notification]:
+    """提醒源库已有可领取利息；低优先级，但避免超过 24 小时丢计息。"""
+
+    row = database.fetch_one(
+        """
+        SELECT star_level, balance, last_settle_at, last_interest_day, daily_interest_claimed
+        FROM source_vaults
+        WHERE client_id = ?
+        """,
+        (client_id,),
+    )
+    if not row:
+        return []
+    balance = max(0, int(row_value(row, "balance", 0) or 0))
+    if balance <= 0:
+        return []
+    star_level = int(row_value(row, "star_level", 1) or 1)
+    conf = BANK_LEVELS.get(star_level, BANK_LEVELS[1])
+    day = business_day(current)
+    claimed = int(row_value(row, "daily_interest_claimed", 0) or 0) if row_value(row, "last_interest_day", "") == day else 0
+    left_limit = int(conf["daily_interest_limit"]) - claimed
+    if left_limit <= 0:
+        return []
+    last = dt(str(row_value(row, "last_settle_at", "") or "")) or current
+    hours = max(0.0, min(24.0, (current - last).total_seconds() / 3600))
+    reward = max(0, min(int(balance * float(conf["hour_rate"]) * hours), left_limit))
+    if reward <= 0:
+        return []
+    return [Notification("source_vault_interest", "源库结息可领", 85)]
+
+
+def _newbie_gift_notifications(client_id: str, database: Any) -> list[Notification]:
+    """提醒还没领一次性新手礼包；低优先级，不挤占成熟待办。"""
+
+    row = database.fetch_one(
+        """
+        SELECT newbie_claimed
+        FROM players
+        WHERE client_id = ?
+        """,
+        (client_id,),
+    )
+    if not row or int(row_value(row, "newbie_claimed", 0) or 0):
+        return []
+    return [Notification("newbie_gift", "新手礼包待领", 95)]
+
+
+def _daily_sign_notifications(client_id: str, database: Any, current: datetime) -> list[Notification]:
+    """提醒今日还没签到；这是低优先级日常，不挤占急事队首。"""
+
+    row = database.fetch_one(
+        """
+        SELECT last_sign_date
+        FROM players
+        WHERE client_id = ?
+        """,
+        (client_id,),
+    )
+    if not row:
+        return []
+    if str(row_value(row, "last_sign_date", "") or "") == business_day(current):
+        return []
+    return [Notification("daily_sign", "今日签到待领", 100)]
 
 
 def _sect_war_system_messages(database: Any, current: datetime) -> list[SystemMessage]:

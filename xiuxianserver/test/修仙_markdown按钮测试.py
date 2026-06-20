@@ -13,8 +13,8 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from 修仙.format_text import T
 from 修仙.markdown_utils import MarkdownKeyboard, button, markdown_message_from_text
-from 修仙.common import dump_json, now, ts
-from 修仙.notifications import system_message_line
+from 修仙.common import business_day, dump_json, now, ts
+from 修仙.notifications import notification_line, system_message_line
 from 修仙.sql import XiuxianDB
 from 修仙.修仙帮助.service import service as help_service
 from 修仙.reply import _with_player_name
@@ -26,6 +26,12 @@ class FakeDB:
     def fetch_one(self, sql: str, *_args, **_kwargs) -> dict | None:
         if "FROM players AS p" in sql:
             return {"display_name": "青衫客", "title": "试剑人", "level": 19}
+        if "SELECT last_sign_date" in sql:
+            return {"last_sign_date": business_day()}
+        if "SELECT newbie_claimed" in sql:
+            return {"newbie_claimed": 1}
+        if "FROM source_vaults" in sql:
+            return None
         if "FROM players" in sql:
             return {
                 "status": "空闲",
@@ -54,6 +60,18 @@ class NoticeDB(FakeDB):
     def fetch_one(self, sql: str, params=(), *_args, **_kwargs) -> dict | None:
         if "FROM players AS p" in sql:
             return {"display_name": "青衫客", "title": "试剑人", "level": 19}
+        if "SELECT last_sign_date" in sql:
+            return {"last_sign_date": None}
+        if "SELECT newbie_claimed" in sql:
+            return {"newbie_claimed": 0}
+        if "FROM source_vaults" in sql:
+            return {
+                "star_level": 1,
+                "balance": 100_000,
+                "last_settle_at": ts(now() - timedelta(hours=2)),
+                "last_interest_day": None,
+                "daily_interest_claimed": 0,
+            }
         if "FROM players" in sql:
             return {
                 "status": "休息中",
@@ -134,12 +152,12 @@ def _seed_notice_player(db: XiuxianDB, client_id: str = "notice_ws") -> None:
         INSERT INTO players
         (client_id, display_name, level, exp, hp, max_hp, mp, max_mp, physique_id,
          physique_value, base_attack, defense, source_stones, status, location_name,
-         x, y, backpack_limit, weight_limit, created_at)
+         x, y, backpack_limit, weight_limit, last_sign_date, created_at)
         VALUES (?, '听雪客', 12, 0, 0, 100, 0, 60, 'fanti',
                 0, 5, 0, 0, '空闲', '天枢城',
-                0, 0, 80, 500, ?)
+                0, 0, 80, 500, ?, ?)
         """,
-        (client_id, ts()),
+        (client_id, business_day(), ts()),
     )
 
 
@@ -261,6 +279,7 @@ def test_reply_header_system_line_before_personal_notice() -> None:
     db = _real_notice_db()
     try:
         _seed_notice_player(db)
+        db.execute("UPDATE players SET newbie_claimed = 1 WHERE client_id = ?", ("notice_ws",))
         db.execute(
             """
             INSERT INTO wormholes (
@@ -330,6 +349,54 @@ def test_reply_header_notice_not_used_for_predictive_buttons() -> None:
     )
     commands = _payload_commands(payload)
     assert commands == ["指南", "状态", "修仙信息"]
+
+
+def test_daily_sign_notice_is_low_priority() -> None:
+    """低优先级日常会进个人通知，但不能挤掉更急的三条队首。"""
+
+    full_line = notification_line("player_ws", NoticeDB(), limit=10)
+    assert "源库结息可领" in full_line
+    assert "新手礼包待领" in full_line
+    assert "今日签到待领" in full_line
+
+    limited_payload = _with_player_name(
+        "player_ws",
+        {"code": 202, "type": "text", "message": "正文"},
+        NoticeDB(),
+    )
+    lines = _payload_lines(limited_payload)
+    assert lines[1] == "🔴 通知：休息可结束｜探险可结束｜首领奖励待领"
+    assert "今日签到待领" not in lines[1]
+
+
+def test_low_priority_daily_notices_from_real_tables() -> None:
+    """低优先级提醒按真实表状态判断。"""
+
+    db = _real_notice_db()
+    try:
+        _seed_notice_player(db)
+        line = notification_line("notice_ws", db, limit=10)
+        assert "今日签到待领" not in line
+        assert "新手礼包待领" in line
+        assert "源库结息可领" not in line
+
+        db.execute(
+            """
+            INSERT INTO source_vaults
+            (client_id, star_level, balance, last_settle_at, last_interest_day, daily_interest_claimed)
+            VALUES (?, 1, 100000, ?, NULL, 0)
+            """,
+            ("notice_ws", ts(now() - timedelta(hours=2))),
+        )
+        assert "源库结息可领" in notification_line("notice_ws", db, limit=10)
+
+        db.execute("UPDATE players SET newbie_claimed = 1 WHERE client_id = ?", ("notice_ws",))
+        assert "新手礼包待领" not in notification_line("notice_ws", db, limit=10)
+
+        db.execute("UPDATE players SET last_sign_date = ? WHERE client_id = ?", ("2000-01-01", "notice_ws"))
+        assert "今日签到待领" in notification_line("notice_ws", db, limit=10)
+    finally:
+        _close_real_notice_db(db)
 
 
 def test_reply_header_notice_failure_is_silent() -> None:
@@ -484,6 +551,8 @@ def main() -> None:
     test_system_message_queue_limit_and_backfill()
     test_reply_header_notice_keeps_handwritten_buttons()
     test_reply_header_notice_not_used_for_predictive_buttons()
+    test_daily_sign_notice_is_low_priority()
+    test_low_priority_daily_notices_from_real_tables()
     test_reply_header_notice_failure_is_silent()
     test_reply_header_notice_from_real_tables()
     test_hint_without_button_tags_uses_default_markdown_buttons()
