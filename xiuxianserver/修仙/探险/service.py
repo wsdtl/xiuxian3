@@ -1533,7 +1533,6 @@ class ExplorationService(CoreService):
             weapon_drops_text=self._format_weapon_awards(weapon_drops),
             medicine_text=self._format_medicine_used(medicine_used) if medicine_used else "无",
             stop_reason=self._stop_reason(dead, bag_full),
-            event_drop_text=self._event_drop_text,
             detail=combat_log_text.wants_detail(player),
         )
 
@@ -1579,35 +1578,19 @@ class ExplorationService(CoreService):
             f"> 记录 **〔{record['record_id']}〕**｜环境：{realm.get('name', '未知')}",
             f"> {realm.get('desc', '虚空潮汐未留下明确信息。')}",
             f"> 战斗 **{len(events)}** 场｜胜 **{wins}**｜败 **{losses}**｜耗时 **{self._seconds_text(self._result_duration_seconds(result))}**",
-            f"> 最高强度：{highest_label}｜经验 **+{exp_total}**｜武器经验 **+{weapon_exp_total}**｜等级：{level_text}",
-            f"> 最终血气 **{hp_left}/{player['max_hp']}**｜精神 **{mp_left}/{player['max_mp']}**",
+            f"> 最高强度：{highest_label}",
+            f"> 经验 **+{exp_total}**｜武器经验 **+{weapon_exp_total}**｜等级：{level_text}",
+            f"> 最终状态：血气 **{hp_left}/{player['max_hp']}**｜精神 **{mp_left}/{player['max_mp']}**",
             f"> 停止原因：{stop_reason}",
             ">",
-            "> **秘境战斗摘要**",
+            "> **收获**",
+            f"> 背包：{self._format_backpack_awards(drops)}",
+            f"> 纳戒：{self._format_ring_awards(ring_drops)}",
+            f"> 武器：{self._format_weapon_awards(weapon_drops)}",
+            f"> 自动用药：{self._format_medicine_used(medicine_used) if medicine_used else '无'}",
+            f"> 战斗日志：{log_link}",
+            "> 当前状态：空闲",
         ]
-        if not events:
-            lines.append("> 本次没有战斗事件。")
-        for index, event in enumerate(events, start=1):
-            result_text = "胜" if event.get("win") else "败"
-            skill_count = sum(1 for action in event.get("actions", []) if isinstance(action, dict) and action.get("skill_used"))
-            weapon_exp = int(event.get("weapon_exp", 0)) if int(event.get("weapon_id", 0)) > 0 else 0
-            lines.append(
-                f"> 第 {index} 战｜{event.get('monster', '怪物')} {event.get('monster_label', '')}｜{result_text}｜"
-                f"行动 **{len(event.get('actions', []))}**｜技能 **{skill_count}**｜经验 **+{int(event.get('exp', 0))}**｜武器经验 **+{weapon_exp}**"
-            )
-            lines.append(f"> 战后：血气 **{int(event.get('hp_left', 0))}/{player['max_hp']}**｜精神 **{int(event.get('mp_left', 0))}/{player['max_mp']}**｜掉落：{self._event_drop_text(event)}")
-        lines.extend(
-            [
-                ">",
-                "> **最终收获**",
-                f"> 背包：{self._format_backpack_awards(drops)}",
-                f"> 纳戒：{self._format_ring_awards(ring_drops)}",
-                f"> 武器：{self._format_weapon_awards(weapon_drops)}",
-                f"> 自动用药：{self._format_medicine_used(medicine_used) if medicine_used else '无'}",
-                f"> 战斗日志：{log_link}",
-                "> 当前状态：空闲",
-            ]
-        )
         return combat_log_text.markdown_reply("\n".join(lines))
 
     def _event_log_lines(self, index: int, event: dict, player: dict) -> list[str]:

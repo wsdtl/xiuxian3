@@ -1399,6 +1399,7 @@ class XiuxianDB:
                 story TEXT NOT NULL,
                 farewell TEXT NOT NULL,
                 feather_text TEXT NOT NULL,
+                location_name TEXT NOT NULL,
                 atmosphere TEXT NOT NULL DEFAULT '[]',
                 level INTEGER NOT NULL,
                 max_hp INTEGER NOT NULL,

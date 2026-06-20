@@ -875,11 +875,11 @@ class SeasonalBossService(CoreService):
                 """
                 INSERT INTO seasonal_boss_events (
                     business_day, boss_key, event_type, weight_type, boss_name, title,
-                    scene, story, farewell, feather_text, atmosphere,
+                    scene, story, farewell, feather_text, location_name, atmosphere,
                     level, max_hp, hp, attack, defense, difficulty,
                     status, opened_at, closes_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '开启', ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '开启', ?, ?)
                 """,
                 (
                     day.isoformat(),
@@ -892,6 +892,7 @@ class SeasonalBossService(CoreService):
                     boss_def.story,
                     boss_def.farewell,
                     boss_def.feather_text,
+                    boss_def.location,
                     dump_json(list(boss_def.atmosphere)),
                     level,
                     max_hp,
@@ -1060,7 +1061,7 @@ class SeasonalBossService(CoreService):
         item_texts: list[str] = []
         feathers = 0
         weapons: list[dict[str, Any]] = []
-        location_name = self._event_location_name(event, player)
+        location_name = str(event["location_name"])
 
         recover = self._random_equipment_item("恢复类")
         if recover:
@@ -1253,20 +1254,6 @@ class SeasonalBossService(CoreService):
         )
         return random.choice(rows) if rows else None
 
-    @staticmethod
-    def _event_location_name(event: dict[str, Any], player: dict[str, Any] | None = None) -> str:
-        """读取岁时情劫所在地点，兼容旧事件行没有地点列的情况。"""
-
-        event_location = str(event.get("location_name") or "").strip()
-        if event_location:
-            return event_location
-        boss_def = ALL_BOSS_DEFS.get(str(event.get("boss_key") or ""))
-        if boss_def:
-            return boss_def.location
-        if player:
-            return str(player.get("location_name") or "")
-        return ""
-
     def _participants(self, event_id: int) -> list[dict[str, Any]]:
         """读取首领贡献排行。"""
 
@@ -1390,8 +1377,7 @@ class SeasonalBossService(CoreService):
         closes = dt(event["closes_at"])
         left = max(0, int((closes - now()).total_seconds() // 60) + 1) if closes else 0
         extra = "\n今日为人间重节，旧愿尤深，铭刻之羽更易遗落。" if event["weight_type"] == "高权重传统节日" else ""
-        boss_def = ALL_BOSS_DEFS.get(str(event["boss_key"]))
-        location = boss_def.location if boss_def else "未知旧地"
+        location = str(event["location_name"])
         panel = T.panel()
         panel.section(f"今日岁时情劫·{event['boss_name']}")
         panel.line(f"{event['title']}，现于{location}。")

@@ -6,7 +6,7 @@
 
 - 修仙帮助、修仙百科、后台接口、玩家、背包、纳戒、保险箱、修仙物品、源库、二手市场、贸易服务、宗门、探险、武器、装备、铭刻、对战、异界虫洞、首领、修仙界历史、数据库备份都是中文二级组件。
 - HTTP 路由由 `后台接口` 和 `修仙帮助` 承接；`后台接口` 是 web 后台 API 承接点，`修仙帮助` 提供 Hexo/Vexos 风格 Markdown 文档站。
-- 数据库使用 sqlite3，schema 版本为 `SCHEMA_VERSION = 2026061905`；`player_weapons` 保存累计经验，但不保存攻击、自带技能或附魔槽位这类可实时派生字段；`sects` 保存宗门山门坐标、创建者和宗主，`sect_members` 保存宗门成员归属，`sect_stats` 保存宗门等级和三底蕴，宗门战数据按周期累计到宗门影响力、个人贡献和奖励表。
+- 数据库使用 sqlite3，schema 版本为 `SCHEMA_VERSION = 2026062001`；`player_weapons` 保存累计经验，但不保存攻击、自带技能或附魔槽位这类可实时派生字段；`sects` 保存宗门山门坐标、创建者和宗主，`sect_members` 保存宗门成员归属，`sect_stats` 保存宗门等级和三底蕴，宗门战数据按周期累计到宗门影响力、个人贡献和奖励表。
 - 行为沉淀使用长期表：`game_logs` 记关键行为流水，`player_lifetime_stats` 接清理前的累计统计，`player_journals` 记玩家日记摘要，`player_titles` 记动态称号，`daily_fortunes` 记每日气运，`weapon_legends` 记武器传奇。
 - 每个二级包保留 `说明.md`，作为单个组件的使用和扩展约束；帮助站会读取这些 Markdown。
 - `稳定版封版记录.md` 保存当前可运营基线、验证结果和上线前检查。

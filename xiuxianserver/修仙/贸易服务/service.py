@@ -1763,7 +1763,19 @@ class TradeService(WeaponCore):
                 if not self.remove_gem_conn(conn, client_id, item["ring_item_id"], resolved_level, amount):
                     return T.hint("宝石库存已变化，出售失败。", "发送：宝石 查看当前库存后再试。<宝石>")
                 self._grant_source_stones_conn(conn, client_id, int(quote["value"]))
-                self._insert_gem_recycle_record_conn(conn, client_id, item, resolved_level, amount, quote, location)
+                self._insert_gem_recycle_record_conn(
+                    conn,
+                    client_id,
+                    {
+                        "gem_id": item["ring_item_id"],
+                        "name": item["name"],
+                        "quality": item["quality"],
+                    },
+                    resolved_level,
+                    amount,
+                    quote,
+                    location,
+                )
                 self._write_game_log_conn(
                     conn,
                     client_id,
@@ -1861,7 +1873,7 @@ class TradeService(WeaponCore):
             """,
             (
                 client_id,
-                TradeService._gem_recycle_id(gem),
+                str(gem["gem_id"]),
                 gem["name"],
                 gem["quality"],
                 level,
@@ -1875,13 +1887,6 @@ class TradeService(WeaponCore):
                 ts(),
             ),
         )
-
-    @staticmethod
-    def _gem_recycle_id(gem: dict) -> str:
-        """兼容定义字典和 SQLite 行对象里的宝石 ID 字段。"""
-
-        keys = set(gem.keys())
-        return str(gem["ring_item_id"] if "ring_item_id" in keys else gem["gem_id"])
 
     @staticmethod
     def _today_gem_recycle_income_conn(conn, client_id: str) -> int:

@@ -18,14 +18,19 @@ from __future__ import annotations
 
 import ast
 import json
+import os
 import sys
+import time
+from datetime import datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from zoneinfo import ZoneInfo
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from launch.config import config
 from 修仙.sql import TRADE_FORBIDDEN_SPECIALTY_TYPES, XiuxianDB
 from 修仙.修仙物品.service import ItemInfoService
 
@@ -41,6 +46,7 @@ def main() -> None:
     _check_component_docs()
     _check_no_removed_entry()
     _check_seed_data()
+    _check_project_timezone()
     _check_treasure_detail_coverage()
     _check_known_effect_keys()
     _check_ws_command_duplicates()
@@ -325,6 +331,18 @@ def _check_seed_data() -> None:
             )
         finally:
             db.close()
+
+
+def _check_project_timezone() -> None:
+    """确认项目时区已经同步到当前进程，避免 Linux 日志时间跟本地时间错位。"""
+
+    assert os.environ.get("TZ") == config.project.timezone, "PROJECT_TIMEZONE 没有同步到进程 TZ"
+    if hasattr(time, "tzset"):
+        expected = datetime.fromtimestamp(0, ZoneInfo(config.project.timezone))
+        actual = time.localtime(0)
+        actual_tuple = (actual.tm_year, actual.tm_mon, actual.tm_mday, actual.tm_hour)
+        expected_tuple = (expected.year, expected.month, expected.day, expected.hour)
+        assert actual_tuple == expected_tuple, "进程 localtime 没有按 PROJECT_TIMEZONE 生效"
 
 
 def _check_treasure_detail_coverage() -> None:

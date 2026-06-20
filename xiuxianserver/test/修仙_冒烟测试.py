@@ -227,9 +227,9 @@ def _check_battle_log_renderer() -> None:
             "actor": "enemy",
             "skill_used": True,
             "skill_name": "回春刺",
-            "damage": 51,
-            "player_total_damage": 51,
-            "monster_damage": 0,
+            "damage": 999,
+            "player_total_damage": 999,
+            "monster_damage": 51,
             "life_steal": 4,
             "mp_cost": 7,
             "player_hp_left": 675,
@@ -239,6 +239,7 @@ def _check_battle_log_renderer() -> None:
         "怪物",
     )
     _must_contain(mirror_text, "太虚映身·寒魄鬼 使用技能「回春刺」，造成 51 伤害")
+    _must_not_contain(mirror_text, "造成 999 伤害")
     _must_contain(mirror_text, "吸血 +4")
     _must_contain(mirror_text, "消耗精神 7")
     _must_contain(mirror_text, "我方血气 675，精神 680")
@@ -919,10 +920,11 @@ def _check_duel(services: dict[str, object]) -> None:
     duel_result = duel.accept_duel("u2", "青衫客")
     _must_contain(duel_result, "决斗结算")
     _must_contain(duel_result, "决斗结束")
-    _must_contain(duel_result, "技能：")
     _must_contain(duel_result, "武器经验")
     duel_body = _payload_text(duel_result)
     assert "一、战斗明细" not in duel_body
+    assert "技能：" not in duel_body
+    assert "行动 **" not in duel_body
     assert "u1" not in duel_body
     assert "u2" not in duel_body
     _must_contain(duel.accept_duel("u2", "青衫客"), "没有找到待接受")
@@ -1490,6 +1492,9 @@ def _check_weapon_and_explore(services: dict[str, object]) -> None:
     _must_contain(claim_text, "zhandou-rizhi/explore")
     _must_contain(claim_text, "detail=1")
     _must_contain(claim_text, "武器经验")
+    _must_not_contain(claim_text, "战斗摘要")
+    _must_not_contain(claim_text, "我方技能")
+    _must_not_contain(claim_text, "行动 **")
     player_snapshot = explore.player("u1")
     assert player_snapshot is not None
     assert int(player_snapshot["rest_window_elapsed_seconds"]) == 0
@@ -1530,6 +1535,9 @@ def _check_weapon_and_explore(services: dict[str, object]) -> None:
         )
     secret_claim_text = explore.claim("u1")
     _must_contain(secret_claim_text, "太虚秘境结束")
+    _must_contain(secret_claim_text, "战斗日志")
+    _must_not_contain(secret_claim_text, "秘境战斗摘要")
+    _must_not_contain(secret_claim_text, "行动 **")
     secret_player_snapshot = explore.player("u1")
     assert secret_player_snapshot is not None
     assert int(secret_player_snapshot["rest_window_elapsed_seconds"]) == 120
@@ -1938,7 +1946,10 @@ def _check_wormhole(services: dict[str, object]) -> None:
         conn.execute("UPDATE players SET hp = max_hp, mp = max_mp WHERE client_id = ?", ("u1",))
     kill_text = wormhole.challenge("u1")
     _must_contain(kill_text, "Boss 已被击杀")
-    _must_contain(kill_text, "我方技能")
+    _must_contain(kill_text, "战斗日志")
+    _must_not_contain(kill_text, "我方技能")
+    _must_not_contain(kill_text, "Boss技能")
+    _must_not_contain(kill_text, "行动 **")
     assert "二、最终结算" not in _payload_text(kill_text)
     reward_text = wormhole.reward("u1")
     _must_contain(reward_text, "虫洞奖励")
@@ -2039,6 +2050,9 @@ def _check_seasonal_boss(services: dict[str, object]) -> None:
     _must_contain(challenge_text, "战斗日志")
     _must_contain(challenge_text, "zhandou-rizhi/boss")
     _must_contain(challenge_text, "detail=1")
+    _must_not_contain(challenge_text, "我方技能")
+    _must_not_contain(challenge_text, "首领技能")
+    _must_not_contain(challenge_text, "行动 **")
     boss_record = seasonal_boss.db.fetch_one(
         "SELECT result FROM boss_challenge_records WHERE event_id = ? AND client_id = ? ORDER BY record_id DESC LIMIT 1",
         (event["event_id"], "u1"),

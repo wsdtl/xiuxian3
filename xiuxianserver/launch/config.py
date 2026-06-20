@@ -15,9 +15,12 @@
 """
 
 import ast
+import os
+import time
 from pathlib import Path
 from typing import Iterable, List
 from dataclasses import dataclass
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 # 项目根目录。
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -173,6 +176,19 @@ class Env:
         return BASE_DIR / path
 
 
+def apply_project_timezone(timezone_name: str) -> None:
+    """把项目时区同步到当前进程，避免 Linux 本地时区和项目时区不一致。"""
+
+    try:
+        ZoneInfo(timezone_name)
+    except ZoneInfoNotFoundError as exc:
+        raise ValueError(f"PROJECT_TIMEZONE 配置无效，当前值是：{timezone_name}") from exc
+
+    os.environ["TZ"] = timezone_name
+    if hasattr(time, "tzset"):
+        time.tzset()
+
+
 @dataclass(frozen=True)
 class ProjectConfig:
     """项目基础配置。"""
@@ -299,6 +315,7 @@ def load_config() -> Config:
         timezone=env.get("PROJECT_TIMEZONE", "Asia/Shanghai"),
         domain=env.get("PROJECT_DOMAIN", ""),
     )
+    apply_project_timezone(project.timezone)
 
     # 服务监听配置。
     server = ServerConfig(

@@ -299,7 +299,7 @@ def _commands_from_first_code_block(lines: list[str]) -> tuple[str, ...]:
 
 
 def _commands_from_list_items(lines: list[str]) -> tuple[str, ...]:
-    """兼容少量不用代码块、只写列表的命令说明。"""
+    """读取列表形式的命令说明。"""
 
     commands: list[str] = []
     for line in lines:
@@ -529,7 +529,7 @@ def _command_item(line: str) -> str:
 
 
 def _command_parts(line: str) -> tuple[str, str, str]:
-    """兼容 `命令｜说明｜参数` 和旧的一行一命令写法。"""
+    """解析 `命令｜说明｜参数` 或单行命令说明。"""
 
     value = line.strip().strip("`")
     parts = [part.strip() for part in re.split(r"\s*[｜|]\s*", value) if part.strip()]

@@ -414,13 +414,13 @@ def weapon_attack_value(base_attack_value: object, quality: object, level: objec
 
 
 def computed_weapon_attack(weapon: Any | None) -> int:
-    """读取武器实时攻击；旧活动快照缺模板字段时兼容旧快照里的 attack。"""
+    """读取武器实时攻击。"""
 
     if not weapon:
         return 0
     base_attack_value = to_int(row_value(weapon, "base_attack", 0))
     if base_attack_value <= 0:
-        return max(0, to_int(row_value(weapon, "attack", 0)))
+        return 0
     return weapon_attack_value(
         base_attack_value,
         row_value(weapon, "quality", "凡品"),

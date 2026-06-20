@@ -324,7 +324,7 @@ def _action_text(action: dict[str, Any], enemy_name: str, enemy_label: str) -> s
         skill = _first_text(action, ("enemy_skill_name", "monster_skill_name", "boss_skill_name", "skill_name"))
         used = any(bool(action.get(key)) for key in ("enemy_skill_used", "monster_skill_used", "boss_skill_used", "skill_used"))
         attack = f"技能「{skill}」" if used and skill else "普通攻击"
-        damage = _first_positive_int(action, ("monster_damage", "boss_damage", "enemy_damage", "damage", "player_total_damage"))
+        damage = _first_int(action, ("monster_damage", "boss_damage", "enemy_damage"))
         extra = _action_effect_suffix(action, include_mp_cost=True)
         player_state = _player_state_suffix(action)
         if action.get("dodged"):
@@ -346,7 +346,7 @@ def _action_text(action: dict[str, Any], enemy_name: str, enemy_label: str) -> s
 
 
 def _is_enemy_action(action: dict[str, Any], actor: str) -> bool:
-    """判断本条是否是敌方出手，兼容怪物、Boss 和太虚映身记录。"""
+    """判断本条是否是敌方出手。"""
 
     if actor in {"enemy", "monster", "boss"}:
         return True
@@ -411,20 +411,6 @@ def _first_int(action: dict[str, Any], keys: tuple[str, ...]) -> int:
         if key in action:
             return _int_value(action.get(key))
     return 0
-
-
-def _first_positive_int(action: dict[str, Any], keys: tuple[str, ...]) -> int:
-    """优先读取正数伤害；兼容旧字段存在但为 0 的镜像战斗记录。"""
-
-    fallback = 0
-    for key in keys:
-        if key not in action:
-            continue
-        value = _int_value(action.get(key))
-        if value > 0:
-            return value
-        fallback = value
-    return fallback
 
 
 def _first_present_int(action: dict[str, Any], keys: tuple[str, ...]) -> int | None:

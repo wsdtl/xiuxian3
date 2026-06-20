@@ -510,11 +510,11 @@ def _ensure_seasonal_boss_conn(conn) -> None:
         """
         INSERT INTO seasonal_boss_events (
             business_day, boss_key, event_type, weight_type, boss_name, title,
-            scene, story, farewell, feather_text, atmosphere,
+            scene, story, farewell, feather_text, location_name, atmosphere,
             level, max_hp, hp, attack, defense, difficulty,
             status, opened_at, closes_at
         )
-        VALUES (?, ?, '二十四节气', '普通节气', ?, ?, ?, ?, ?, ?, ?,
+        VALUES (?, ?, '二十四节气', '普通节气', ?, ?, ?, ?, ?, ?, ?, ?,
                 5, 500, 1, 20, 5, 1.0, '开启', ?, ?)
         """,
         (
@@ -526,6 +526,7 @@ def _ensure_seasonal_boss_conn(conn) -> None:
             boss.story,
             boss.farewell,
             boss.feather_text,
+            boss.location,
             dump_json(list(boss.atmosphere)),
             ts(opened_at),
             ts(opened_at + timedelta(days=1)),

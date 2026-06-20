@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-from collections import Counter
 from typing import Any, Callable
 
 from .battle_log_links import battle_log_markdown
@@ -51,7 +50,6 @@ def exploration_brief(
     weapon_drops_text: str,
     medicine_text: str,
     stop_reason: str,
-    event_drop_text: Callable[[dict[str, Any]], str],
     detail: bool = False,
 ) -> dict[str, Any]:
     """探险结算的简要战斗日志。"""
@@ -67,30 +65,19 @@ def exploration_brief(
     lines = [
         "> **探险结束**",
         f"> 记录 **〔{record['record_id']}〕**｜地点：{record['location_name']}",
-        f"> 战斗 **{len(events)}** 场｜胜 **{wins}**｜败 **{losses}**｜经验 **+{exp_total}**｜武器经验 **+{weapon_exp_total}**",
-        f"> 等级：{level_text}｜最终血气 **{hp_left}/{player['max_hp']}**｜精神 **{mp_left}/{player['max_mp']}**",
+        f"> 战斗 **{len(events)}** 场｜胜 **{wins}**｜败 **{losses}**",
+        f"> 经验 **+{exp_total}**｜武器经验 **+{weapon_exp_total}**｜等级：{level_text}",
+        f"> 最终状态：血气 **{hp_left}/{player['max_hp']}**｜精神 **{mp_left}/{player['max_mp']}**",
         f"> 停止原因：{stop_reason}",
         ">",
-        "> **战斗摘要**",
+        "> **收获**",
+        f"> 背包：{drops_text}",
+        f"> 纳戒：{ring_drops_text}",
+        f"> 武器：{weapon_drops_text}",
+        f"> 自动用药：{medicine_text or '无'}",
+        f"> 战斗日志：{log_link}",
+        "> 当前状态：空闲",
     ]
-
-    if not events:
-        lines.append("> 本次没有战斗事件。")
-    for index, event in enumerate(events, start=1):
-        lines.extend(_exploration_event_lines(index, event, player, event_drop_text))
-
-    lines.extend(
-        [
-            ">",
-            "> **最终收获**",
-            f"> 背包：{drops_text}",
-            f"> 纳戒：{ring_drops_text}",
-            f"> 武器：{weapon_drops_text}",
-            f"> 自动用药：{medicine_text or '无'}",
-            f"> 战斗日志：{log_link}",
-            "> 当前状态：空闲",
-        ]
-    )
     return markdown_reply("\n".join(lines))
 
 
@@ -116,11 +103,7 @@ def boss_brief(
 ) -> dict[str, Any]:
     """虫洞和首领挑战的简要战斗日志。"""
 
-    actions = result.get("actions")
-    action_list = actions if isinstance(actions, list) else []
     weapon_exp = int(result.get("weapon_exp", 0)) if int(result.get("weapon_id", 0)) > 0 else 0
-    player_skills = _skill_count(action_list, "skill_used", "skill_name")
-    boss_skills = _skill_count(action_list, "boss_skill_used", "boss_skill_name")
     state_text = killed_text if killed else alive_text
     if int(result.get("hp_left", 0)) <= 0:
         state_text = f"{hurt_text}；{state_text}"
@@ -133,14 +116,11 @@ def boss_brief(
     lines = [
         f"> **{title}**",
     ]
-    if subtitle.strip():
-        lines.append(f"> {subtitle.strip()}")
     lines.extend(
         [
             f"> {boss_label}：{boss_name}｜剩余 **{left_hp}/{max_hp}**",
-            f"> 本次伤害 **{damage}**｜行动 **{len(action_list)}** 次{reward_text}",
-            f"> 我方：血气 **{result['hp_left']}/{player['max_hp']}**｜精神 **{result['mp_left']}/{player['max_mp']}**",
-            f"> 我方技能：{_skill_text(player_skills)}｜{boss_label}技能：{_skill_text(boss_skills)}",
+            f"> 本次伤害 **{damage}**{reward_text}",
+            f"> 我方状态：血气 **{result['hp_left']}/{player['max_hp']}**｜精神 **{result['mp_left']}/{player['max_mp']}**",
             f"> {state_text}",
         ]
     )
@@ -161,25 +141,13 @@ def duel_brief(
 ) -> dict[str, Any]:
     """切磋和决斗的简要战斗日志。"""
 
-    actions = result.get("actions")
-    action_list = actions if isinstance(actions, list) else []
     left_weapon_exp = int(result.get("left_weapon_exp", 0)) if int(result.get("left_weapon_id", 0)) > 0 else 0
     right_weapon_exp = int(result.get("right_weapon_exp", 0)) if int(result.get("right_weapon_id", 0)) > 0 else 0
-    skill_counter: Counter[str] = Counter()
-    for action in action_list:
-        for side in ("left", "right"):
-            attack = action.get(side)
-            if not isinstance(attack, dict) or not attack.get("skill_used"):
-                continue
-            actor = format_player_name(str(attack.get("actor_id", "")))
-            skill = str(attack.get("skill_name") or "技能")
-            skill_counter[f"{actor}：{skill}"] += 1
 
     left_id = str(result.get("left_id", ""))
     right_id = str(result.get("right_id", ""))
     lines = [
         f"> **{title}**",
-        f"> {result.get('summary', '')}",
         f"> 胜者：{format_player_name(str(result.get('winner_id', '')))}｜败者：{format_player_name(str(result.get('loser_id', '')))}",
         (
             f"> {format_player_name(left_id)}：血气 **{result.get('left_hp_left', 0)}/{result.get('left_max_hp', 0)}**｜"
@@ -189,7 +157,6 @@ def duel_brief(
             f"> {format_player_name(right_id)}：血气 **{result.get('right_hp_left', 0)}/{result.get('right_max_hp', 0)}**｜"
             f"精神 **{result.get('right_mp_left', 0)}/{result.get('right_max_mp', 0)}**"
         ),
-        f"> 技能：{_skill_text(skill_counter)}｜行动 **{len(action_list)}** 次",
     ]
     weapon_exp_parts = []
     if left_weapon_exp > 0:
@@ -204,48 +171,3 @@ def duel_brief(
         label = f"{title.replace('结束', '')}战斗日志〔{record_id}〕"
         lines.append(f"> 战斗日志：{battle_log_markdown(label, log_kind, record_id, detail=detail)}")
     return markdown_reply("\n".join(lines))
-
-
-def _exploration_event_lines(
-    index: int,
-    event: dict[str, Any],
-    player: dict[str, Any],
-    event_drop_text: Callable[[dict[str, Any]], str],
-) -> list[str]:
-    """单场探险战斗摘要。"""
-
-    actions = event.get("actions")
-    action_list = actions if isinstance(actions, list) else []
-    player_skills = _skill_count(action_list, "skill_used", "skill_name")
-    enemy_skills = _skill_count(action_list, "monster_skill_used", "monster_skill_name")
-    result_text = "胜利" if event.get("win") else "失败"
-    hp_left = max(0, int(event.get("hp_left", 0)))
-    mp_left = max(0, int(event.get("mp_left", 0)))
-    monster = str(event.get("monster") or "怪物")
-    weapon_exp = int(event.get("weapon_exp", 0)) if int(event.get("weapon_id", 0)) > 0 else 0
-    return [
-        f"> **第 {index} 战**｜{monster}｜{result_text}",
-        (
-            f"> 行动 **{len(action_list)}** 次｜我方技能：{_skill_text(player_skills)}｜"
-            f"敌方技能：{_skill_text(enemy_skills)}｜经验 **+{int(event.get('exp', 0))}**｜武器经验 **+{weapon_exp}**"
-        ),
-        f"> 战后：血气 **{hp_left}/{player['max_hp']}**｜精神 **{mp_left}/{player['max_mp']}**｜掉落：{event_drop_text(event)}",
-    ]
-
-
-def _skill_count(actions: list[dict[str, Any]], used_key: str, name_key: str) -> Counter[str]:
-    """统计技能触发次数。"""
-
-    counter: Counter[str] = Counter()
-    for action in actions:
-        if action.get(used_key):
-            counter[str(action.get(name_key) or "技能")] += 1
-    return counter
-
-
-def _skill_text(counter: Counter[str]) -> str:
-    """技能统计展示。"""
-
-    if not counter:
-        return "无"
-    return "、".join(f"{name} x{count}" for name, count in counter.items())

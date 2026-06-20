@@ -333,9 +333,12 @@ async def main_async() -> None:
             _must_reply(manager, "player_ws", "暂无挑战记录")
             await _dispatch(manager, "player_ws", "挑战首领")
             _must_reply(manager, "player_ws", "已被送回岁时深处")
-            _must_reply(manager, "player_ws", "我方技能")
-            _must_reply(manager, "player_ws", "首领技能")
-            assert "我方出手" not in _last_reply_text(manager), manager.sent
+            _must_reply(manager, "player_ws", "战斗日志")
+            boss_reply = _last_reply_text(manager)
+            assert "我方技能" not in boss_reply, manager.sent
+            assert "首领技能" not in boss_reply, manager.sent
+            assert "行动 **" not in boss_reply, manager.sent
+            assert "我方出手" not in boss_reply, manager.sent
             await _dispatch(manager, "player_ws", "首领奖励")
             _must_reply(manager, "player_ws", "岁时情劫奖励")
             with db.transaction() as conn:
@@ -404,9 +407,12 @@ async def main_async() -> None:
             _must_reply(manager, "player_ws", "暂无挑战记录")
             await _dispatch(manager, "player_ws", "挑战虫洞")
             _must_reply(manager, "player_ws", "挑战虫洞")
-            _must_reply(manager, "player_ws", "我方技能")
-            _must_reply(manager, "player_ws", "Boss技能")
-            assert "我方出手" not in _last_reply_text(manager), manager.sent
+            _must_reply(manager, "player_ws", "战斗日志")
+            wormhole_reply = _last_reply_text(manager)
+            assert "我方技能" not in wormhole_reply, manager.sent
+            assert "Boss技能" not in wormhole_reply, manager.sent
+            assert "行动 **" not in wormhole_reply, manager.sent
+            assert "我方出手" not in wormhole_reply, manager.sent
             await _dispatch(manager, "player_ws", "虫洞奖励")
             _must_reply(manager, "player_ws", "还没有结束")
 
