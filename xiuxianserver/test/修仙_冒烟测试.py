@@ -2128,11 +2128,46 @@ def _check_seasonal_boss(services: dict[str, object]) -> None:
     finally:
         seasonal_boss_service_module.random.random = old_boss_random
     _must_contain(reward_text, "岁时情劫奖励")
+    _must_contain(reward_text, "结果：已击破")
     _must_contain(reward_text, "首领权重：普通节气")
     _must_contain(reward_text, "珍贵抽取")
     _must_contain(reward_text, "宗门增益：珍贵掉落")
     assert any(text in reward_text for text in ("开孔器", "洗髓液", "铭刻之羽", "宝石获得", "纳戒获得", "获得武器"))
     assert reward_text.count("获得铭刻之羽") <= 1
+
+    with seasonal_boss.db.transaction() as conn:
+        conn.execute("DELETE FROM seasonal_boss_participants")
+        conn.execute("DELETE FROM seasonal_boss_events")
+        cursor = conn.execute(
+            """
+            INSERT INTO seasonal_boss_events (
+                business_day, boss_key, event_type, weight_type, boss_name, title,
+                scene, story, farewell, feather_text, location_name, atmosphere,
+                level, max_hp, hp, attack, defense, difficulty,
+                status, opened_at, closes_at, killed_at, result
+            )
+            VALUES (
+                '2099-02-05', 'test_retreat', '每日旧愿', '每日旧愿', '退去旧愿',
+                '迟归旧愿', '一段用于测试的旧愿。', '它只剩半口气，却没有被击破。',
+                '旧愿退去。', '一枚测试铭刻之羽。', '天枢城', '[]',
+                10, 10000, 7500, 50, 10, 1.0,
+                '已退去', '2000-01-01T00:00:00', '2000-01-02T04:00:00', NULL, '{"reason":"timeout"}'
+            )
+            """
+        )
+        retreat_event_id = int(cursor.lastrowid)
+        conn.execute(
+            """
+            INSERT INTO seasonal_boss_participants
+            (event_id, client_id, damage, challenge_count, last_challenge_at, reward_claimed, created_at, updated_at)
+            VALUES (?, 'u1', 2500, 1, '2000-01-01T00:10:00', 0, '2000-01-01T00:10:00', '2000-01-01T00:10:00')
+            """,
+            (retreat_event_id,),
+        )
+    retreat_reward = seasonal_boss.reward("u1")
+    _must_contain(retreat_reward, "结果：已退去")
+    _must_contain(retreat_reward, "贡献：25.0%")
+    _must_not_contain(retreat_reward, "贡献：100.0%")
 
     feather = seasonal_boss.db.fetch_one(
         "SELECT feather_id FROM inscription_feathers WHERE client_id = ? ORDER BY feather_id LIMIT 1",

@@ -792,7 +792,7 @@ class SeasonalBossService(CoreService):
 
             lines = [
                 f"岁时情劫奖励：{event['boss_name']}",
-                f"贡献：{reward['contribution']:.1%}，排名：{reward['rank']}",
+                f"结果：{event['status']}｜贡献：{reward['contribution']:.1%}，排名：{reward['rank']}",
                 f"首领权重：{event['weight_type']}｜珍贵抽取：{reward.get('loot_rolls', 1)} 次",
                 f"宗门增益：珍贵掉落 +{float(reward.get('influence_bonus') or 0.0):.1%}",
                 f"源石+{money(reward['stones'])}，经验+{reward['exp']}",
@@ -1267,16 +1267,12 @@ class SeasonalBossService(CoreService):
         )
 
     def _contribution(self, damage: int, event: dict[str, Any]) -> float:
-        """计算贡献占比。"""
+        """计算个人伤害占首领总血量的比例。"""
 
-        total = self.db.fetch_one(
-            "SELECT COALESCE(SUM(damage), 0) AS total FROM seasonal_boss_participants WHERE event_id = ?",
-            (event["event_id"],),
-        )
-        total_damage = int(total["total"] if total else 0)
-        if total_damage <= 0:
+        max_hp = int(event.get("max_hp") or 0)
+        if max_hp <= 0:
             return 0.0
-        return max(0.0, min(1.0, int(damage) / total_damage))
+        return max(0.0, min(1.0, int(damage) / max_hp))
 
     def _world_snapshot(self) -> dict[str, int]:
         """读取近期活跃生态，用于动态难度。"""
