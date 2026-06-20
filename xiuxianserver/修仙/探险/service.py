@@ -140,7 +140,7 @@ class ExplorationService(CoreService):
                     f"{row['name']} ({row['x']},{row['y']})｜动态映身｜"
                     f"推荐 **Lv.{row['recommended_level']}**｜{row['desc']}"
                 )
-        buttons = [f"探险 {row['name']}" for row in rows]
+        buttons = [f"导航 {row['name']}" for row in rows]
         buttons.extend(["地图", "商场推荐"])
         return panel.render() + T.buttons(*buttons)
 

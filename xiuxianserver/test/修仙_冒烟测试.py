@@ -1259,7 +1259,7 @@ def _check_weapon_and_explore(services: dict[str, object]) -> None:
     _must_contain(location_text, "特殊秘境")
     _must_contain(location_text, "星陨墟")
     _must_contain(location_text, "太虚秘境")
-    _must_contain(location_text, "<探险 天枢城>")
+    _must_contain(location_text, "<导航 天枢城>")
     _must_not_contain(location_text, "丹霞镇")
 
     _must_contain(weapon.list_weapons("u1"), "青岚短剑")
