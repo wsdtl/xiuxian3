@@ -412,7 +412,7 @@ class WormholeService(CoreService):
 
             lines = [
                 f"虫洞奖励：{event['boss_name']}",
-                f"贡献：{reward['contribution']:.1%}，排名：{reward['rank']}",
+                f"结果：{event['status']}｜贡献：{reward['contribution']:.1%}，排名：{reward['rank']}",
                 f"源石+{money(reward['stones'])}，经验+{reward['exp']}",
             ]
             meta = reward.get("metadata") or {}
@@ -969,16 +969,12 @@ class WormholeService(CoreService):
         )
 
     def _contribution(self, damage: int, event: dict[str, Any]) -> float:
-        """计算个人伤害在总伤害中的占比。"""
+        """计算个人伤害占 Boss 总血量的比例。"""
 
-        row = self.db.fetch_one(
-            "SELECT COALESCE(SUM(damage), 0) AS total FROM wormhole_participants WHERE wormhole_id = ?",
-            (event["wormhole_id"],),
-        )
-        total = int(row["total"] if row else 0)
-        if total <= 0:
+        max_hp = int(event.get("max_hp") or 0)
+        if max_hp <= 0:
             return 0.0
-        return max(0.0, min(1.0, int(damage) / total))
+        return max(0.0, min(1.0, int(damage) / max_hp))
 
     def _location_point(self, name: str) -> dict[str, Any]:
         """把命名世界点位转成坐标。"""

@@ -8,7 +8,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from ..common import computed_weapon_attack, load_json
+from ..common import computed_weapon_attack, fixed_equipment_label, load_json, weapon_id_label, weapon_label_name
+from ..constants import EQUIPMENT_MAX_HOLES, EQUIPMENT_SLOTS
 from ..format_text import T
 from ..sql import db
 
@@ -119,7 +120,255 @@ class EncyclopediaService:
         """把命中资料合成答案，并在需要时带上玩家上下文。"""
 
         context = self._player_context(client_id, query)
-        return _smart_answer_lines(query, entries, context)
+        return _smart_answer_lines(
+            query,
+            entries,
+            context,
+            item_helper=lambda entry, intent: self._item_assistant_lines(client_id, query, entry, intent),
+        )
+
+    def _item_assistant_lines(
+        self,
+        client_id: str,
+        query: str,
+        entry: KnowledgeEntry,
+        intent: str,
+    ) -> list[str]:
+        """把具体物品问答变成玩家可执行的下一步。"""
+
+        if entry.group != "修仙物品":
+            return []
+        if intent not in {"usage", "build", "lookup"} and "怎么用" not in query:
+            return []
+
+        if entry.title == "开孔器":
+            return self._hole_opener_lines(client_id)
+        if entry.title == "洗髓液":
+            return self._wash_item_lines(client_id)
+        if entry.title == "淬锋丹":
+            return self._temper_item_lines(client_id)
+        if entry.kind == "技能书":
+            return self._book_item_lines(client_id, entry)
+        if entry.kind == "宝石":
+            return self._gem_item_lines(client_id, entry)
+        if entry.kind == "恢复类":
+            return self._recover_item_lines(client_id, entry)
+        return []
+
+    def _hole_opener_lines(self, client_id: str) -> list[str]:
+        """开孔器专用助手。"""
+
+        quantity = self._ring_quantity(client_id, "kaikongqi")
+        rows = self._equipment_rows(client_id)
+        openable = [row for row in rows if int(row.get("hole_count") or 0) < EQUIPMENT_MAX_HOLES]
+        openable.sort(key=lambda row: (-int(row.get("level") or 0), int(row.get("hole_count") or 0), _slot_order(row.get("slot"))))
+        target = openable[0] if openable else None
+
+        lines = [
+            f"结论：开孔器不走“使用”。它只用来给装备位增加 1 个宝石孔，单件装备最多 {EQUIPMENT_MAX_HOLES} 孔。",
+            "怎么用：先发“孔位”看哪件装备缺孔，再发“开孔 装备位”；开完后用“镶嵌 装备位 孔位号 宝石名称”放宝石。",
+            f"纳戒库存：开孔器 x{quantity}。",
+        ]
+        if not rows:
+            lines.append("当前建议：先发“装备”或“孔位”刷新装备位，再决定给哪一件开孔。")
+        elif not openable:
+            lines.append("当前建议：你的装备孔位已经全满，开孔器先留着；后续有新装备上限玩法再处理。")
+        elif quantity <= 0:
+            labels = "、".join(_equipment_hole_label(row) for row in openable[:3])
+            lines.append(f"当前建议：你缺的是开孔器，不缺目标；可开孔位有 {labels}。先打岁时情劫并领取首领奖励。")
+        else:
+            assert target is not None
+            slot = str(target["slot"])
+            lines.append(f"当前建议：先开 {_equipment_hole_label(target)}，直接发送“开孔 {slot}”。")
+        lines.append("来源：岁时情劫首领奖励；拿到后会进入纳戒，不占背包负重。")
+        return lines
+
+    def _wash_item_lines(self, client_id: str) -> list[str]:
+        """洗髓液专用助手。"""
+
+        quantity = self._ring_quantity(client_id, "xisuiye")
+        lines = [
+            "结论：洗髓液不走“使用”。它是重置体质的成长道具，入口只有“洗髓”。",
+            f"纳戒库存：洗髓液 x{quantity}。",
+        ]
+        if quantity > 0:
+            lines.append("当前建议：想赌体质就发送“洗髓”；不想换掉当前体质就先留着。")
+        else:
+            lines.append("当前建议：你现在没有洗髓液，优先打岁时情劫或异界虫洞，再领取对应奖励。")
+        lines.append("提醒：洗髓会立刻替换体质，属于角色成长操作，不是普通恢复药。")
+        return lines
+
+    def _temper_item_lines(self, client_id: str) -> list[str]:
+        """淬锋丹专用助手。"""
+
+        quantity = self._ring_quantity(client_id, "cuifengdan")
+        weapon = self._current_weapon(client_id)
+        lines = [
+            "结论：淬锋丹不走“使用”。它只提升武器等级上限，默认作用到已装备武器。",
+            f"纳戒库存：淬锋丹 x{quantity}。",
+        ]
+        if not weapon:
+            lines.append("当前建议：先发“武器”确认可培养目标；有目标后发“武器淬锋”或“武器淬锋 武器ID”。")
+        else:
+            weapon_text = f"{weapon_id_label(weapon['weapon_id'])} {weapon_label_name(weapon)} Lv{weapon['level']}/{weapon['max_level']}"
+            if int(weapon["max_level"]) >= 100:
+                lines.append(f"当前建议：{weapon_text} 已到 100 上限，别把淬锋丹砸在它身上。")
+            elif quantity > 0:
+                lines.append(f"当前建议：默认目标是 {weapon_text}；确认要养它就发送“武器淬锋”。")
+            else:
+                lines.append(f"当前目标：{weapon_text}；你缺淬锋丹，去宗门战周期奖励里拿。")
+        lines.append("来源：淬锋丹只来自宗门战奖励，属于来源唯一的专属道具。")
+        return lines
+
+    def _book_item_lines(self, client_id: str, entry: KnowledgeEntry) -> list[str]:
+        """技能书助手。"""
+
+        item = self._ring_item_def(entry.title)
+        quantity = self._ring_quantity(client_id, str(item.get("ring_item_id") if item else ""))
+        weapon = self._current_weapon(client_id)
+        style = _enchant_style(entry.title) or "特化附魔"
+        desc = _last_plain_part(entry.body).rstrip("。")
+        lines = [
+            f"结论：{entry.title} 是{style}技能书，不走“使用”，要用“附魔武器 武器ID 技能书名”。",
+            f"纳戒库存：{entry.title} x{quantity}。",
+            f"用途判断：{desc or '它会改变武器战斗倾向'}。",
+        ]
+        if weapon:
+            weapon_text = f"{weapon_id_label(weapon['weapon_id'])} {weapon_label_name(weapon)}"
+            lines.append(f"当前建议：如果要给当前武器附魔，发送“附魔武器 {weapon['weapon_id']} {entry.title}”；当前武器是 {weapon_text}。")
+        else:
+            lines.append(f"当前建议：先发“武器”选目标，再发送“附魔武器 武器ID {entry.title}”。")
+        lines.append("提醒：附魔后不可撤销，同一把武器不能重复附魔同一本书。")
+        return lines
+
+    def _gem_item_lines(self, client_id: str, entry: KnowledgeEntry) -> list[str]:
+        """宝石助手。"""
+
+        item = self._ring_item_def(entry.title)
+        levels = self._gem_level_rows(client_id, str(item.get("ring_item_id") if item else ""))
+        level_text = "、".join(f"{row['level']}级 x{row['quantity']}" for row in levels) if levels else "无"
+        target = self._first_empty_hole(client_id)
+        effect = _human_effect_text(_extract_field(entry.body, "效果"))
+        lines = [
+            f"结论：{entry.title} 是宝石，不走“使用”，要镶嵌到已开启的装备孔位。",
+            f"纳戒库存：{level_text}。",
+            f"实际收益：{effect or _last_plain_part(entry.body).rstrip('。') or '看宝石效果字段'}。",
+        ]
+        if target:
+            slot, hole_no = target
+            lines.append(f"当前建议：可以先发“镶嵌 {slot} {hole_no} {entry.title}”；同名多等级时在末尾补“等级”。")
+        else:
+            lines.append("当前建议：先发“孔位”看有没有空孔；没有空孔就先用开孔器开孔。")
+        return lines
+
+    def _recover_item_lines(self, client_id: str, entry: KnowledgeEntry) -> list[str]:
+        """恢复类物品助手。"""
+
+        ring_item = self._ring_item_def(entry.title)
+        bag_item = self._backpack_item_def(entry.title)
+        ring_quantity = self._ring_quantity(client_id, str(ring_item.get("ring_item_id") if ring_item else ""))
+        bag_quantity = self._backpack_quantity(client_id, str(bag_item.get("item_id") if bag_item else ""))
+        effect = _human_effect_text(_extract_field(entry.body, "效果"))
+        lines = [
+            f"结论：{entry.title} 是恢复类物品，可以直接发“使用 {entry.title}”消耗。",
+            f"库存：背包 x{bag_quantity}｜纳戒 x{ring_quantity}。",
+            f"效果：{effect or _last_plain_part(entry.body).rstrip('。') or '按物品效果恢复状态'}。",
+        ]
+        if bag_quantity + ring_quantity > 0:
+            lines.append(f"当前建议：少量补状态发“使用 {entry.title}”；要一次用多个就发“使用 {entry.title} 数量”。")
+        else:
+            lines.append("当前建议：你现在没有这个物品，先通过探险、首领、虫洞或商路顺药补给获取。")
+        return lines
+
+    def _ring_item_def(self, name: str) -> dict[str, Any] | None:
+        """按名称读取纳戒物品定义。"""
+
+        return self.db.fetch_one("SELECT * FROM ring_item_defs WHERE name = ?", (str(name).strip(),))
+
+    def _backpack_item_def(self, name: str) -> dict[str, Any] | None:
+        """按名称读取背包物品定义。"""
+
+        return self.db.fetch_one("SELECT * FROM item_defs WHERE name = ?", (str(name).strip(),))
+
+    def _ring_quantity(self, client_id: str, ring_item_id: str) -> int:
+        """读取纳戒非宝石物品数量。"""
+
+        if not ring_item_id:
+            return 0
+        row = self.db.fetch_one(
+            "SELECT quantity FROM ring_items WHERE client_id = ? AND ring_item_id = ?",
+            (client_id, ring_item_id),
+        )
+        return int(row["quantity"]) if row else 0
+
+    def _backpack_quantity(self, client_id: str, item_id: str) -> int:
+        """读取背包物品数量。"""
+
+        if not item_id:
+            return 0
+        row = self.db.fetch_one(
+            "SELECT quantity FROM backpack_items WHERE client_id = ? AND item_id = ?",
+            (client_id, item_id),
+        )
+        return int(row["quantity"]) if row else 0
+
+    def _gem_level_rows(self, client_id: str, gem_id: str) -> list[dict[str, Any]]:
+        """读取玩家某个宝石的分级库存。"""
+
+        if not gem_id:
+            return []
+        return self.db.fetch_all(
+            """
+            SELECT level, quantity
+            FROM gem_items
+            WHERE client_id = ? AND gem_id = ? AND quantity > 0
+            ORDER BY level
+            """,
+            (client_id, gem_id),
+        )
+
+    def _equipment_rows(self, client_id: str) -> list[dict[str, Any]]:
+        """读取装备位，不在百科里创建缺失装备行。"""
+
+        rows = self.db.fetch_all(
+            "SELECT * FROM fixed_equipment WHERE client_id = ?",
+            (client_id,),
+        )
+        by_slot = {str(row.get("slot")): row for row in rows}
+        return [by_slot[slot] for slot in EQUIPMENT_SLOTS if slot in by_slot]
+
+    def _first_empty_hole(self, client_id: str) -> tuple[str, int] | None:
+        """寻找第一个已开启且未镶嵌的孔位。"""
+
+        rows = self._equipment_rows(client_id)
+        if not rows:
+            return None
+        used_rows = self.db.fetch_all(
+            "SELECT slot, hole_no FROM fixed_equipment_inlays WHERE client_id = ?",
+            (client_id,),
+        )
+        used = {(str(row["slot"]), int(row["hole_no"])) for row in used_rows}
+        for row in rows:
+            slot = str(row["slot"])
+            for hole_no in range(1, int(row.get("hole_count") or 0) + 1):
+                if (slot, hole_no) not in used:
+                    return slot, hole_no
+        return None
+
+    def _current_weapon(self, client_id: str) -> dict[str, Any] | None:
+        """读取当前装备武器；没有装备时退到第一把武器。"""
+
+        return self.db.fetch_one(
+            """
+            SELECT pw.*, wd.name, wd.drop_location, wd.base_attack, wd.weapon_type
+            FROM player_weapons AS pw
+            JOIN weapon_defs AS wd ON wd.weapon_def_id = pw.weapon_def_id
+            WHERE pw.holder_id = ?
+            ORDER BY pw.equipped DESC, pw.weapon_id
+            LIMIT 1
+            """,
+            (client_id,),
+        )
 
     def _player_context(self, client_id: str, query: str) -> PlayerContext | None:
         """对推荐类问题补充当前玩家和当前武器上下文。"""
@@ -973,6 +1222,21 @@ def _percent(value: object) -> str:
         return str(value)
 
 
+def _slot_order(slot: object) -> int:
+    """装备位排序。"""
+
+    try:
+        return EQUIPMENT_SLOTS.index(str(slot))
+    except ValueError:
+        return len(EQUIPMENT_SLOTS)
+
+
+def _equipment_hole_label(row: dict[str, Any]) -> str:
+    """装备孔位短展示。"""
+
+    return f"{fixed_equipment_label(row)} {int(row.get('hole_count') or 0)}/{EQUIPMENT_MAX_HOLES}孔"
+
+
 def _answer_buttons(query: str, entries: list[KnowledgeEntry]) -> str:
     """按回答内容给 2-4 个下一步按钮。"""
 
@@ -990,7 +1254,13 @@ def _answer_buttons(query: str, entries: list[KnowledgeEntry]) -> str:
     elif primary and primary.group == "武器":
         commands.extend(["武器", "修仙信息", "修仙百科 武器流派"])
     elif primary and primary.group == "修仙物品":
-        if primary.kind == "宝石":
+        if primary.title == "开孔器":
+            commands.extend(["孔位", "开孔 头部", "首领", "纳戒"])
+        elif primary.title == "洗髓液":
+            commands.extend(["洗髓", "纳戒", "首领", "虫洞"])
+        elif primary.title == "淬锋丹":
+            commands.extend(["武器淬锋", "宗门战", "纳戒", "武器"])
+        elif primary.kind == "宝石":
             commands.extend(["宝石", "装备", "修仙百科 宝石"])
         elif primary.kind == "技能书":
             commands.extend(["武器", "纳戒", "修仙百科 技能书"])
@@ -1022,7 +1292,12 @@ def _document_answer_commands(query: str, entries: list[KnowledgeEntry]) -> list
     return list(dict.fromkeys(commands))
 
 
-def _smart_answer_lines(query: str, entries: list[KnowledgeEntry], context: PlayerContext | None = None) -> list[str]:
+def _smart_answer_lines(
+    query: str,
+    entries: list[KnowledgeEntry],
+    context: PlayerContext | None = None,
+    item_helper: Any = None,
+) -> list[str]:
     """把命中资料合成答案，而不是展示搜索结果。"""
 
     if not entries:
@@ -1055,6 +1330,11 @@ def _smart_answer_lines(query: str, entries: list[KnowledgeEntry], context: Play
 
     if intent == "source":
         return _source_answer_lines(primary)
+
+    if primary.group == "修仙物品" and item_helper:
+        helped_lines = item_helper(primary, intent)
+        if helped_lines:
+            return helped_lines
 
     if primary.group == "修仙物品":
         return _item_answer_lines(primary, intent)
@@ -1139,8 +1419,8 @@ def _item_answer_lines(entry: KnowledgeEntry, intent: str) -> list[str]:
 
     if category == "消耗品":
         return [
-            f"结论：{entry.title} 是消耗品，作用是{desc or effect_text or effect}。",
-            "这类物品通常只能通过对应玩法消耗，不应该拿去当普通背包物品乱用。",
+            f"结论：{entry.title} 是消耗品，作用是{desc or effect_text or effect or '触发对应成长效果'}。",
+            "下一步：先查它的专属入口；如果没有明确入口，就发“查看修仙物品 物品名”确认来源和归属，不要直接按普通恢复药处理。",
         ]
 
     return [
@@ -1595,7 +1875,7 @@ def _query_intent(query: str) -> str:
         return "source"
     if any(word in query for word in ("怎么玩", "怎么配", "推荐", "适合", "搭配", "配什么", "流派")):
         return "build"
-    if any(word in query for word in ("什么用", "有啥用", "作用", "效果", "干嘛", "用途")):
+    if any(word in query for word in ("怎么用", "什么用", "有啥用", "作用", "效果", "干嘛", "用途")):
         return "usage"
     return "lookup"
 
@@ -2444,6 +2724,8 @@ def _priority(entry: KnowledgeEntry) -> int:
 def _answer_entry_rank(entry: KnowledgeEntry, intent: str) -> int:
     """同名资料优先级：技能书问题优先使用真实附魔效果。"""
 
+    if intent == "usage" and entry.group == "修仙物品":
+        return 35
     if entry.kind == "技能书附魔":
         return 30
     if entry.kind == "自带技能":

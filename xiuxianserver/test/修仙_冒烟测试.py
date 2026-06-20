@@ -176,6 +176,28 @@ def _check_encyclopedia(services: dict[str, object]) -> None:
     _must_contain(gem_answer, "探险效率")
     _must_contain(gem_answer, "实际收益")
 
+    with encyclopedia.db.transaction() as conn:
+        conn.execute(
+            """
+            INSERT INTO ring_items (client_id, ring_item_id, quantity)
+            VALUES (?, 'kaikongqi', 1)
+            ON CONFLICT(client_id, ring_item_id)
+            DO UPDATE SET quantity = quantity + 1
+            """,
+            ("u1",),
+        )
+    hole_answer = encyclopedia.ask("u1", "开孔器怎么用")
+    _must_contain(hole_answer, "不走“使用”")
+    _must_contain(hole_answer, "开孔 装备位")
+    _must_contain(hole_answer, "纳戒库存：开孔器 x1")
+    _must_contain(hole_answer, "当前建议")
+    assert "普通背包物品乱用" not in hole_answer
+    with encyclopedia.db.transaction() as conn:
+        conn.execute(
+            "DELETE FROM ring_items WHERE client_id = ? AND ring_item_id = 'kaikongqi'",
+            ("u1",),
+        )
+
 
 def _payload_text(value: Any) -> str:
     """把 text/markdown 回复统一还原成可断言的正文。"""
@@ -1953,10 +1975,43 @@ def _check_wormhole(services: dict[str, object]) -> None:
     assert "二、最终结算" not in _payload_text(kill_text)
     reward_text = wormhole.reward("u1")
     _must_contain(reward_text, "虫洞奖励")
+    _must_contain(reward_text, "结果：已击杀")
     assert "开孔器" not in reward_text
     assert "铭刻之羽" not in reward_text
     assert "异界残片" not in reward_text
     assert "兑换" not in reward_text
+
+    with wormhole.db.transaction() as conn:
+        conn.execute("DELETE FROM wormhole_notices")
+        conn.execute("DELETE FROM wormhole_participants")
+        conn.execute("DELETE FROM wormholes")
+        cursor = conn.execute(
+            """
+            INSERT INTO wormholes (
+                boss_name, boss_kind, location_name, x, y,
+                level, max_hp, hp, attack, defense, difficulty,
+                opened_by, source, status, opened_at, closes_at, killed_at, result
+            )
+            VALUES (
+                '退去虫洞', 'test', '天枢城', 0, 0,
+                10, 10000, 8000, 50, 10, 1.0,
+                'system', 'test', '已退去', '2000-01-01T00:00:00', '2000-01-01T01:00:00', NULL, '{"boss_flow":"重击破防"}'
+            )
+            """
+        )
+        retreat_id = int(cursor.lastrowid)
+        conn.execute(
+            """
+            INSERT INTO wormhole_participants
+            (wormhole_id, client_id, damage, challenge_count, last_challenge_at, reward_claimed, created_at, updated_at)
+            VALUES (?, 'u1', 2000, 1, '2000-01-01T00:10:00', 0, '2000-01-01T00:10:00', '2000-01-01T00:10:00')
+            """,
+            (retreat_id,),
+        )
+    retreat_reward = wormhole.reward("u1")
+    _must_contain(retreat_reward, "结果：已退去")
+    _must_contain(retreat_reward, "贡献：20.0%")
+    _must_not_contain(retreat_reward, "贡献：100.0%")
 
     with wormhole.db.transaction() as conn:
         conn.execute("DELETE FROM wormhole_notices")
