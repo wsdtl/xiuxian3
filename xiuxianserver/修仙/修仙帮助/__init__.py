@@ -33,8 +33,8 @@ async def ws_web_help(client_id: str, message: str) -> None:
         client_id,
         {
             "code": 202,
-            "type": "text",
-            "message": service.web_help(),
+            "type": "markdown",
+            "message": {"content": service.web_help()},
             "auto_buttons": False,
             "default_buttons": False,
         },

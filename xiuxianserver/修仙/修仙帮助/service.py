@@ -11,15 +11,15 @@ from ..format_text import T
 from ..sql import db
 
 HELP_IMAGE = Path(__file__).with_name("help.png")
+HELP_MAP_PATH = "/static/help/xiuxian-world-map.png"
 
 
-def _help_page_url() -> str:
-    """按 .env 中配置的公开域名生成帮助页地址。"""
+def _project_base_url() -> str:
+    """按 .env 中配置的公开域名生成项目访问基地址。"""
 
     port = str(config.server.port)
     domain = (config.project.domain or "127.0.0.1").strip().rstrip("/")
-    base_url = _with_project_port(domain, port)
-    return f"{base_url}/xiuxian/help"
+    return _with_project_port(domain, port)
 
 
 def _with_project_port(domain: str, port: str) -> str:
@@ -42,7 +42,9 @@ def _with_project_port(domain: str, port: str) -> str:
     return f"{scheme}://{netloc}{suffix}".rstrip("/")
 
 
-HELP_PAGE_URL = _help_page_url()
+HELP_BASE_URL = _project_base_url()
+HELP_PAGE_URL = f"{HELP_BASE_URL}/xiuxian/help"
+HELP_MAP_URL = f"{HELP_BASE_URL}{HELP_MAP_PATH}"
 GUIDE_SECTIONS: dict[str, tuple[str, str, tuple[str, ...]]] = {
     "成长": (
         "修行成长",
@@ -102,7 +104,12 @@ class HelpService(CoreService):
     def web_help(self) -> str:
         """返回当前阶段的帮助入口提示。"""
 
-        return f"修仙帮助网页：{HELP_PAGE_URL}\n发送：修仙帮助 查看帮助图，或发送：指南 查看关键入口。"
+        return (
+            "修仙帮助\n\n"
+            f"[帮助网页]({HELP_PAGE_URL})\n\n"
+            "发送：修仙帮助 查看指令速查图，发送：指南 查看关键入口。\n\n"
+            f"![修仙界地图]({HELP_MAP_URL})"
+        )
 
     def command_guide(self, section: str = "") -> str:
         """返回分方向的关键组件跳转按钮。"""
