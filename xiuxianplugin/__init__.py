@@ -79,25 +79,27 @@ repeater = on_message(priority=1, block=False)
 # 捕获所有消息事件
 notice_repeater = on_notice(priority=1, block=False)
 
+
 @notice_repeater.handle()
+async def _(
+        event: InteractionCreateEvent, bot: QQBot | OneBotV11Bot):
+    # 处理按钮回调消息
+    if event.chat_type != 1 or ((str(event.group_openid) in XiuXianGroup) ^ ReverseXiuXianGroup):
+        try:
+            await bot.put_interaction(interaction_id=event.data.resolved.button_id, code=0)
+            reply = await client.send(event.get_user_id(), event.data.resolved.button_data)
+            await handle_ws_reply_qq(reply, repeater)
+        except Exception as e:
+            logger.opt(exception=e).debug(f"处理来自adapter qq的按钮回调消息(类型：{event.chat_type})时出现错误")
+
+
 @repeater.handle()
 async def _(
         event: GroupMessageEvent
                | PrivateMessageEvent
                | GroupAtMessageCreateEvent
                | C2CMessageCreateEvent
-               | GroupMessageCreateEvent
-               | InteractionCreateEvent, bot: QQBot | OneBotV11Bot):
-    # 处理按钮回调消息
-    if ENABLE_ADAPTER_QQ and isinstance(event, InteractionCreateEvent):
-        if event.chat_type != 1 or ((str(event.group_openid) in XiuXianGroup) ^ ReverseXiuXianGroup):
-            try:
-                await bot.put_interaction(interaction_id=event.data.resolved.button_id, code=0)
-                reply = await client.send(event.get_user_id(), event.data.resolved.button_data)
-                await handle_ws_reply_qq(reply, repeater)
-            except Exception as e:
-                logger.opt(exception=e).debug(f"处理来自adapter qq的按钮回调消息(类型：{event.chat_type})时出现错误")
-                pass
+               | GroupMessageCreateEvent):
     # 处理群消息
     if ENABLE_ADAPTER_ONEBOT_V11 and isinstance(event, GroupMessageEvent):
         if (str(event.group_id) in XiuXianGroup) ^ ReverseXiuXianGroup:
