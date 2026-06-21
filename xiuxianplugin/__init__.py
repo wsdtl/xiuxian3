@@ -87,7 +87,7 @@ async def _(
     # 处理按钮回调消息
     if event.chat_type != 1 or ((str(event.group_openid) in XiuXianGroup) ^ ReverseXiuXianGroup):
         try:
-            await bot.put_interaction(interaction_id=event.data.resolved.button_id, code=0)
+            await bot.put_interaction(bot, interaction_id=event.id, code=0)
             reply = await client.send(event.get_user_id(), event.data.resolved.button_data)
             await handle_ws_reply_qq(reply, repeater)
         except Exception as e:
