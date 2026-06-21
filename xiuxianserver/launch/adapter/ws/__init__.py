@@ -6,5 +6,5 @@ from .schema import ws_message as ws_message
 from .schema import make_payload as make_payload
 from .schema import loads_message as loads_message
 from .schema import is_ws_code as is_ws_code
-from .hander import WsMessageHandler as WsMessageHandler
+from .handler import WsMessageHandler as WsMessageHandler
 from .manager import ConnectionManager as ConnectionManager

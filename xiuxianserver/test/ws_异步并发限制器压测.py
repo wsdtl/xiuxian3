@@ -28,7 +28,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from launch.adapter.ws import message as ws_message_module
-from launch.adapter.ws.hander import WsMessageHandler
+from launch.adapter.ws.handler import WsMessageHandler
 from launch.adapter.ws.manager import current_request_id
 from launch.adapter.ws.rule import TaskLimiter
 from launch.adapter.ws.schema import make_payload

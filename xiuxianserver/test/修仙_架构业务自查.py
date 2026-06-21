@@ -5,39 +5,48 @@
     python test/修仙_架构业务自查.py
 
 这个脚本检查“能启动”以外的规则：
-- 修仙根目录不能反向导入中文二级包。
+- 修仙根目录不能反向导入中文玩法包；HTTP 路由组件例外。
 - 中文二级包之间不能互相导入。
 - 已删除的虫洞历史入口不能再被引用。
 - 基础配置都能落到真实数据库表。
 - WS 精确命令不能重复挂到不同函数。
 - 战斗效果公共函数只能在 common.py 定义。
+- 二级组件必须有说明文档，并写清命令/HTTP/回调入口和组件关联。
 """
 
 from __future__ import annotations
 
 import ast
 import json
+import os
 import sys
+import time
+from datetime import datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from zoneinfo import ZoneInfo
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.修仙.sql import XiuxianDB
-from src.修仙.修仙物品.service import TreasureService
+from launch.config import config
+from 修仙.sql import TRADE_FORBIDDEN_SPECIALTY_TYPES, XiuxianDB
+from 修仙.修仙物品.service import ItemInfoService
 
 
-XIUXIAN_ROOT = PROJECT_ROOT / "src" / "修仙"
+XIUXIAN_ROOT = PROJECT_ROOT / "修仙"
+ROOT_ROUTER_COMPONENTS = {"后台接口", "修仙帮助"}
 
 
 def main() -> None:
     """执行所有自查项。"""
 
     _check_import_boundaries()
+    _check_component_docs()
     _check_no_removed_entry()
     _check_seed_data()
+    _check_project_timezone()
     _check_treasure_detail_coverage()
     _check_known_effect_keys()
     _check_ws_command_duplicates()
@@ -66,6 +75,64 @@ def _check_import_boundaries() -> None:
     assert not violations, "修仙导入边界违规：\n" + "\n".join(violations)
 
 
+def _check_component_docs() -> None:
+    """检查二级组件说明文档是可被帮助站和百科消费的稳定文档。"""
+
+    offenders: list[str] = []
+    for child in sorted(_documented_child_dirs(), key=lambda item: item.name):
+        doc = child / "说明.md"
+        if not doc.exists():
+            offenders.append(f"{child.name}: 缺少 说明.md")
+            continue
+        text = doc.read_text(encoding="utf-8")
+        if not _has_heading(text, "组件关联"):
+            offenders.append(f"{child.name}: 说明.md 缺少 ## 组件关联")
+        if not any(_has_heading(text, heading) for heading in ("命令", "HTTP", "回调")):
+            offenders.append(f"{child.name}: 说明.md 需要 ## 命令 / ## HTTP / ## 回调 之一")
+        if _has_heading(text, "命令") and "```" not in _heading_section(text, "命令"):
+            offenders.append(f"{child.name}: ## 命令 下需要代码块，供帮助站生成主要命令")
+    assert not offenders, "组件说明文档不完整：\n" + "\n".join(offenders)
+
+
+def _documented_child_dirs() -> list[Path]:
+    """需要维护说明文档的二级中文组件目录。"""
+
+    result: list[Path] = []
+    for path in XIUXIAN_ROOT.iterdir():
+        if not path.is_dir() or path.name.startswith("__"):
+            continue
+        if not any("\u4e00" <= char <= "\u9fff" for char in path.name):
+            continue
+        if (path / "__init__.py").exists() or (path / "service.py").exists():
+            result.append(path)
+    return result
+
+
+def _has_heading(text: str, title: str) -> bool:
+    """判断 Markdown 是否有指定标题。"""
+
+    return any(line.strip() == f"## {title}" for line in text.splitlines())
+
+
+def _heading_section(text: str, title: str) -> str:
+    """截取指定二级标题下的正文。"""
+
+    lines = text.splitlines()
+    start: int | None = None
+    for index, line in enumerate(lines):
+        if line.strip() == f"## {title}":
+            start = index + 1
+            break
+    if start is None:
+        return ""
+    result: list[str] = []
+    for line in lines[start:]:
+        if line.startswith("## "):
+            break
+        result.append(line)
+    return "\n".join(result)
+
+
 def _root_reverse_imports(file: Path, tree: ast.AST, child_dirs: set[str]) -> list[str]:
     """根目录公共文件不能导入中文二级包。"""
 
@@ -73,7 +140,8 @@ def _root_reverse_imports(file: Path, tree: ast.AST, child_dirs: set[str]) -> li
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
             module = node.module or ""
-            if node.level == 1 and module.split(".", 1)[0] in child_dirs:
+            target_child = module.split(".", 1)[0]
+            if node.level == 1 and target_child in child_dirs and target_child not in ROOT_ROUTER_COMPONENTS:
                 violations.append(f"{file}:{node.lineno}: from .{module} import ...")
             if node.level == 0 and _absolute_child_module(module, child_dirs):
                 violations.append(f"{file}:{node.lineno}: from {module} import ...")
@@ -107,10 +175,12 @@ def _child_cross_imports(file: Path, tree: ast.AST, current_child: str, child_di
 def _absolute_child_module(module: str, child_dirs: set[str], current_child: str = "") -> bool:
     """判断绝对导入是否指向其他中文二级包。"""
 
-    if not module.startswith("src.修仙."):
+    if not module.startswith("修仙."):
         return False
     parts = module.split(".")
     if len(parts) < 3 or parts[2] not in child_dirs:
+        return False
+    if not current_child and parts[2] in ROOT_ROUTER_COMPONENTS:
         return False
     return not current_child or parts[2] != current_child
 
@@ -141,7 +211,7 @@ def _check_seed_data() -> None:
             conn = db.conn
             counts = {
                 "item_defs": _count(conn, "item_defs"),
-                "equipment_item_defs": _count(conn, "equipment_item_defs"),
+                "ring_item_defs": _count(conn, "ring_item_defs"),
                 "trade_locations": _count(conn, "trade_locations"),
                 "trade_goods": _count(conn, "trade_goods"),
                 "monster_defs": _count(conn, "monster_defs"),
@@ -161,6 +231,59 @@ def _check_seed_data() -> None:
                 WHERE i.item_id IS NULL
                 """,
                 "跑商商品没有对应背包物品定义",
+            )
+            _assert_no_rows(
+                conn,
+                """
+                SELECT name, specialties
+                FROM trade_locations
+                WHERE (length(specialties) - length(replace(specialties, ',', '')) + 1) != 3
+                """,
+                "跑商地点必须正好 3 个特产",
+            )
+            _assert_no_rows(
+                conn,
+                """
+                SELECT t.name
+                FROM trade_locations t
+                LEFT JOIN exploration_locations e ON e.name = t.name
+                WHERE e.name IS NULL OR t.name = '太虚秘境'
+                """,
+                "跑商地点必须与普通探险地点重合，且不能包含太虚秘境",
+            )
+            _assert_no_rows(
+                conn,
+                """
+                SELECT e.name
+                FROM exploration_locations e
+                LEFT JOIN trade_locations t ON t.name = e.name
+                WHERE e.name != '太虚秘境' AND t.name IS NULL
+                """,
+                "普通探险地点必须都有跑商入口",
+            )
+            _assert_no_rows(
+                conn,
+                """
+                SELECT name, json_extract(effect, '$.trade_type') AS trade_type
+                FROM item_defs
+                WHERE tradeable = 1
+                  AND category = '纯经济'
+                  AND json_extract(effect, '$.trade_group') != '纯经济'
+                """,
+                "跑商特产必须统一为纯经济商品",
+            )
+            forbidden_placeholders = ",".join("?" for _ in TRADE_FORBIDDEN_SPECIALTY_TYPES)
+            _assert_no_rows(
+                conn,
+                f"""
+                SELECT name, json_extract(effect, '$.trade_type') AS trade_type
+                FROM item_defs
+                WHERE tradeable = 1
+                  AND category = '纯经济'
+                  AND json_extract(effect, '$.trade_type') IN ({forbidden_placeholders})
+                """,
+                "跑商特产不能使用旧民生类或药路类",
+                tuple(sorted(TRADE_FORBIDDEN_SPECIALTY_TYPES)),
             )
             _assert_no_rows(
                 conn,
@@ -187,8 +310,19 @@ def _check_seed_data() -> None:
             _assert_no_rows(
                 conn,
                 """
-                SELECT e.equipment_item_id, e.name
-                FROM equipment_item_defs e
+                SELECT w.weapon_def_id, w.name, w.drop_location
+                FROM weapon_defs w
+                LEFT JOIN exploration_locations e
+                  ON e.name = w.drop_location AND e.name != '太虚秘境'
+                WHERE e.name IS NULL
+                """,
+                "武器掉落地点必须是普通探险地点",
+            )
+            _assert_no_rows(
+                conn,
+                """
+                SELECT e.ring_item_id, e.name
+                FROM ring_item_defs e
                 LEFT JOIN weapon_enchants w ON w.enchant_id = json_extract(e.effect, '$.enchant_id')
                 WHERE e.category = '技能书'
                   AND w.enchant_id IS NULL
@@ -201,13 +335,25 @@ def _check_seed_data() -> None:
                 """
                 SELECT e.name
                 FROM exploration_locations e
-                LEFT JOIN trade_locations t ON t.name = e.name
-                WHERE t.name IS NULL
+                LEFT JOIN world_locations w ON w.name = e.name
+                WHERE w.name IS NULL
                 """,
                 "探险地点不能导航到",
             )
         finally:
             db.close()
+
+
+def _check_project_timezone() -> None:
+    """确认项目时区已经同步到当前进程，避免 Linux 日志时间跟本地时间错位。"""
+
+    assert os.environ.get("TZ") == config.project.timezone, "PROJECT_TIMEZONE 没有同步到进程 TZ"
+    if hasattr(time, "tzset"):
+        expected = datetime.fromtimestamp(0, ZoneInfo(config.project.timezone))
+        actual = time.localtime(0)
+        actual_tuple = (actual.tm_year, actual.tm_mon, actual.tm_mday, actual.tm_hour)
+        expected_tuple = (expected.year, expected.month, expected.day, expected.hour)
+        assert actual_tuple == expected_tuple, "进程 localtime 没有按 PROJECT_TIMEZONE 生效"
 
 
 def _check_treasure_detail_coverage() -> None:
@@ -217,11 +363,11 @@ def _check_treasure_detail_coverage() -> None:
         db = XiuxianDB(Path(temp_dir) / "xiuxian_detail_audit.db")
         try:
             db.init()
-            service = TreasureService(db)
+            service = ItemInfoService(db)
             service.create_player("audit_user", "自查道友")
             tables = (
                 "item_defs",
-                "equipment_item_defs",
+                "ring_item_defs",
                 "weapon_defs",
                 "weapon_skill_defs",
                 "weapon_enchants",
@@ -242,6 +388,7 @@ def _check_known_effect_keys() -> None:
     """检查物品、宝石、体质的效果字段都已经接入业务。"""
 
     allowed = {
+        "base_enchant_id",
         "crit_resist_bonus",
         "defense_bonus",
         "dodge_bonus",
@@ -263,15 +410,20 @@ def _check_known_effect_keys() -> None:
         "recover_bonus",
         "source_stones_delta",
         "trade_bonus",
+        "trade_group",
         "trade_type",
+        "weapon_max_level_cap",
+        "weapon_max_level_delta",
         "wash_physique",
+        "world_category",
+        "world_subtype",
     }
     with TemporaryDirectory() as temp_dir:
         db = XiuxianDB(Path(temp_dir) / "xiuxian_effect_audit.db")
         try:
             db.init()
             offenders: list[str] = []
-            for table in ("item_defs", "equipment_item_defs", "physique_defs"):
+            for table in ("item_defs", "ring_item_defs", "physique_defs"):
                 for row in db.fetch_all(f"SELECT name, effect FROM {table}"):
                     try:
                         effect = json.loads(row["effect"] or "{}")
@@ -294,6 +446,7 @@ def _check_weapon_enchant_effect_keys(conn) -> None:
         "pierce_bonus",
         "life_steal",
         "shield_bonus",
+        "counter_rate",
         "mp_suppress",
         "defense_suppress",
         "combo_bonus",
@@ -303,6 +456,9 @@ def _check_weapon_enchant_effect_keys(conn) -> None:
         "combo_damage_bonus",
         "single_hit_bonus",
         "dodge_bonus",
+        "burn_rate",
+        "bleed_rate",
+        "stun_rate",
         "interval_delta",
         "interval_rate",
     }
@@ -339,19 +495,17 @@ def _check_deprecated_commands_removed() -> None:
     """检查已经废弃的历史命令没有重新注册。
 
     当前修仙模块是“新开始”，只保留正式命令。
-    例外只有两个自然入口：`帮助/修仙帮助`、`结束休息/休息结束`。
+    例外包括自然入口和手动保留的顺口别名：
+    `帮助/修仙帮助`、`结束休息/休息结束`、
+    `修仙信息/状态`、`升级源库/源库升级`、`存入源石/源石存入`、`取出源石/源石取出`。
     """
 
     deprecated = {
         "用户创建",
-        "状态",
         "礼包",
         "获取源库",
         "源库获取",
         "结息源库",
-        "源库升级",
-        "源石存入",
-        "源石取出",
         "地点",
         "探索",
         "状态探险",
@@ -395,11 +549,14 @@ def _check_deprecated_commands_removed() -> None:
         "换武器",
         "武器升级",
         "武器回收",
+        "回收武器",
         "技能书回收",
+        "回收技能书",
         "武器附魔",
         "升级装备",
         "升级宝石",
         "宝石回收",
+        "回收宝石",
         "装备铭刻",
         "武器铭刻",
         "附魔铭刻",
@@ -534,7 +691,7 @@ def _child_dirs() -> set[str]:
     return {
         path.name
         for path in XIUXIAN_ROOT.iterdir()
-        if path.is_dir() and not path.name.startswith("__")
+        if path.is_dir() and not path.name.startswith("__") and any("\u4e00" <= char <= "\u9fff" for char in path.name)
     }
 
 
@@ -545,10 +702,10 @@ def _count(conn, table: str) -> int:
     return int(row["total"] if row else 0)
 
 
-def _assert_no_rows(conn, sql: str, title: str) -> None:
+def _assert_no_rows(conn, sql: str, title: str, params: tuple = ()) -> None:
     """断言查询没有异常记录。"""
 
-    rows = conn.execute(sql).fetchall()
+    rows = conn.execute(sql, params).fetchall()
     assert not rows, title + "：\n" + "\n".join(str(dict(row)) for row in rows)
 
 

@@ -17,10 +17,26 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from launch.adapter.ws import message as ws_message_module
-from launch.adapter.ws.hander import WsMessageHandler
+from launch.adapter.ws.handler import WsMessageHandler
 from launch.adapter.ws.manager import current_request_id
 from launch.adapter.ws.rule import TaskLimiter
 from launch.adapter.ws.schema import make_payload
+
+
+class QuietLogger:
+    """测试协议错误路径时静音 WS 模块日志，避免写真实 runserver.log。"""
+
+    def opt(self, **_: Any):
+        return self
+
+    def success(self, *_: Any, **__: Any) -> None:
+        return None
+
+    def warning(self, *_: Any, **__: Any) -> None:
+        return None
+
+    def error(self, *_: Any, **__: Any) -> None:
+        return None
 
 
 class FakeManager:
@@ -41,15 +57,20 @@ class FakeManager:
 async def main_async() -> None:
     """运行后台任务超时和同用户串行测试。"""
 
-    await _check_string_code_rejected()
-    await _check_missing_request_id_rejected()
-    await _check_unmatched_message_rejected_before_task()
-    await _check_unmatched_message_replies_quickly()
-    await _check_client_queue_full_replies_202()
-    await _check_global_queue_full_replies_202()
-    await _check_message_timeout()
-    await _check_same_client_serial()
-    await _check_client_waiting_limit()
+    old_logger = ws_message_module.logger
+    try:
+        ws_message_module.logger = QuietLogger()
+        await _check_string_code_rejected()
+        await _check_missing_request_id_rejected()
+        await _check_unmatched_message_rejected_before_task()
+        await _check_unmatched_message_replies_quickly()
+        await _check_client_queue_full_replies_202()
+        await _check_global_queue_full_replies_202()
+        await _check_message_timeout()
+        await _check_same_client_serial()
+        await _check_client_waiting_limit()
+    finally:
+        ws_message_module.logger = old_logger
 
 
 async def _check_string_code_rejected() -> None:
