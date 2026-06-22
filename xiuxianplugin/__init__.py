@@ -9,20 +9,28 @@ from nonebot import get_driver
 from nonebot.exception import FinishedException
 from nonebot.plugin.on import on_notice
 
+driver = get_driver()
+AUTO_ADAPTER_USE = ['adapter-onebot-v11', 'adapter-qq']
+
+ENABLE_ADAPTER_ONEBOT_V11 = False
 try:
     from nonebot.adapters.onebot.v11 import GroupMessageEvent, PrivateMessageEvent
     from nonebot.adapters.onebot.v11 import MessageSegment as MessageSegmentOneBotV11
     from nonebot.adapters.onebot.v11 import Bot as OneBotV11Bot
+    from nonebot.adapters.onebot.v11 import Adapter as OneBotV11Adapter
 
-    ENABLE_ADAPTER_ONEBOT_V11 = True
+    if 'adapter-onebot-v11' in AUTO_ADAPTER_USE:
+        driver.register_adapter(OneBotV11Adapter)
+        ENABLE_ADAPTER_ONEBOT_V11 = True
 except ImportError:
     logger.warning("没有成功加载OneBot V11机器人适配器，尝试前往安装nonebot-adapter-onebot")
     GroupMessageEvent = None
     PrivateMessageEvent = None
     MessageSegmentOneBotV11 = None
-    ENABLE_ADAPTER_ONEBOT_V11 = False
     OneBotV11Bot = None
+    OneBotV11Adapter = None
 
+ENABLE_ADAPTER_QQ = False
 try:
     from nonebot.adapters.qq.models import MessageKeyboard
     from nonebot.adapters.qq import (
@@ -32,11 +40,13 @@ try:
         InteractionCreateEvent)
     from nonebot.adapters.qq import MessageSegment as MessageSegmentQQ
     from nonebot.adapters.qq import Bot as QQBot
+    from nonebot.adapters.qq import Adapter as QQAdapter
 
-    ENABLE_ADAPTER_QQ = True
+    if 'adapter-qq' in AUTO_ADAPTER_USE:
+        driver.register_adapter(QQAdapter)
+        ENABLE_ADAPTER_QQ = True
 except ImportError:
     logger.warning("没有成功加载QQ官方机器人适配器，尝试前往安装nonebot-adapter-qq")
-    ENABLE_ADAPTER_QQ = False
     GroupAtMessageCreateEvent = None
     GroupMessageCreateEvent = None
     C2CMessageCreateEvent = None
@@ -44,10 +54,9 @@ except ImportError:
     MessageKeyboard = None
     InteractionCreateEvent = None
     QQBot = None
+    QQAdapter = None
 
 from .api import client
-
-driver = get_driver()
 
 
 @driver.on_shutdown
