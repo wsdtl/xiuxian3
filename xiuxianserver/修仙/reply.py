@@ -189,7 +189,7 @@ def _reply_header(client_id: str, database: Any) -> str:
     header = _player_header(client_id, database)
     if header == "【未建档】":
         return header
-    system = system_message_line(database)
+    system = system_message_line(database, client_id=client_id)
     notice = notification_line(client_id, database)
     lines = [header]
     if system:

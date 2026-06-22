@@ -574,7 +574,7 @@ class SeasonalBossService(CoreService):
         if int(player["hp"]) <= 0:
             return T.hint("血气不足，无法挑战首领。", "发送：休息，时间到后发送：结束休息")
 
-        check = self._challenge_check(event["event_id"], client_id)
+        check = self._challenge_check(event, client_id)
         if check:
             return check
 
@@ -608,13 +608,12 @@ class SeasonalBossService(CoreService):
                 (event["event_id"], client_id),
             ).fetchone()
             if current and int(current["challenge_count"]) >= SEASONAL_BOSS_MAX_CHALLENGES:
-                return T.hint("今日挑战次数已用完。", "等下一次岁时情劫出现后再挑战。")
+                return T.hint("今日挑战次数已用完。", "等下一次岁时情劫出现后再来。<状态><纳戒>")
             if current:
                 last = dt(current["last_challenge_at"])
                 left = timedelta(minutes=SEASONAL_BOSS_CHALLENGE_COOLDOWN_MINUTES) - (now() - last) if last else timedelta()
                 if left > timedelta():
-                    seconds = max(1, int(left.total_seconds()))
-                    return T.hint(f"岁时旧念尚未重新凝形，还需 {seconds // 60}分{seconds % 60}秒。", "稍后再发送：挑战首领<挑战首领>")
+                    return self._boss_cooldown_hint(left, dt(fresh["closes_at"]))
 
             damage = min(damage, int(fresh["hp"]))
             left_hp = max(0, int(fresh["hp"]) - damage)
@@ -945,7 +944,7 @@ class SeasonalBossService(CoreService):
         )
         return dict(row) if row else None
 
-    def _challenge_check(self, event_id: int, client_id: str) -> str:
+    def _challenge_check(self, event: dict[str, Any], client_id: str) -> str:
         """检查挑战次数和 30 分钟冷却。"""
 
         row = self.db.fetch_one(
@@ -954,20 +953,38 @@ class SeasonalBossService(CoreService):
             FROM seasonal_boss_participants
             WHERE event_id = ? AND client_id = ?
             """,
-            (event_id, client_id),
+            (int(event["event_id"]), client_id),
         )
         if not row:
             return ""
         if int(row["challenge_count"]) >= SEASONAL_BOSS_MAX_CHALLENGES:
-            return T.hint("今日挑战次数已用完。", "等下一次岁时情劫出现后再挑战。")
+            return T.hint("今日挑战次数已用完。", "等下一次岁时情劫出现后再来。<状态><纳戒>")
         last = dt(row["last_challenge_at"])
         if not last:
             return ""
         left = timedelta(minutes=SEASONAL_BOSS_CHALLENGE_COOLDOWN_MINUTES) - (now() - last)
         if left <= timedelta():
             return ""
+        return self._boss_cooldown_hint(left, dt(event["closes_at"]))
+
+    @staticmethod
+    def _boss_cooldown_hint(left: timedelta, closes_at: datetime | None) -> str:
+        """首领冷却提示要同时考虑本轮首领是否会先退去。"""
+
         seconds = max(1, int(left.total_seconds()))
-        return T.hint(f"岁时旧念尚未重新凝形，还需 {seconds // 60}分{seconds % 60}秒。", "稍后再发送：挑战首领")
+        left_text = f"{seconds // 60}分{seconds % 60}秒"
+        current = now()
+        ready_at = current + timedelta(seconds=seconds)
+        if closes_at and ready_at >= closes_at:
+            return T.hint(
+                (
+                    f"岁时旧念尚未重新凝形，还需 {left_text}。"
+                    f"首领仍在，退去点 {closes_at.strftime('%H:%M:%S')}；"
+                    f"你约 {ready_at.strftime('%H:%M:%S')} 才能再出手，赶不上本轮。"
+                ),
+                "退去后发送：首领奖励<首领奖励>",
+            )
+        return T.hint(f"岁时旧念尚未重新凝形，还需 {left_text}。", "冷却结束后再来。<状态><纳戒>")
 
     @staticmethod
     def _busy_challenge_hint(status: str) -> str:

@@ -6,13 +6,15 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
-from .common import business_day, dt, load_json, money, row_value
+from .common import business_day, dt, dump_json, load_json, money, row_value
 from .constants import (
     BANK_LEVELS,
     ENCOUNTER_SECONDS,
     EXPLORE_MINUTES,
     REST_FAST_SECONDS,
     REST_FULL_MINUTES,
+    SEASONAL_BOSS_CHALLENGE_COOLDOWN_MINUTES,
+    SEASONAL_BOSS_MAX_CHALLENGES,
     TRADE_ACTIVE_WINDOW_DAYS,
 )
 from .rules import trade_daily_reward_thresholds, trade_global_soft_line, trade_player_soft_line
@@ -42,11 +44,11 @@ class SystemMessage:
     priority: int
 
 
-def system_message_line(database: Any, limit: int = DEFAULT_SYSTEM_NOTICE_LIMIT) -> str:
+def system_message_line(database: Any, limit: int = DEFAULT_SYSTEM_NOTICE_LIMIT, client_id: str | None = None) -> str:
     """生成系统消息队列文本；查询失败时静默，避免回复出口被通知拖垮。"""
 
     try:
-        messages = collect_system_messages(database)
+        messages = collect_system_messages(database, client_id=client_id)
     except Exception:
         return ""
     if not messages:
@@ -60,6 +62,7 @@ def collect_system_messages(
     database: Any,
     *,
     current_time: datetime | None = None,
+    client_id: str | None = None,
 ) -> list[SystemMessage]:
     """收集全服系统消息；只展示正在发生、会过期或需要被看见的世界事实。"""
 
@@ -67,7 +70,7 @@ def collect_system_messages(
     result: list[SystemMessage] = []
     result.extend(_sect_war_system_messages(database, current))
     result.extend(_wormhole_system_messages(database, current))
-    result.extend(_seasonal_boss_system_messages(database, current))
+    result.extend(_seasonal_boss_system_messages(database, current, client_id))
     result.extend(_treasure_map_system_messages(database, current))
     return _dedupe_system_messages(result)
 
@@ -153,6 +156,7 @@ def _exploration_notifications(client_id: str, database: Any, current: datetime)
 
 
 def _reward_notifications(client_id: str, database: Any, current: datetime) -> list[Notification]:
+    _close_expired_seasonal_boss_events(database, current)
     checks: tuple[tuple[str, str, int, str, tuple[Any, ...]], ...] = (
         (
             "boss_reward",
@@ -475,10 +479,11 @@ def _wormhole_system_messages(database: Any, current: datetime) -> list[SystemMe
     return [SystemMessage("normal_wormhole", f"异界虫洞：{boss}@{location}", 40)]
 
 
-def _seasonal_boss_system_messages(database: Any, current: datetime) -> list[SystemMessage]:
+def _seasonal_boss_system_messages(database: Any, current: datetime, client_id: str | None) -> list[SystemMessage]:
+    _close_expired_seasonal_boss_events(database, current)
     row = database.fetch_one(
         """
-        SELECT boss_name, title, weight_type
+        SELECT event_id, boss_name, title, weight_type
         FROM seasonal_boss_events
         WHERE status = '开启'
           AND datetime(closes_at) > datetime(?)
@@ -489,10 +494,55 @@ def _seasonal_boss_system_messages(database: Any, current: datetime) -> list[Sys
     )
     if not row:
         return []
+    if client_id and _seasonal_boss_hidden_for_client(database, int(row_value(row, "event_id", 0) or 0), client_id, current):
+        return []
     boss = str(row_value(row, "boss_name", "岁时情劫") or "岁时情劫")
     title = str(row_value(row, "title", "") or "")
     name = f"{title}·{boss}" if title else boss
     return [SystemMessage("seasonal_boss", f"岁时情劫：{name}", 50)]
+
+
+def _seasonal_boss_hidden_for_client(database: Any, event_id: int, client_id: str, current: datetime) -> bool:
+    """玩家正在首领 CD 或已无挑战次数时，系统行不再催他看首领。"""
+
+    if event_id <= 0:
+        return False
+    row = database.fetch_one(
+        """
+        SELECT challenge_count, last_challenge_at
+        FROM seasonal_boss_participants
+        WHERE event_id = ? AND client_id = ?
+        """,
+        (event_id, client_id),
+    )
+    if not row:
+        return False
+    if int(row_value(row, "challenge_count", 0) or 0) >= SEASONAL_BOSS_MAX_CHALLENGES:
+        return True
+    last = dt(str(row_value(row, "last_challenge_at", "") or ""))
+    if not last:
+        return False
+    return current - last < timedelta(minutes=SEASONAL_BOSS_CHALLENGE_COOLDOWN_MINUTES)
+
+
+def _close_expired_seasonal_boss_events(database: Any, current: datetime) -> None:
+    """回复头也要推进首领日结，避免领奖通知等到玩家先查首领。"""
+
+    execute = getattr(database, "execute", None)
+    if not callable(execute):
+        return
+    try:
+        execute(
+            """
+            UPDATE seasonal_boss_events
+            SET status = '已退去', result = ?
+            WHERE status = '开启'
+              AND datetime(closes_at) <= datetime(?)
+            """,
+            (dump_json({"reason": "timeout"}), _ts(current)),
+        )
+    except Exception:
+        return
 
 
 def _treasure_map_system_messages(database: Any, current: datetime) -> list[SystemMessage]:

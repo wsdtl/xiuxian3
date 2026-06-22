@@ -2072,6 +2072,34 @@ def _check_seasonal_boss(services: dict[str, object]) -> None:
     _must_contain(seasonal_boss.ranking("u1"), "暂无挑战记录")
     _must_contain(seasonal_boss.challenge("u1"), "行商化身")
     seasonal_boss.db.execute("UPDATE players SET status = '空闲' WHERE client_id = ?", ("u1",))
+    seasonal_boss.db.execute(
+        "UPDATE seasonal_boss_events SET closes_at = ? WHERE event_id = ?",
+        (ts(now() + timedelta(minutes=10)), event["event_id"]),
+    )
+    seasonal_boss.db.execute(
+        """
+        INSERT INTO seasonal_boss_participants
+        (event_id, client_id, damage, challenge_count, last_challenge_at, reward_claimed, created_at, updated_at)
+        VALUES (?, 'u1', 1, 1, ?, 0, ?, ?)
+        """,
+        (
+            event["event_id"],
+            ts(now() - timedelta(minutes=5)),
+            ts(now() - timedelta(minutes=5)),
+            ts(now() - timedelta(minutes=5)),
+        ),
+    )
+    late_cooldown_text = seasonal_boss.challenge("u1")
+    _must_contain(late_cooldown_text, "首领仍在")
+    _must_contain(late_cooldown_text, "赶不上本轮")
+    seasonal_boss.db.execute(
+        "DELETE FROM seasonal_boss_participants WHERE event_id = ? AND client_id = ?",
+        (event["event_id"], "u1"),
+    )
+    seasonal_boss.db.execute(
+        "UPDATE seasonal_boss_events SET closes_at = ? WHERE event_id = ?",
+        (ts(now() + timedelta(hours=1)), event["event_id"]),
+    )
     seasonal_boss.db.execute("UPDATE players SET battle_log_detail = 1 WHERE client_id = ?", ("u1",))
     seasonal_boss.db.execute(
         """

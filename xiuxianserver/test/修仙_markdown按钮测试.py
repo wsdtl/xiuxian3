@@ -170,6 +170,7 @@ def _payload_lines(payload: dict) -> list[str]:
 
 
 FakeExploreService = type("FakeExploreService", (), {"__module__": "修仙.探险.service"})
+FakeBossService = type("FakeBossService", (), {"__module__": "修仙.首领.service"})
 
 
 def test_button_default() -> None:
@@ -324,6 +325,71 @@ def test_system_message_queue_limit_and_backfill() -> None:
     assert backfilled == "🔴 系统：岁时情劫：旧约·折梅人｜天枢城藏宝图将结｜青岚坊藏宝图散落(3,-2)"
 
 
+def test_boss_system_message_hidden_until_client_cooldown_ready() -> None:
+    """首领系统消息对当前玩家要等 CD 结束后再出现。"""
+
+    db = _real_notice_db()
+    try:
+        _seed_notice_player(db)
+        db.execute("UPDATE players SET hp = max_hp, mp = max_mp, newbie_claimed = 1 WHERE client_id = ?", ("notice_ws",))
+        cursor = db.execute(
+            """
+            INSERT INTO seasonal_boss_events (
+                business_day, boss_key, event_type, weight_type, boss_name, title,
+                scene, story, farewell, feather_text, location_name, atmosphere,
+                level, max_hp, hp, attack, defense, difficulty,
+                status, opened_at, closes_at, killed_at, result
+            )
+            VALUES (
+                ?, 'test_active', '每日旧愿', '每日旧愿', '沙洲望潮客',
+                '在退潮后等船的人', '一段用于测试的旧愿。', '它还在潮声里。',
+                '旧愿退去。', '一枚测试铭刻之羽。', '天枢城', '[]',
+                10, 10000, 7500, 50, 10, 1.0,
+                '开启', ?, ?, NULL, '{}'
+            )
+            """,
+            (business_day(), ts(now() - timedelta(minutes=5)), ts(now() + timedelta(hours=1))),
+        )
+        event_id = int(cursor.lastrowid)
+        db.execute(
+            """
+            INSERT INTO seasonal_boss_participants
+            (event_id, client_id, damage, challenge_count, last_challenge_at, reward_claimed, created_at, updated_at)
+            VALUES (?, 'notice_ws', 2500, 1, ?, 0, ?, ?)
+            """,
+            (
+                event_id,
+                ts(now() - timedelta(minutes=3)),
+                ts(now() - timedelta(minutes=3)),
+                ts(now() - timedelta(minutes=3)),
+            ),
+        )
+
+        cooldown_payload = _with_player_name(
+            "notice_ws",
+            {"code": 202, "type": "text", "message": "正文"},
+            db,
+        )
+        assert "🔴 系统：岁时情劫" not in _payload_content(cooldown_payload)
+
+        db.execute(
+            """
+            UPDATE seasonal_boss_participants
+            SET last_challenge_at = ?
+            WHERE event_id = ? AND client_id = ?
+            """,
+            (ts(now() - timedelta(minutes=31)), event_id, "notice_ws"),
+        )
+        ready_payload = _with_player_name(
+            "notice_ws",
+            {"code": 202, "type": "text", "message": "正文"},
+            db,
+        )
+        assert "🔴 系统：岁时情劫：在退潮后等船的人·沙洲望潮客" in _payload_content(ready_payload)
+    finally:
+        _close_real_notice_db(db)
+
+
 def test_reply_header_notice_keeps_handwritten_buttons() -> None:
     """通知不使用尖括号，不破坏业务手写按钮优先级。"""
 
@@ -367,6 +433,60 @@ def test_daily_sign_notice_is_low_priority() -> None:
     lines = _payload_lines(limited_payload)
     assert lines[1] == "🔴 通知：休息可结束｜探险可结束｜首领奖励待领"
     assert "今日签到待领" not in lines[1]
+
+
+def test_expired_boss_reward_notice_closes_lazily_from_header() -> None:
+    """首领过了次日 04:00 后，任意回复头都应推进退去并提示领奖。"""
+
+    db = _real_notice_db()
+    try:
+        _seed_notice_player(db)
+        db.execute("UPDATE players SET hp = max_hp, mp = max_mp, newbie_claimed = 1 WHERE client_id = ?", ("notice_ws",))
+        cursor = db.execute(
+            """
+            INSERT INTO seasonal_boss_events (
+                business_day, boss_key, event_type, weight_type, boss_name, title,
+                scene, story, farewell, feather_text, location_name, atmosphere,
+                level, max_hp, hp, attack, defense, difficulty,
+                status, opened_at, closes_at, killed_at, result
+            )
+            VALUES (
+                ?, 'test_timeout', '每日旧愿', '每日旧愿', '退去旧愿',
+                '迟归旧愿', '一段用于测试的旧愿。', '它只剩半口气，却没有被击破。',
+                '旧愿退去。', '一枚测试铭刻之羽。', '天枢城', '[]',
+                10, 10000, 7500, 50, 10, 1.0,
+                '开启', ?, ?, NULL, '{}'
+            )
+            """,
+            (
+                business_day(now() - timedelta(days=1)),
+                ts(now() - timedelta(days=1)),
+                ts(now() - timedelta(minutes=1)),
+            ),
+        )
+        event_id = int(cursor.lastrowid)
+        db.execute(
+            """
+            INSERT INTO seasonal_boss_participants
+            (event_id, client_id, damage, challenge_count, last_challenge_at, reward_claimed, created_at, updated_at)
+            VALUES (?, 'notice_ws', 2500, 1, ?, 0, ?, ?)
+            """,
+            (
+                event_id,
+                ts(now() - timedelta(hours=2)),
+                ts(now() - timedelta(hours=2)),
+                ts(now() - timedelta(hours=2)),
+            ),
+        )
+
+        line = notification_line("notice_ws", db, limit=10)
+        assert "首领奖励待领" in line
+        event = db.fetch_one("SELECT status, result FROM seasonal_boss_events WHERE event_id = ?", (event_id,))
+        assert event is not None
+        assert event["status"] == "已退去"
+        assert '"reason": "timeout"' in event["result"]
+    finally:
+        _close_real_notice_db(db)
 
 
 def test_low_priority_daily_notices_from_real_tables() -> None:
@@ -504,6 +624,26 @@ def test_predictive_buttons_before_context_buttons() -> None:
     assert len(commands) <= 6
 
 
+def test_boss_cooldown_hint_uses_safe_buttons_only() -> None:
+    """首领冷却中不预测首领入口，等 CD 结束后再展示可挑战按钮。"""
+
+    payload = _with_player_name(
+        "player_ws",
+        {
+            "code": 202,
+            "type": "text",
+            "message": T.hint("岁时旧念尚未重新凝形，还需 29分59秒。", "冷却结束后再来。<状态><纳戒>"),
+        },
+        FakeDB(),
+        FakeBossService(),
+    )
+    commands = _payload_commands(payload)
+    assert commands == ["状态", "纳戒"]
+    assert "首领" not in commands
+    assert "挑战首领" not in commands
+    assert "首领奖励" not in commands
+
+
 def test_command_guide_buttons() -> None:
     """指南主入口只展示方向，具体业务入口下沉到方向页。"""
 
@@ -555,15 +695,18 @@ def main() -> None:
     test_reply_header_notice_line_is_second_line()
     test_reply_header_system_line_before_personal_notice()
     test_system_message_queue_limit_and_backfill()
+    test_boss_system_message_hidden_until_client_cooldown_ready()
     test_reply_header_notice_keeps_handwritten_buttons()
     test_reply_header_notice_not_used_for_predictive_buttons()
     test_daily_sign_notice_is_low_priority()
+    test_expired_boss_reward_notice_closes_lazily_from_header()
     test_low_priority_daily_notices_from_real_tables()
     test_reply_header_notice_failure_is_silent()
     test_reply_header_notice_from_real_tables()
     test_hint_without_button_tags_uses_default_markdown_buttons()
     test_predictive_buttons_from_content()
     test_predictive_buttons_before_context_buttons()
+    test_boss_cooldown_hint_uses_safe_buttons_only()
     test_command_guide_buttons()
     print("修仙 markdown 按钮测试通过")
 

@@ -11,7 +11,7 @@ from ..format_text import T
 from ..sql import db
 
 HELP_IMAGE = Path(__file__).with_name("help.png")
-HELP_MAP_PATH = "/static/help/xiuxian-world-map.png"
+HELP_MAP_PATH = "/static/help/xiuxian-world-map.webp"
 
 
 def _project_base_url() -> str:
@@ -105,10 +105,9 @@ class HelpService(CoreService):
         """返回当前阶段的帮助入口提示。"""
 
         return (
-            "修仙帮助\n\n"
-            f"[帮助网页]({HELP_PAGE_URL})\n\n"
+            f"[修仙帮助网页]({HELP_PAGE_URL})\n\n"
             "发送：修仙帮助 查看指令速查图，发送：指南 查看关键入口。\n\n"
-            f"![修仙界地图]({HELP_MAP_URL})"
+            f"![修仙界地图 #720px #400px]({HELP_MAP_URL})"
         )
 
     def command_guide(self, section: str = "") -> str:
