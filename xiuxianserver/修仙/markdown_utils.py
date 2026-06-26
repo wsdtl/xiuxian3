@@ -39,7 +39,36 @@ BUTTON_LABEL_EXACT_ALIASES = {
     "商路奇闻": "奇闻",
     "异界虫洞录": "虫洞录",
     "二手市场": "二手市场",
+    "用户组": "用户组",
 }
+PARAMETER_BUTTON_EXACT_COMMANDS = {
+    "建立宗门": "建立宗门 x y 宗门名",
+    "加入宗门": "加入宗门 宗门名",
+    "改名": "改名 新名称",
+    "出售": "出售 物品名 数量",
+    "商场出售": "商场出售 商品名 数量",
+    "导航": "导航 地点名",
+    "去": "去 地点名",
+    "来": "来 地点名",
+    "用户组后台登录": "用户组后台登录 登录码",
+    "绑定用户组": "绑定用户组 绑定码",
+    "藏宝图出价": "藏宝图出价 数量",
+    "存入货币": "存入货币 数量",
+    "取出货币": "取出货币 数量",
+}
+PARAMETER_BUTTON_PLACEHOLDERS = (
+    " x y",
+    "数量",
+    "物品名",
+    "商品名",
+    "地点名",
+    "宗门名",
+    "新名称",
+    "登录码",
+    "绑定码",
+    "问题",
+    "装备位",
+)
 ButtonCommand = str | dict[str, Any]
 
 
@@ -115,6 +144,17 @@ def inline_command_link(label: str, command: str, *, enter: bool = True, reply: 
     reply_text = "true" if reply else "false"
     encoded_command = quote(command_value, safe="")
     return f"[{label_value}](mqqapi://aio/inlinecmd?command={encoded_command}&enter={enter_text}&reply={reply_text})"
+
+
+def markdown_link(label: str, url: str) -> str:
+    """生成隐藏真实地址的 Markdown 链接，网页入口消息统一使用这个形式。"""
+
+    label_value = _markdown_link_label(str(label).strip())
+    url_value = str(url).strip()
+    if not label_value or not url_value:
+        return label_value
+    escaped_url = url_value.replace(" ", "%20").replace(")", "%29")
+    return f"[{label_value}]({escaped_url})"
 
 
 def buttons_from_commands(commands: list[ButtonCommand], limit: int = MAX_BUTTONS) -> list[list[dict]]:
@@ -197,6 +237,9 @@ def _button_from_command(command: ButtonCommand) -> dict:
     if isinstance(command, dict):
         return deepcopy(command)
     cmd_data, label = parse_button_command(str(command))
+    cmd_data = _parameter_button_command(cmd_data)
+    if _is_parameter_button_command(cmd_data):
+        return button(label, cmd_data=cmd_data, button_type=2, touch_to_send=False)
     return button(label, cmd_data=cmd_data)
 
 
@@ -220,6 +263,9 @@ def button_label_for_command(command: str) -> str:
     """生成按钮展示名；发送命令仍保留完整文本。"""
 
     value = command.strip()
+    parameter_label = _parameter_button_label(value)
+    if parameter_label:
+        return parameter_label
     alias = BUTTON_LABEL_EXACT_ALIASES.get(value)
     if alias:
         return alias
@@ -229,6 +275,37 @@ def button_label_for_command(command: str) -> str:
         if value.startswith(f"{prefix} "):
             return f"{short_prefix} {value[len(prefix):].strip()}"
     return value
+
+
+def _parameter_button_command(command: str | None) -> str | None:
+    """把半截参数命令补成可编辑模板，供 type=2 按钮填入输入框。"""
+
+    value = str(command or "").strip()
+    if not value:
+        return command
+    return PARAMETER_BUTTON_EXACT_COMMANDS.get(value, value)
+
+
+def _is_parameter_button_command(command: str | None) -> bool:
+    """需要玩家补参数的按钮使用 type=2，点击后只填入输入框。"""
+
+    value = str(command or "").strip()
+    if not value:
+        return False
+    if value in PARAMETER_BUTTON_EXACT_COMMANDS:
+        return True
+    return any(placeholder in value for placeholder in PARAMETER_BUTTON_PLACEHOLDERS)
+
+
+def _parameter_button_label(command: str) -> str:
+    """参数模板按钮显示动作名，不把占位参数铺到按钮上。"""
+
+    value = str(command or "").strip()
+    if value in PARAMETER_BUTTON_EXACT_COMMANDS:
+        return value
+    if not _is_parameter_button_command(value):
+        return ""
+    return value.split(maxsplit=1)[0]
 
 
 def _button_dedupe_key(item: dict) -> str:

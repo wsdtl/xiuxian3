@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import random
 import sqlite3
@@ -56,25 +55,6 @@ FORTUNE_POOL = (
     ("定心", "心火不摇，承伤更稳。", {"crit_resist_bonus": 0.05}),
     ("天眷", "今日天光偏爱，万事都略顺半分。", {"explore_bonus": 0.08, "recover_bonus": 0.05}),
     ("破云", "心气如剑，出手时更敢一线。", {"damage_reduce": 0.03, "dodge_bonus": 0.03}),
-)
-
-
-WORLD_WEATHER_POOL = (
-    ("晴岚", "云开风轻，山路和商道都显得明快。", {"explore_bonus": 0.03}),
-    ("灵雨", "细雨带着灵气落下，调息恢复更顺。", {"recover_bonus": 0.04}),
-    ("雾锁", "雾色压低远路视野，跑商略有磕绊。", {"trade_bonus": -0.006}),
-    ("星夜", "星光清冷，斗法时心神更定。", {"crit_resist_bonus": 0.025}),
-    ("风起", "长风推人前行，身法更轻。", {"dodge_bonus": 0.025}),
-    ("沉云", "云层压境，万事平稳无额外加成。", {}),
-)
-
-WORLD_TIDE_POOL = (
-    ("灵潮平稳", "天地灵息如常，适合照旧修行。", {}),
-    ("灵潮微涨", "灵息浮动，探险寻物更容易撞见机会。", {"explore_bonus": 0.04}),
-    ("商气东来", "坊市人声热闹，跑商手续费略降。", {"trade_bonus": 0.012}),
-    ("回春潮", "草木气息回环，休息与恢复效果更好。", {"recover_bonus": 0.05}),
-    ("剑气鸣野", "天地间有锋芒回响，出手更稳。", {"damage_reduce": 0.02}),
-    ("静海潮", "灵潮安静，承伤更稳。", {"crit_resist_bonus": 0.03}),
 )
 
 
@@ -280,57 +260,12 @@ def business_day(value: datetime | None = None) -> str:
     return ((value or now()) - timedelta(hours=DAY_RESET_HOUR)).date().isoformat()
 
 
-def world_state_for_day(day: str | None = None) -> dict[str, Any]:
-    """按业务日稳定生成全服天气和灵潮。"""
-
-    current_day = day or business_day()
-    weather = _stable_choice(WORLD_WEATHER_POOL, f"{current_day}:weather")
-    tide = _stable_choice(WORLD_TIDE_POOL, f"{current_day}:tide")
-    return {
-        "business_day": current_day,
-        "weather": _world_entry("weather", weather),
-        "tide": _world_entry("tide", tide),
-        "effect": merge_numeric_effects(weather[2], tide[2]),
-    }
-
-
-def merge_numeric_effects(*effects: dict[str, Any]) -> dict[str, float]:
-    """合并多个加成字典，只保留数值型效果。"""
-
-    merged: dict[str, float] = {}
-    for effect in effects:
-        for key, value in effect.items():
-            if isinstance(value, int | float):
-                merged[key] = merged.get(key, 0) + float(value)
-    return merged
-
-
 def soft_cap_percent_bonus(raw: float, cap: float) -> float:
     """给百分比加成做收益递减封顶；负面效果保持原值。"""
 
     if raw <= 0:
         return raw
     return cap * raw / (raw + cap)
-
-
-def _stable_choice(pool: tuple[tuple[str, str, dict[str, Any]], ...], seed_text: str) -> tuple[str, str, dict[str, Any]]:
-    """用业务日文字稳定选择一项，避免服务重启后变化。"""
-
-    digest = hashlib.sha256(seed_text.encode("utf-8")).hexdigest()
-    index = int(digest[:8], 16) % len(pool)
-    return pool[index]
-
-
-def _world_entry(kind: str, row: tuple[str, str, dict[str, Any]]) -> dict[str, Any]:
-    """把天气/灵潮定义整理成统一结构。"""
-
-    name, flavor, effect = row
-    return {
-        "kind": kind,
-        "name": name,
-        "flavor": flavor,
-        "effect": dict(effect),
-    }
 
 
 def to_int(value: object, default: int = 0) -> int:
@@ -443,7 +378,7 @@ def ring_item_use_hint(item: dict[str, Any]) -> str:
     if item_id == "cuifengdan":
         return f"{name}由纳戒承接消耗，请发送：武器升限；默认提升已装备武器，也可发送：武器升限 武器ID。<纳戒><武器>"
     if category_key == RING_CATEGORY_GEM:
-        return "宝石请发送：镶嵌 装备位 孔位号 宝石名称；同名多等级时加等级，例如：护心玉 2级。<体质重塑><宝石><武器>"
+        return f"宝石请发送：镶嵌 装备位 孔位号 {name}；同名多等级时加等级，例如：{name} 2级。<体质重塑><宝石><武器>"
     if category_key == RING_CATEGORY_BOOK:
         return "技能书请发送：附魔武器 武器ID 技能书名；武器 ID 支持 武器#12、#12、12。<体质重塑><宝石><武器>"
     if item_id == "kaikongqi":
@@ -1699,6 +1634,7 @@ class CoreService:
 
         hp = max_hp(1, 0)
         mp = max_mp(1)
+        starter_name = "初始武器"
         with self.db.transaction() as conn:
             start = conn.execute(
                 "SELECT name, x, y FROM world_locations WHERE location_id = ?",
@@ -1753,11 +1689,16 @@ class CoreService:
                 [(client_id, slot) for slot in EQUIPMENT_SLOTS],
             )
             self.ensure_player_weapon_conn(conn, client_id)
+            starter = conn.execute(
+                "SELECT name FROM weapon_defs WHERE weapon_def_id = ?",
+                ("qinglan_duanjian",),
+            ).fetchone()
+            starter_name = str(starter["name"]) if starter else starter_name
             conn.execute(
                 "INSERT INTO game_logs (client_id, action, detail, created_at) VALUES (?, '创建用户', ?, ?)",
                 (client_id, result, ts()),
             )
-        return f"创建成功，道友 {result}。初始武器：青岚短剑。"
+        return f"创建成功，道友 {result}。初始武器：{starter_name}。"
 
     def rename_player(self, client_id: str, display_name: str) -> str:
         """修改展示名称。"""
@@ -1955,8 +1896,6 @@ class CoreService:
             for key, value in load_json(fortune["effect"], {}).items():
                 if isinstance(value, int | float):
                     bonuses[key] = bonuses.get(key, 0) + float(value)
-        for key, value in world_state_for_day()["effect"].items():
-            bonuses[key] = bonuses.get(key, 0) + value
         for key, cap in PERCENT_BONUS_CAPS.items():
             bonuses[key] = soft_cap_percent_bonus(float(bonuses.get(key, 0)), cap)
         return bonuses
@@ -3405,7 +3344,6 @@ __all__ = [
     "fixed_equipment_label",
     "format_effect",
     "load_json",
-    "merge_numeric_effects",
     "money",
     "now",
     "parse_name_level",
@@ -3444,5 +3382,4 @@ __all__ = [
     "weapon_attack_value",
     "weapon_label_name",
     "weapon_type_key",
-    "world_state_for_day",
 ]

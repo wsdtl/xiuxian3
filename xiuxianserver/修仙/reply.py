@@ -1,8 +1,10 @@
-"""修仙 WS 回复包装。"""
+"""修仙回复包装。"""
 
 from __future__ import annotations
 
 from typing import Any
+
+from launch.adapter import current_context_value
 
 from .common import player_level_label, row_value
 from .markdown_utils import markdown_message, split_button_tags
@@ -19,7 +21,7 @@ CONTEXT_BUTTONS_BY_GROUP = {
     "纳戒": ("纳戒", "背包", "保险箱", "宝石", "体质重塑", "武器", "装备", "探险"),
     "保险箱": ("保险箱", "背包", "纳戒", "宝石", "武器", "自动出售"),
     "修仙物品": ("背包", "纳戒", "保险箱", "宝石", "武器", "装备", "铭刻"),
-    "修仙百科": ("修仙百科 武器", "修仙百科 宝石", "修仙百科 跑商", "修仙百科 首领", "修仙百科 断念杖"),
+    "修仙百科": ("修仙百科 武器", "修仙百科 宝石", "修仙百科 跑商", "修仙百科 首领", "修仙百科 武器流派"),
     "银行": ("银行", "银行结息", "升级银行", "签到", "商场推荐", "自动出售", "探险"),
     "贸易服务": ("商场推荐", "自动出售", "跑商奖励", "跑商限制", "背包", "银行", "地图"),
     "二手市场": ("二手市场", "背包", "纳戒", "武器", "银行", "商场推荐"),
@@ -62,7 +64,8 @@ async def send_reply(client_id: str, message: Any, manager: Any, service: Any = 
     """发送修仙回复，并统一加玩家头和默认按钮。"""
 
     database = getattr(service, "db", None) or db
-    await manager.send(_with_player_name(client_id, message, database, service), client_id)
+    reply_client_id = str(current_context_value("client_id", client_id) or client_id)
+    await manager.send(_with_player_name(client_id, message, database, service), reply_client_id)
 
 
 def _with_player_name(client_id: str, message: Any, database: Any, service: Any = None) -> Any:

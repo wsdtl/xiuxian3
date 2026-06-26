@@ -37,7 +37,7 @@ class ItemEffectService(CoreService):
         """在当前事务里批量结算物品效果。"""
 
         if quantity <= 0:
-            return T.hint("使用数量必须大于 0。", "发送：使用 物品名 数量，例如：使用 福袋 5")
+            return T.hint("使用数量必须大于 0。", "发送：使用 物品名 数量，例如：使用 恢复物 5")
 
         all_texts: list[str] = []
         for _ in range(quantity):

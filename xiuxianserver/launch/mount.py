@@ -3,7 +3,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .config import config
 from .log import C, logger
-from .adapter import BaseAdapter
+from .adapter import BaseAdapter, enabled_adapter_specs
 
 
 async def FastAPIMount(app: "FastAPI") -> None:
@@ -23,14 +23,13 @@ async def AdapterMount(app: "FastAPI") -> list[type[BaseAdapter]]:
 
     adapters: list[type[BaseAdapter]] = []
 
-    from .adapter import ws
+    for spec in enabled_adapter_specs():
+        if not any(getattr(route, "path", "") == spec.route for route in app.routes):
+            app.include_router(spec.router)
+            logger.opt(colors=True).success(
+                f"{C.ok('已挂载适配器')} {C.kv('name', spec.name)} {C.kv('path', spec.route)}"
+            )
 
-    if not any(getattr(route, "path", "") == ws.WS_ROUTE for route in app.routes):
-        app.include_router(ws.router)
-        logger.opt(colors=True).success(
-            f"{C.ok('Loaded handler')} {C.kv('path', ws.WS_ROUTE)}"
-        )
-
-    adapters.append(ws.WsMessageHandler)
+        adapters.append(spec.handler)
 
     return adapters

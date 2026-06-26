@@ -31,10 +31,10 @@ from 修仙.wormhole_service import (
 )
 from 修仙.探险.service import SECRET_REALM_ENVIRONMENT_NAMES_BY_KEY
 from 修仙.首领.service import SeasonalBossService
-import 修仙.wormhole_service as wormhole_module
 from 修仙.world_materials import WorldMaterialService
 
 boss_module = import_module("修仙.首领.service")
+wormhole_module = import_module("修仙.wormhole_service")
 
 
 def main() -> None:
@@ -80,17 +80,17 @@ def _check_wormhole_metadata_and_war_prep_rewards(db: XiuxianDB) -> None:
     assert len(WAR_PREP_AFFIX_NAMES_BY_KEY) == 6
     assert len(WAR_PREP_BOSS_NAMES_BY_KEY) == 18
     captured_boss_kind: dict[str, str] = {}
-    old_fight_boss = wormhole_module.combat_service.fight_boss
+    old_fight_boss = wormhole.combat_core.fight_boss
 
     def fake_fight_boss(_player, _event, *, boss_kind, action_limit=None, enemy_skill=None):
         captured_boss_kind["value"] = boss_kind
         return {}
 
     try:
-        wormhole_module.combat_service.fight_boss = fake_fight_boss  # type: ignore[method-assign]
+        wormhole.combat_core.fight_boss = fake_fight_boss  # type: ignore[method-assign]
         wormhole._fight_boss({"client_id": "tester", "level": 10}, event)
     finally:
-        wormhole_module.combat_service.fight_boss = old_fight_boss  # type: ignore[method-assign]
+        wormhole.combat_core.fight_boss = old_fight_boss  # type: ignore[method-assign]
     assert captured_boss_kind["value"] == meta["combat_kind"]
 
     force = "伏魔殿"

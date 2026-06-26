@@ -9,7 +9,7 @@ from __future__ import annotations
 from .common import CoreService, enemy_kind_key, random, ts
 from .rules import damage_after_defense, monster_exp, weapon_exp_from_combat
 from .sql import db
-from .weapon_core import service as weapon_core
+from .weapon_core import WeaponCore
 
 
 class CombatCore(CoreService):
@@ -17,6 +17,10 @@ class CombatCore(CoreService):
 
     PLAYER_ACTION_LIMIT = 80
     BOSS_ACTION_LIMIT = 18
+
+    def __init__(self, database) -> None:
+        super().__init__(database)
+        self.weapon_core = WeaponCore(database)
 
     def fight_monster(
         self,
@@ -31,7 +35,7 @@ class CombatCore(CoreService):
         if not player:
             return {"win": False, "summary": "玩家不存在", "exp": 0, "hp_left": 0, "actions": []}
 
-        weapon = weapon_core.equipped_weapon(client_id)
+        weapon = self.weapon_core.equipped_weapon(client_id)
         player_state = self._player_combat_state(
             client_id,
             player,
@@ -91,8 +95,8 @@ class CombatCore(CoreService):
         """
 
         client_id = player["client_id"]
-        weapon_core.ensure_starter_weapon(client_id)
-        weapon = weapon_core.equipped_weapon(client_id)
+        self.weapon_core.ensure_starter_weapon(client_id)
+        weapon = self.weapon_core.equipped_weapon(client_id)
         player_state = self._player_combat_state(
             client_id,
             player,
@@ -142,8 +146,8 @@ class CombatCore(CoreService):
         if not left or not right:
             return {"winner_id": "", "loser_id": "", "summary": "玩家不存在", "actions": []}
 
-        left_weapon = weapon_core.equipped_weapon(left_id)
-        right_weapon = weapon_core.equipped_weapon(right_id)
+        left_weapon = self.weapon_core.equipped_weapon(left_id)
+        right_weapon = self.weapon_core.equipped_weapon(right_id)
         left_state = self._player_combat_state(left_id, left, left_weapon, hp=int(left["max_hp"]), mp=int(left["max_mp"]))
         right_state = self._player_combat_state(right_id, right, right_weapon, hp=int(right["max_hp"]), mp=int(right["max_mp"]))
         return self._duel_from_states(left_id, right_id, left_state, right_state, left_weapon, right_weapon, write_log)
@@ -160,7 +164,7 @@ class CombatCore(CoreService):
             return {"winner_id": "", "loser_id": "", "summary": "玩家不存在", "actions": []}
 
         defender_id = str(defender.get("client_id", ""))
-        attacker_weapon = weapon_core.equipped_weapon(attacker_id)
+        attacker_weapon = self.weapon_core.equipped_weapon(attacker_id)
         defender_weapon = defender_snapshot.get("weapon") if isinstance(defender_snapshot.get("weapon"), dict) else None
         attacker_state = self._player_combat_state(
             attacker_id,
@@ -194,7 +198,7 @@ class CombatCore(CoreService):
         if not player:
             return {"win": False, "summary": "玩家不存在", "exp": 0, "hp_left": 0, "mp_left": 0, "actions": []}
 
-        weapon = weapon_core.equipped_weapon(client_id)
+        weapon = self.weapon_core.equipped_weapon(client_id)
         player_state = self._player_combat_state(client_id, player, weapon, hp=int(start_hp), mp=int(start_mp))
         opponent_state = self._secret_realm_actor_state(opponent)
         actions = []
@@ -517,7 +521,7 @@ class CombatCore(CoreService):
     def _player_combat_state(self, client_id: str, player: dict, weapon: dict | None, *, hp: int, mp: int) -> dict:
         """生成玩家战斗状态。"""
 
-        skill = weapon_core.skill(weapon["skill_id"]) if weapon else None
+        skill = self.weapon_core.skill(weapon["skill_id"]) if weapon else None
         effects = self._merge_effects(self.equipment_bonuses(client_id), self._weapon_effects(weapon))
         speed = self._actor_speed(int(player["level"]), weapon, effects)
         return {
@@ -527,7 +531,7 @@ class CombatCore(CoreService):
             "player": player,
             "weapon": weapon,
             "skill": skill,
-            "skill_label": weapon_core.weapon_skill_label(int(weapon["weapon_id"]), skill) if weapon and skill else "",
+            "skill_label": self.weapon_core.weapon_skill_label(int(weapon["weapon_id"]), skill) if weapon and skill else "",
             "effects": effects,
             "hp": int(hp),
             "max_hp": int(player["max_hp"]),

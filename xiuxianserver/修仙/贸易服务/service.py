@@ -101,7 +101,7 @@ class TradeService(WeaponCore):
         assert player is not None
         item_name, quantity = self._parse_name_quantity(message)
         if quantity <= 0:
-            return T.hint("购买格式不正确。", "发送：商场购买 商品名 数量，例如：商场购买 星官旧简 3")
+            return T.hint("购买格式不正确。", "发送：商场购买 商品名 数量，例如：商场购买 本地特产 3")
         item = self.item_def_by_name(item_name)
         if not item or not item["tradeable"]:
             return T.hint(f"{item_name} 不是可购买的跑商商品。", "发送：商场推荐 查看当前位置能做的买卖。<商场推荐>")
@@ -160,7 +160,7 @@ class TradeService(WeaponCore):
             return T.hint("当前位置不是商场城池。", "可以直接发送：出售 物品名 数量，系统会自动分流。<自动出售>")
         item_name, quantity = self._parse_name_quantity(message)
         if quantity <= 0:
-            return T.hint("出售格式不正确。", "发送：商场出售 商品名 数量，例如：商场出售 星官旧简 3")
+            return T.hint("出售格式不正确。", "发送：商场出售 商品名 数量，例如：商场出售 背包特产 3")
         item = self.item_def_by_name(item_name)
         if not item or not item["tradeable"]:
             return T.hint(f"{item_name} 不是可出售的跑商商品。", "发送：背包 查看可出售的跑商货物。<背包>")
@@ -176,7 +176,7 @@ class TradeService(WeaponCore):
 
         item_name, quantity = self._parse_name_quantity(message)
         if quantity <= 0:
-            return T.hint("出售格式不正确。", "发送：出售 物品名 数量，例如：出售 古妖丹 3。<背包><纳戒>")
+            return T.hint("出售格式不正确。", "发送：出售 物品名 数量，例如：出售 背包物品 3。<背包><纳戒>")
 
         backpack_item = self.item_def_by_name(item_name)
         if backpack_item:
@@ -494,7 +494,7 @@ class TradeService(WeaponCore):
 
         item_name, quantity = self._parse_name_quantity(message)
         if quantity <= 0:
-            return T.hint("出售格式不正确。", "发送：出售 物品名 数量，例如：出售 古妖丹 2。<背包>")
+            return T.hint("出售格式不正确。", "发送：出售 物品名 数量，例如：出售 战利品 2。<背包>")
         item = self.item_def_by_name(item_name)
         if not item:
             return T.hint(f"没有找到物品：{item_name}。", "发送：背包 确认物品名称。<背包>")

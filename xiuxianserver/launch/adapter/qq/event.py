@@ -1,0 +1,199 @@
+"""QQ webhook 事件解析。
+
+QQ 原始 payload 保留在 raw 中，但驱动器内部只把命令系统需要的字段
+提取成 QqMessageEvent，避免业务派发层反复处理开放平台的原始结构。
+"""
+
+import re
+from dataclasses import dataclass
+from typing import Any, Dict
+
+
+FIRST_LEADING_MENTION_RE = re.compile(r"^\s*<@([^>]+)>")
+LEADING_MENTION_CHAIN_RE = re.compile(r"^(?:\s*<@[^>]+>\s*)+")
+
+
+@dataclass(frozen=True)
+class QqMessageEvent:
+    """QQ 驱动器内部使用的规整消息事件。
+
+    payload 的原始字段在不同事件类型里并不完全一致。这里把命令系统
+    必须关心的字段收敛成固定结构：业务身份 client_id、正文 content、
+    私聊目标 user_openid、群目标 group_openid，以及原始 raw payload。
+    """
+
+    event_type: str
+    event_id: str
+    message_id: str
+    client_id: str
+    content: str
+    group_openid: str
+    user_openid: str
+    raw: Dict[str, Any]
+    interaction_id: str = ""
+
+    @property
+    def is_group(self) -> bool:
+        """当前事件是否来自群聊。"""
+
+        return bool(self.group_openid)
+
+
+def parse_message_event(payload: dict) -> QqMessageEvent | None:
+    """从 QQ webhook payload 中提取可处理的消息事件。
+
+    不属于消息创建的事件返回 None，调用方仍会 ACK；字段不完整的消息
+    也返回 None，避免后续回复阶段缺少 openid 或 message_id。
+    """
+
+    data = payload.get("d")
+    if not isinstance(data, dict):
+        return None
+
+    event_type = str(payload.get("t") or "").strip()
+    if event_type == "INTERACTION_CREATE":
+        return parse_interaction_event(payload, data)
+
+    if event_type not in {
+        "C2C_MESSAGE_CREATE",
+        "GROUP_AT_MESSAGE_CREATE",
+        "GROUP_MESSAGE_CREATE",
+    }:
+        return None
+
+    content = normalize_content(
+        data.get("content"),
+        event_type=event_type,
+        mentions=data.get("mentions"),
+    )
+    message_id = str(data.get("id") or "").strip()
+    event_id = str(payload.get("id") or "").strip()
+    author = data.get("author") if isinstance(data.get("author"), dict) else {}
+    user_openid = str(
+        author.get("user_openid")
+        or author.get("member_openid")
+        or author.get("id")
+        or ""
+    ).strip()
+    group_openid = str(data.get("group_openid") or data.get("group_id") or "").strip()
+
+    if not content or not message_id or not user_openid:
+        return None
+
+    return QqMessageEvent(
+        event_type=event_type,
+        event_id=event_id,
+        message_id=message_id,
+        client_id=user_openid,
+        content=content,
+        group_openid=group_openid,
+        user_openid=user_openid,
+        raw=payload,
+    )
+
+
+def parse_interaction_event(payload: dict, data: dict) -> QqMessageEvent | None:
+    """从 QQ 按钮回调事件中提取可派发的命令事件。"""
+
+    resolved = _interaction_resolved_data(data)
+    content = normalize_content(resolved.get("button_data"))
+    interaction_id = str(data.get("id") or payload.get("id") or "").strip()
+    event_id = str(payload.get("id") or interaction_id).strip()
+    message_id = str(resolved.get("message_id") or "").strip()
+    group_openid = str(data.get("group_openid") or "").strip()
+    user_openid = str(
+        data.get("user_openid")
+        or data.get("group_member_openid")
+        or resolved.get("user_id")
+        or ""
+    ).strip()
+
+    if not content or not interaction_id or not user_openid:
+        return None
+
+    return QqMessageEvent(
+        event_type="INTERACTION_CREATE",
+        event_id=event_id,
+        message_id=message_id,
+        client_id=user_openid,
+        content=content,
+        group_openid=group_openid,
+        user_openid=user_openid,
+        raw=payload,
+        interaction_id=interaction_id,
+    )
+
+
+def normalize_content(
+    value: Any,
+    *,
+    event_type: str = "",
+    mentions: Any = None,
+) -> str:
+    """清理 QQ 消息正文，只去掉明确指向本机器人的开头 at。"""
+
+    text = "" if value is None else str(value)
+    if _should_strip_leading_mentions(text, event_type, mentions):
+        text = LEADING_MENTION_CHAIN_RE.sub("", text, count=1)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _interaction_resolved_data(data: dict) -> dict:
+    """兼容 QQ 文档里的 resolved/resoloved 两种字段写法。"""
+
+    interaction_data = data.get("data")
+    if not isinstance(interaction_data, dict):
+        return {}
+    resolved = interaction_data.get("resolved")
+    if isinstance(resolved, dict):
+        return resolved
+    resoloved = interaction_data.get("resoloved")
+    if isinstance(resoloved, dict):
+        return resoloved
+    if "button_data" in interaction_data:
+        return interaction_data
+    return {}
+
+
+def _should_strip_leading_mentions(text: str, event_type: str, mentions: Any) -> bool:
+    """判断开头 at 是否确实是在叫当前机器人。"""
+
+    first = FIRST_LEADING_MENTION_RE.search(text)
+    if not first:
+        return False
+
+    first_mention_id = first.group(1).strip().lstrip("!")
+    you_ids = _you_mention_ids(mentions)
+    if you_ids:
+        return first_mention_id in you_ids
+
+    # 少数 QQ at 机器人事件可能没有 mentions 详情；这种事件本身就代表
+    # “用户在叫机器人”，保留兼容处理。
+    return event_type == "GROUP_AT_MESSAGE_CREATE"
+
+
+def _you_mention_ids(mentions: Any) -> set[str]:
+    """从 QQ mentions 列表里提取当前机器人的 mention ID。"""
+
+    if not isinstance(mentions, list):
+        return set()
+
+    result: set[str] = set()
+    for item in mentions:
+        if not isinstance(item, dict):
+            continue
+        if not _is_you_mention(item.get("is_you")):
+            continue
+        for key in ("id", "member_openid", "user_openid"):
+            value = str(item.get(key) or "").strip().lstrip("!")
+            if value:
+                result.add(value)
+    return result
+
+
+def _is_you_mention(value: Any) -> bool:
+    """兼容 bool 和字符串形式的 is_you。"""
+
+    if value is True:
+        return True
+    return str(value).strip().lower() in {"1", "true", "yes"}

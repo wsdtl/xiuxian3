@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import timedelta
 
 from .. import combat_log_text
-from ..combat_core import service as combat_service
+from ..combat_core import CombatCore
 from ..common import (
     CoreService,
     QUALITY_EPIC,
@@ -28,7 +28,7 @@ from ..constants import DEFAULT_LOCATION_ID, ENCOUNTER_SECONDS, EXPLORE_MINUTES,
 from ..format_text import T
 from ..sect_war import sect_direction_bonus_conn
 from ..sql import db
-from ..weapon_core import service as weapon_service
+from ..weapon_core import WeaponCore
 from ..world_materials import WorldMaterialService
 from ..world_skin import skin_record
 from ..battle_log_links import battle_log_markdown
@@ -125,6 +125,8 @@ class ExplorationService(CoreService):
     def __init__(self, database) -> None:
         super().__init__(database)
         self.world_material = WorldMaterialService(database)
+        self.combat_core = CombatCore(database)
+        self.weapon_core = WeaponCore(database)
 
     def locations(self, client_id: str) -> str:
         """查看探险地点。"""
@@ -137,7 +139,7 @@ class ExplorationService(CoreService):
         panel = T.panel()
         panel.section("探险地图")
         panel.line(f"范围：左下角 ({WORLD_COORD_MIN},{WORLD_COORD_MIN})｜右上角 ({WORLD_COORD_MAX},{WORLD_COORD_MAX})")
-        panel.line("普通地点同时承担探险、商路和城池状态；太虚秘境是特殊战斗点。")
+        panel.line("普通地点同时承担探险、商路和城池状态；特殊秘境是动态战斗点。")
         panel.hr()
         panel.section("普通城池")
         for row in rows:
@@ -217,7 +219,7 @@ class ExplorationService(CoreService):
             if self._is_secret_realm(str(exploration["name"]), str(exploration.get("location_id") or "")):
                 panel.hr()
                 panel.section("秘境")
-                panel.line("太虚秘境按玩家等级动态映身，主要产出高阶宝石和全池武器。")
+                panel.line(f"{exploration['name']}按玩家等级动态映身，主要产出高阶宝石和全池武器。")
             else:
                 panel.hr()
                 panel.section("探险")
@@ -305,7 +307,7 @@ class ExplorationService(CoreService):
                 return T.hint(f"没有找到探险地点：{target_name}。", "发送：探险列表 查看可探险地点。<探险列表>")
             return T.hint("当前位置不是探险地点。", "发送：探险列表 查看可探险地点，或发送：探险 地点名<探险列表>")
 
-        weapon_service.ensure_starter_weapon(client_id)
+        self.weapon_core.ensure_starter_weapon(client_id)
         explore_player = dict(player)
         explore_player["location_name"] = location["name"]
         explore_player["location_id"] = location.get("location_id", "")
@@ -501,7 +503,7 @@ class ExplorationService(CoreService):
             for drop in self._weapon_drops_from_result(result):
                 if not drop:
                     continue
-                weapon_id = weapon_service.create_weapon_conn(
+                weapon_id = self.weapon_core.create_weapon_conn(
                     conn,
                     client_id,
                     drop["weapon_def_id"],
@@ -631,7 +633,7 @@ class ExplorationService(CoreService):
             )
             monster = dict(random.choice(monsters))
             monster["drop_item_id"] = self._roll_monster_loot_item(monster)
-            event = combat_service.fight_monster(
+            event = self.combat_core.fight_monster(
                 client_id,
                 monster,
                 start_hp=hp_left,
@@ -740,7 +742,7 @@ class ExplorationService(CoreService):
         for _ in range(SECRET_REALM_MAX_ENCOUNTERS):
             hp_left, mp_left = self._auto_use_medicine(hp_left, mp_left, player, medicine_stock, medicine_used)
             monster = self._secret_realm_actor(player, templates, environment)
-            event = combat_service.fight_secret_realm_actor(client_id, monster, start_hp=hp_left, start_mp=mp_left)
+            event = self.combat_core.fight_secret_realm_actor(client_id, monster, start_hp=hp_left, start_mp=mp_left)
             self._scale_secret_realm_exp(event)
             event["secret_realm"] = True
             event["secret_environment_key"] = environment["key"]
@@ -847,13 +849,13 @@ class ExplorationService(CoreService):
             if not any(event.get("win") for event in events):
                 return []
             if random.random() < self._weapon_drop_chance(explore_bonus):
-                return [weapon_service.roll_weapon_drop(player["location_name"])]
+                return [self.weapon_core.roll_weapon_drop(player["location_name"])]
             return []
 
         drops = []
         for stage_events in self._secret_realm_weapon_check_stages(events):
             if stage_events and random.random() < self._secret_realm_weapon_drop_chance(explore_bonus):
-                drops.append(weapon_service.roll_weapon_drop(""))
+                drops.append(self.weapon_core.roll_weapon_drop(""))
         return drops
 
     @staticmethod
@@ -903,15 +905,15 @@ class ExplorationService(CoreService):
     def _combat_snapshot(self, client_id: str, player: dict) -> dict:
         """保存探险开始时用于玩家对战的完整战斗快照。"""
 
-        weapon = weapon_service.equipped_weapon(client_id)
-        skill = weapon_service.skill(weapon["skill_id"]) if weapon else None
+        weapon = self.weapon_core.equipped_weapon(client_id)
+        skill = self.weapon_core.skill(weapon["skill_id"]) if weapon else None
         equipment_effects = self.equipment_bonuses(client_id)
         weapon_effects = self._weapon_effects(weapon)
         return {
             "player": self._player_snapshot(player),
             "weapon": dict(weapon) if weapon else {},
             "skill": dict(skill) if skill else {},
-            "skill_label": weapon_service.weapon_skill_label(int(weapon["weapon_id"]), skill) if weapon and skill else "",
+            "skill_label": self.weapon_core.weapon_skill_label(int(weapon["weapon_id"]), skill) if weapon and skill else "",
             "equipment_effects": equipment_effects,
             "weapon_effects": weapon_effects,
             "effects": self._merge_effects(equipment_effects, weapon_effects),
@@ -991,12 +993,11 @@ class ExplorationService(CoreService):
             return f"{minutes} 分钟"
         return f"{minutes} 分 {rest} 秒"
 
-    @staticmethod
-    def _secret_realm_environment() -> dict:
+    def _secret_realm_environment(self) -> dict:
         """随机一个太虚秘境环境。"""
 
         key, name, desc, rates = random.choice(SECRET_REALM_ENVIRONMENTS)
-        skin = skin_record(("secret_realm", "environments"), key)
+        skin = skin_record(("secret_realm", "environments"), key, self.db)
         name = str(skin.get("name") or name)
         desc = str(skin.get("desc") or desc)
         return {"key": key, "name": name, "desc": desc, "rates": rates}
@@ -1012,8 +1013,8 @@ class ExplorationService(CoreService):
         near_templates = [row for row in templates if abs(int(row["level"]) - display_level) <= 12]
         template = random.choice(near_templates or templates)
 
-        source_weapon = weapon_service.equipped_weapon(str(player["client_id"]))
-        source_skill = weapon_service.skill(source_weapon["skill_id"]) if source_weapon else None
+        source_weapon = self.weapon_core.equipped_weapon(str(player["client_id"]))
+        source_skill = self.weapon_core.skill(source_weapon["skill_id"]) if source_weapon else None
         source_effects = self._merge_effects(self.equipment_bonuses(str(player["client_id"])), self._weapon_effects(source_weapon))
         player_hp = max(1, int(player.get("max_hp", player.get("hp", 1))))
         player_defense = max(0, int(player.get("defense", 0)))
@@ -1649,14 +1650,15 @@ class ExplorationService(CoreService):
         if not dead and not bag_full:
             stop_reason = "秘境轮数已尽，45 分钟到点"
         record_id = int(record["record_id"])
+        realm_title = str(record.get("location_name") or "特殊秘境")
         log_link = battle_log_markdown(
-            f"太虚秘境战斗日志〔{record_id}〕",
+            f"{realm_title}战斗日志〔{record_id}〕",
             "explore",
             record_id,
             detail=combat_log_text.wants_detail(player),
         )
         lines = [
-            "> **太虚秘境结束**",
+            f"> **{realm_title}结束**",
             f"> 记录 **〔{record['record_id']}〕**｜环境：{realm.get('name', '未知')}",
             f"> {realm.get('desc', '虚空潮汐未留下明确信息。')}",
             f"> 战斗 **{len(events)}** 场｜胜 **{wins}**｜败 **{losses}**｜耗时 **{self._seconds_text(self._result_duration_seconds(result))}**",
@@ -1722,7 +1724,7 @@ class ExplorationService(CoreService):
             combo_text = f"，连击追加 {combo_damage}" if combo_damage > 0 else ""
             life_steal = int(action.get("life_steal", 0))
             steal_text = f"，吸血 +{life_steal}" if life_steal > 0 else ""
-            effect = combat_service.action_effect_text(action)
+            effect = self.combat_core.action_effect_text(action)
             effect_text = f"，{effect}" if effect else ""
             lines.append(
                 f"    我方出手：{attack_text}，造成 {total_damage} 伤害"
@@ -1742,7 +1744,7 @@ class ExplorationService(CoreService):
         hurt = int(action.get("monster_damage", 0))
         skill_name = str(action.get("monster_skill_name") or "")
         attack_text = f"技能「{skill_name}」" if action.get("monster_skill_used") else "普通攻击"
-        effect = combat_service.action_effect_text(action)
+        effect = self.combat_core.action_effect_text(action)
         effect_text = f"，{effect}" if effect else ""
         lines.append(
             f"    敌方出手：{attack_text}，造成 {hurt} 伤害{effect_text}；" f"我方血气 {player_hp_left}/{player['max_hp']}，精神 {player_mp_left}/{player['max_mp']}"

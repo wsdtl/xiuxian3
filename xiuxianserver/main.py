@@ -23,12 +23,25 @@ def create_app():
     return app
 
 
+def uvicorn_ssl_kwargs() -> dict:
+    """配置证书路径后返回 uvicorn SSL 参数。"""
+
+    if not config.server.ssl_certfile or not config.server.ssl_keyfile:
+        return {}
+
+    return {
+        "ssl_certfile": str(config.server.ssl_certfile),
+        "ssl_keyfile": str(config.server.ssl_keyfile),
+    }
+
+
 if __name__ == "__main__":
     uvicorn.run(
         app="main:create_app",
         factory=True,
         host=config.server.host,
         port=config.server.port,
-        reload=True,
+        reload=config.server.reload,
         log_config=LOGGING_CONFIG,
+        **uvicorn_ssl_kwargs(),
     )

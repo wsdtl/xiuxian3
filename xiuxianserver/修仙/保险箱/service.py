@@ -97,7 +97,7 @@ class InsuranceBoxService(CoreService):
         item_text, quantity = parse_name_quantity_optional(text)
         item_name, wanted_level = parse_name_level(item_text)
         if quantity <= 0:
-            return T.hint("存入数量必须大于 0。", "发送：存入保险箱 物品名 数量，例如：存入保险箱 古妖丹 10")
+            return T.hint("存入数量必须大于 0。", "发送：存入保险箱 物品名 数量，例如：存入保险箱 物品名 10")
 
         with self.db.transaction() as conn:
             item = conn.execute("SELECT * FROM item_defs WHERE name = ?", (item_name,)).fetchone()
@@ -173,7 +173,7 @@ class InsuranceBoxService(CoreService):
         item_text, quantity = parse_name_quantity_optional(text)
         item_name, wanted_level = parse_name_level(item_text)
         if quantity <= 0:
-            return T.hint("取出数量必须大于 0。", "发送：取出保险箱 物品名 数量，例如：取出保险箱 古妖丹 10")
+            return T.hint("取出数量必须大于 0。", "发送：取出保险箱 物品名 数量，例如：取出保险箱 物品名 10")
 
         with self.db.transaction() as conn:
             item = conn.execute("SELECT * FROM item_defs WHERE name = ?", (item_name,)).fetchone()

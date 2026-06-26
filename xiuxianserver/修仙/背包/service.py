@@ -5,12 +5,16 @@ from __future__ import annotations
 from ..format_text import T
 
 from ..common import CoreService, RING_CATEGORY_RECOVERY, load_json, parse_name_quantity_optional, ring_category_key, ring_item_use_hint
-from ..item_effects import service as item_effects
+from ..item_effects import ItemEffectService
 from ..sql import db
 
 
 class BackpackService(CoreService):
     """背包库存。背包物品占负重。"""
+
+    def __init__(self, database) -> None:
+        super().__init__(database)
+        self.item_effects = ItemEffectService(database)
 
     def list_items(self, client_id: str) -> str:
         """查看背包。"""
@@ -43,7 +47,7 @@ class BackpackService(CoreService):
             return error
         item_name, quantity = parse_name_quantity_optional(item_message)
         if quantity <= 0:
-            return T.hint("使用数量必须大于 0。", "发送：使用 物品名 数量，例如：使用 福袋 5")
+            return T.hint("使用数量必须大于 0。", "发送：使用 物品名 数量，例如：使用 恢复物 5")
         item = self.item_def_by_name(item_name)
         if not item:
             ring_item = self.ring_item_def_by_name(item_name)
@@ -56,14 +60,14 @@ class BackpackService(CoreService):
             with self.db.transaction() as conn:
                 if not self.remove_ring_conn(conn, client_id, ring_item["ring_item_id"], quantity):
                     return T.hint(f"纳戒里没有足够的 {ring_item['name']} x{quantity}。", "发送：纳戒 确认库存，或继续探险获取。<纳戒>")
-                return item_effects.apply_many_conn(conn, client_id, ring_item, "纳戒", quantity)
+                return self.item_effects.apply_many_conn(conn, client_id, ring_item, "纳戒", quantity)
         if not self._is_usable_backpack_recovery(item):
             return T.hint(f"{item['name']} 不能直接使用。", self._backpack_item_hint(item))
 
         with self.db.transaction() as conn:
             if not self.remove_backpack_conn(conn, client_id, item["item_id"], quantity):
                 return T.hint(f"背包里没有足够的 {item['name']} x{quantity}。", "发送：背包 确认库存，或继续探险/跑商获取。<背包><商场推荐>")
-            return item_effects.apply_many_conn(conn, client_id, item, "背包", quantity)
+            return self.item_effects.apply_many_conn(conn, client_id, item, "背包", quantity)
 
     @staticmethod
     def _is_usable_backpack_recovery(item: dict) -> bool:

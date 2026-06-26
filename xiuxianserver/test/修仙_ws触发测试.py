@@ -32,6 +32,7 @@ import 修仙.修仙百科 as encyclopedia_module
 import 修仙.银行 as bank_module
 import 修仙.修仙帮助 as help_module
 import 修仙.玩家 as player_module
+import 修仙.世界皮肤 as world_skin_module
 import 修仙.宗门 as sect_module
 import 修仙.纳戒 as ring_module
 import 修仙.背包 as backpack_module
@@ -40,13 +41,13 @@ import 修仙.装备 as equipment_module
 import 修仙.铭刻 as inscription_module
 import 修仙.首领 as seasonal_boss_module
 import 修仙.修仙界历史 as history_module
+import 修仙.用户组 as user_group_module
+import 修仙.identity as identity_module
+from launch import config as launch_config
 from launch.adapter.ws import WsMessageHandler, make_payload
 from launch.adapter.ws.message import _loads_message
-from 修仙.combat_core import CombatCore
 from 修仙.common import business_day, weapon_id_label
-from 修仙.item_effects import ItemEffectService
 from 修仙.sql import XiuxianDB
-from 修仙.weapon_core import WeaponCore
 from 修仙.贸易服务.service import TradeService
 from 修仙.修仙物品.service import ItemInfoService
 from 修仙.对战.service import DuelService
@@ -58,6 +59,7 @@ from 修仙.修仙百科.service import EncyclopediaService
 from 修仙.银行.service import BankService
 from 修仙.修仙帮助.service import HelpService
 from 修仙.玩家.service import PlayerService
+from 修仙.世界皮肤.service import WorldSkinService
 from 修仙.宗门.service import SectService
 from 修仙.纳戒.service import RingService
 from 修仙.背包.service import BackpackService
@@ -66,19 +68,12 @@ from 修仙.装备.service import EquipmentService
 from 修仙.铭刻.service import InscriptionService
 from 修仙.首领.service import BOSS_DEFS, SeasonalBossService
 from 修仙.修仙界历史.service import XiuxianHistoryService
-
-combat_core_module = import_module("修仙.combat_core")
-exploration_service_module = import_module("修仙.探险.service")
-ring_service_module = import_module("修仙.纳戒.service")
-backpack_service_module = import_module("修仙.背包.service")
-duel_service_module = import_module("修仙.对战.service")
-wormhole_service_module = import_module("修仙.wormhole_service")
-seasonal_boss_service_module = import_module("修仙.首领.service")
-
+from 修仙.用户组.service import UserGroupService
 
 WS_MODULES = (
     help_module,
     player_module,
+    world_skin_module,
     sect_module,
     bank_module,
     ring_module,
@@ -96,11 +91,12 @@ WS_MODULES = (
     inscription_module,
     seasonal_boss_module,
     history_module,
+    user_group_module,
 )
 
 
 class FakeManager:
-    """收集 ws_manager.send 发出的回复。"""
+    """收集适配器回复器发出的回复。"""
 
     def __init__(self) -> None:
         self.sent: list[tuple[str, Any]] = []
@@ -121,8 +117,7 @@ async def main_async() -> None:
             await _assert_cq_at_split()
 
             await _dispatch(manager, "player_ws", "帮助")
-            _must_reply(manager, "player_ws", "修仙帮助网页")
-            _must_reply(manager, "player_ws", "/xiuxian/help")
+            _must_image_reply(manager, "player_ws")
 
             await _dispatch(manager, "player_ws", "修仙帮助")
             _must_image_reply(manager, "player_ws")
@@ -134,12 +129,34 @@ async def main_async() -> None:
             _must_reply(manager, "player_ws", "指南·探险战斗")
             _must_reply(manager, "player_ws", "探险状态")
 
+            await _dispatch(manager, "player_ws", "指南 成长")
+            _must_reply(manager, "player_ws", "用户组")
+            await _dispatch(manager, "player_ws", "用户组")
+            _must_reply(manager, "player_ws", "[用户组后台](")
+            assert "网页登录：https://" not in _last_reply_text(manager)
+
             await _dispatch(manager, "player_ws", "创建用户 青衫客")
             _must_reply(manager, "player_ws", "创建成功")
             _must_reply(manager, "player_ws", "【青衫客")
 
             await _dispatch(manager, "target_ws", "创建用户 安兰")
             _must_reply(manager, "target_ws", "创建成功")
+            await _dispatch(manager, "player_ws", "世界皮肤")
+            _must_reply(manager, "player_ws", "主人命令：世界皮肤切换 包名")
+            await _dispatch(manager, "player_ws", "世界皮肤切换")
+            _must_reply(manager, "player_ws", "缺少皮肤包名")
+            await _dispatch(manager, "target_ws", "世界皮肤切换")
+            _must_reply(manager, "target_ws", "只有主人可以切换世界皮肤")
+
+            login_challenge = user_group_module.service.create_login_challenge()
+            await _dispatch(manager, "player_ws", f"用户组后台登录 {login_challenge['challenge_id']}")
+            _must_reply(manager, "player_ws", "用户组后台登录已确认")
+            bind_code = user_group_module.service.create_bind_code(str(login_challenge["session_id"]))
+            await _dispatch(manager, "player_ws_alt", f"绑定用户组 {bind_code['code']}")
+            _must_reply(manager, "player_ws_alt", "用户组绑定成功")
+            await _dispatch(manager, "player_ws_alt", "修仙信息")
+            _must_reply(manager, "player_ws_alt", "【青衫客")
+            _must_reply(manager, "player_ws_alt", "战斗日志：简要")
 
             await _dispatch(manager, "player_ws", "宗门")
             _must_reply(manager, "player_ws", "你还没有宗门")
@@ -461,31 +478,19 @@ async def main_async() -> None:
 
 
 def _patch_modules(db: XiuxianDB, manager: FakeManager) -> dict[str, Any]:
-    """把模块级 service 和 ws_manager 临时换成测试对象。"""
-
-    item_effects = ItemEffectService(db)
-    weapon_core = WeaponCore(db)
-    combat_core_module.weapon_core = weapon_core
-    combat_core = CombatCore(db)
-
-    ring_service_module.item_effects = item_effects
-    backpack_service_module.item_effects = item_effects
-    exploration_service_module.weapon_service = weapon_core
-    exploration_service_module.combat_service = combat_core
-    duel_service_module.combat_service = combat_core
-    wormhole_service_module.weapon_service = weapon_core
-    wormhole_service_module.combat_service = combat_core
-    seasonal_boss_service_module.weapon_service = weapon_core
-    seasonal_boss_service_module.combat_service = combat_core
+    """把模块级 service 临时换成测试对象。"""
 
     old_state: dict[str, Any] = {
         "services": {module: module.service for module in WS_MODULES},
-        "managers": {module: module.ws_manager for module in WS_MODULES},
+        "identity_db": identity_module.db,
+        "master_name_exists": "MASTER_NAME" in launch_config.custom,
+        "master_name": launch_config.custom.get("MASTER_NAME"),
     }
 
     replacements = {
         help_module: HelpService(db),
         player_module: PlayerService(db),
+        world_skin_module: WorldSkinService(db),
         sect_module: SectService(db),
         bank_module: BankService(db),
         ring_module: RingService(db),
@@ -503,11 +508,13 @@ def _patch_modules(db: XiuxianDB, manager: FakeManager) -> dict[str, Any]:
         inscription_module: InscriptionService(db),
         seasonal_boss_module: SeasonalBossService(db),
         history_module: XiuxianHistoryService(db),
+        user_group_module: UserGroupService(db),
     }
     replacements[sect_module]._is_member_locked = lambda value=None: False  # type: ignore[attr-defined, method-assign]
     for module, service in replacements.items():
         module.service = service
-        module.ws_manager = manager
+    identity_module.db = db
+    launch_config.custom["MASTER_NAME"] = '["青衫客"]'
     return old_state
 
 
@@ -516,8 +523,11 @@ def _restore_modules(old_state: dict[str, Any]) -> None:
 
     for module, service in old_state["services"].items():
         module.service = service
-    for module, manager in old_state["managers"].items():
-        module.ws_manager = manager
+    identity_module.db = old_state["identity_db"]
+    if old_state["master_name_exists"]:
+        launch_config.custom["MASTER_NAME"] = old_state["master_name"]
+    else:
+        launch_config.custom.pop("MASTER_NAME", None)
 
 
 _request_no = 0
@@ -743,9 +753,16 @@ async def _assert_command_plan() -> None:
         "人物志 青衫客",
         "人物志[CQ:at,qq=target_ws]",
         "二手市场购买[CQ:at,qq=target_ws]",
+        "用户组",
+        "用户组后台",
+        "用户组后台登录 ABCDEFGH",
+        "绑定用户组 ABCDEFGH",
+        "世界皮肤",
+        "世界皮肤切换 default",
     )
     for command in main_view_commands:
         assert await WsMessageHandler.has_match(_message_data(command)), f"主查看入口应可命中：{command}"
+    assert not await WsMessageHandler.has_match(_message_data("后台登录 ABCDEFGH"))
 
 
 def _message_data(message: str) -> dict[str, Any]:
@@ -833,7 +850,9 @@ def _must_image_reply(manager: FakeManager, client_id: str) -> None:
     assert message.get("type") == "image", message
     assert not message.get("message", "").startswith("data:image/"), "图片回复不能带 data URI 头"
     image_bytes = b64decode(message.get("message", ""))
-    assert image_bytes.startswith(b"\x89PNG"), "图片回复不是 PNG base64"
+    is_png = image_bytes.startswith(b"\x89PNG")
+    is_webp = image_bytes.startswith(b"RIFF") and b"WEBP" in image_bytes[:16]
+    assert is_png or is_webp, "图片回复不是 PNG/WebP base64"
 
 
 def _add_feathers_conn(conn, client_id: str, quantity: int) -> None:

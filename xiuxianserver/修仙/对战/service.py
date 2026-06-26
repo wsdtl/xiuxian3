@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from .. import combat_log_text
-from ..combat_core import CombatCore, service as combat_service
+from ..combat_core import CombatCore
 from ..common import (
     CoreService,
     RING_CATEGORY_BOOK,
@@ -25,7 +25,7 @@ from ..common import (
 from ..format_text import T
 from ..sect_war import record_sect_robbery_influence_conn
 from ..sql import db
-from ..weapon_core import service as weapon_service
+from ..weapon_core import WeaponCore
 
 
 class DuelService(CoreService):
@@ -33,6 +33,11 @@ class DuelService(CoreService):
 
     ROBBERY_TARGET_LIMIT = 2
     ROBBERY_REVENGE_EXTRA_LIMIT = 5
+
+    def __init__(self, database) -> None:
+        super().__init__(database)
+        self.combat_core = CombatCore(database)
+        self.weapon_core = WeaponCore(database)
 
     def spar(self, client_id: str, message: str) -> str:
         """发起切磋。"""
@@ -126,7 +131,7 @@ class DuelService(CoreService):
             return T.hint("这轮探险缺少战斗快照，不能抢劫。", "等对方重新开始一轮探险后再尝试。")
         robber_sect_id = self._robber_sect_id(client_id)
 
-        battle = combat_service.duel_with_snapshot(client_id, snapshot, write_log=False)
+        battle = self.combat_core.duel_with_snapshot(client_id, snapshot, write_log=False)
         settled = self._settle_robbery(client_id, target_id, record["record_id"], battle, robber_sect_id=robber_sect_id)
         if isinstance(settled, str):
             return settled
@@ -433,7 +438,7 @@ class DuelService(CoreService):
             elif kind == "weapon":
                 drop = loot.get("weapon_drop")
                 if isinstance(drop, dict):
-                    weapon_id = weapon_service.create_weapon_conn(
+                    weapon_id = self.weapon_core.create_weapon_conn(
                         conn,
                         robber_id,
                         str(drop["weapon_def_id"]),
@@ -646,7 +651,7 @@ class DuelService(CoreService):
         if state_error:
             return state_error
 
-        result = combat_service.duel(from_id, client_id, write_log=False)
+        result = self.combat_core.duel(from_id, client_id, write_log=False)
         accepted = self._settle_accept_request(client_id, from_id, mode, request["duel_id"], result)
         if isinstance(accepted, str):
             return accepted

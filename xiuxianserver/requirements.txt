@@ -1,6 +1,7 @@
 APScheduler==3.11.0
 fastapi==0.115.8
 fastapi-cache2==0.2.2
+cryptography==44.0.1
 loguru==0.7.3
 lunardate==0.2.2
 tzdata==2025.1

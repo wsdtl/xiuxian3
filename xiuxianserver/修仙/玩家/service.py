@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from ..combat_log_text import mode_text
 from ..format_text import T
+from ..identity import ensure_player_identity, identity_tables_ready
 
 from ..common import (
     CoreService,
@@ -21,11 +22,11 @@ from ..common import (
     QUALITY_EPIC,
     QUALITY_RARE,
     quality_label,
+    ring_item_display_name,
     timedelta,
     ts,
     weapon_id_label,
     weapon_label_name,
-    world_state_for_day,
 )
 from ..constants import EQUIPMENT_SLOTS, NEWBIE_GIFT_STONES, REST_FAST_SECONDS, REST_FULL_MINUTES
 from ..rules import rest_recovery_rate, sign_reward
@@ -42,7 +43,10 @@ class PlayerService(CoreService):
         name = message.strip()
         if not name:
             return T.hint("缺少用户名称。", "发送：创建用户 青衫客")
-        return self.create_player(client_id, name)
+        result = self.create_player(client_id, name)
+        if identity_tables_ready(self.db) and self.player(client_id):
+            ensure_player_identity(client_id, self.db)
+        return result
 
     def rename(self, client_id: str, message: str) -> str:
         """修改展示名称。"""
@@ -292,7 +296,9 @@ class PlayerService(CoreService):
                 "INSERT INTO game_logs (client_id, action, detail, created_at) VALUES (?, '新手礼包', ?, datetime('now', 'localtime'))",
                 (client_id, "领取"),
             )
-        return f"新手礼包领取成功：{currency_amount(10000)}、血契丹 2、阴冥草 2。"
+        hp_item = ring_item_display_name(self.ring_item_def("xueqidan"), "xueqidan")
+        mp_item = ring_item_display_name(self.ring_item_def("yinmingcao"), "yinmingcao")
+        return f"新手礼包领取成功：{currency_amount(NEWBIE_GIFT_STONES)}、{hp_item} 2、{mp_item} 2。"
 
     def rest(self, client_id: str) -> str:
         """进入休息状态。"""
@@ -563,7 +569,7 @@ class PlayerService(CoreService):
         return parts
 
     def _daily_bonus_lines(self, client_id: str) -> list[str]:
-        """生成今日气运、天气、灵潮和今日合计加成。"""
+        """生成今日气运和今日合计加成。"""
 
         day = business_day()
         fortune = self.db.fetch_one(
@@ -574,17 +580,12 @@ class PlayerService(CoreService):
             """,
             (client_id, day),
         )
-        world = world_state_for_day(day)
-        weather = world["weather"]
-        tide = world["tide"]
-        effects = [world["effect"]]
+        effects = []
         if fortune:
-            effects.insert(0, load_json(fortune["effect"], {}))
+            effects.append(load_json(fortune["effect"], {}))
 
         return [
             f"气运：{self._fortune_bonus_text(fortune)}",
-            f"天气：{weather['name']}（{format_effect(weather['effect'])}）",
-            f"灵潮：{tide['name']}（{format_effect(tide['effect'])}）",
             f"今日加成：{self._effect_total_text(effects)}",
         ]
 

@@ -35,9 +35,9 @@ from .sql import db
 DEFAULT_SKIN_ID = "default"
 PACKAGE_FORMAT = 4
 PACKS_DIR = Path(__file__).resolve().parent / "世界皮肤" / "packs"
-SKIN_HELP_MAP_DIR = "/static/help/world-skins"
-DEFAULT_HELP_MAP_PATH = f"{SKIN_HELP_MAP_DIR}/{DEFAULT_SKIN_ID}.webp"
-SKIN_HELP_MAP_EXTENSIONS = ("webp", "png", "jpg", "jpeg")
+SKIN_HELP_MAP_DIR = "/static/map"
+DEFAULT_HELP_MAP_PATH = f"{SKIN_HELP_MAP_DIR}/{DEFAULT_SKIN_ID}.png"
+SKIN_HELP_MAP_EXTENSIONS = ("jpeg", "jpg", "png")
 SERVER_ROOT = Path(__file__).resolve().parent.parent
 SECRET_REALM_ENVIRONMENT_KEYS = {
     "secret_env_youming_wind",
@@ -339,22 +339,21 @@ def current_skin_id(database: Any = db) -> str:
 
 
 def current_help_map_path(database: Any = db) -> str:
-    """按当前皮肤包名匹配地图资源；匹配不到就回默认地图。"""
+    """按当前皮肤包名匹配地图资源；优先 JPEG/JPG，其次 PNG。"""
 
     skin_id = current_skin_id(database)
-    if skin_id:
-        for ext in SKIN_HELP_MAP_EXTENSIONS:
-            public_path = f"{SKIN_HELP_MAP_DIR}/{skin_id}.{ext}"
-            if _static_file_exists(public_path):
-                return public_path
-    return DEFAULT_HELP_MAP_PATH
+    return (
+        _best_help_map_path_for_skin(skin_id)
+        or _best_help_map_path_for_skin(DEFAULT_SKIN_ID)
+        or DEFAULT_HELP_MAP_PATH
+    )
 
 
-def current_help_map_url(base_url: str, database: Any = db) -> str:
-    """返回可放入 QQ Markdown 图片语法的地图 URL。"""
+def current_help_map_file(database: Any = db) -> Path | None:
+    """读取当前皮肤地图对应的本地文件，供 type=image 图文消息使用。"""
 
-    path = current_help_map_path(database)
-    return f"{base_url.rstrip('/')}/{path.lstrip('/')}"
+    file_path = _static_file_path(current_help_map_path(database))
+    return file_path if file_path.exists() else None
 
 
 def current_world_entries(database: Any = db) -> tuple[WorldSkinEntry, ...]:
@@ -698,8 +697,12 @@ def _apply_places(conn: sqlite3.Connection, names: dict[str, Any]) -> int:
     buyer_names = {stable_id: str(row["name"]) for stable_id, row in places["buyers"].items()}
     recycle_names = {stable_id: str(row["name"]) for stable_id, row in places["recycles"].items()}
     all_places = {**city_names, **realm_names, **buyer_names, **recycle_names}
+    count += _safe_update_unique_names(conn, "world_locations", "location_id", "name", all_places)
+    count += _safe_update_unique_names(conn, "trade_locations", "location_id", "name", city_names)
+    count += _safe_update_unique_names(conn, "exploration_locations", "location_id", "name", {**city_names, **realm_names})
+    count += _safe_update_unique_names(conn, "special_buyers", "location_id", "buyer_name", buyer_names)
+    count += _safe_update_unique_names(conn, "recycle_locations", "location_id", "name", recycle_names)
     for location_id, title in all_places.items():
-        count += conn.execute("UPDATE world_locations SET name = ? WHERE location_id = ?", (title, location_id)).rowcount
         count += conn.execute("UPDATE players SET location_name = ? WHERE location_id = ?", (title, location_id)).rowcount
         count += conn.execute(
             "UPDATE exploration_records SET location_name = ? WHERE location_id = ? AND claimed = 0",
@@ -712,10 +715,9 @@ def _apply_places(conn: sqlite3.Connection, names: dict[str, Any]) -> int:
     for location_id, title in city_names.items():
         specialties = ",".join(str(value) for value in places["cities"][location_id]["trade_goods"].values())
         count += conn.execute(
-            "UPDATE trade_locations SET name = ?, specialties = ? WHERE location_id = ?",
-            (title, specialties, location_id),
+            "UPDATE trade_locations SET specialties = ? WHERE location_id = ?",
+            (specialties, location_id),
         ).rowcount
-        count += conn.execute("UPDATE exploration_locations SET name = ? WHERE location_id = ?", (title, location_id)).rowcount
         count += conn.execute("UPDATE city_world_states SET location_name = ? WHERE location_id = ?", (title, location_id)).rowcount
         count += conn.execute("UPDATE trade_goods SET home_location = ? WHERE home_location_id = ?", (title, location_id)).rowcount
         count += conn.execute(
@@ -727,32 +729,83 @@ def _apply_places(conn: sqlite3.Connection, names: dict[str, Any]) -> int:
             """,
             (title, location_id),
         ).rowcount
-    for location_id, title in realm_names.items():
-        count += conn.execute("UPDATE exploration_locations SET name = ? WHERE location_id = ?", (title, location_id)).rowcount
     for location_id, title in buyer_names.items():
-        count += conn.execute("UPDATE special_buyers SET buyer_name = ? WHERE location_id = ?", (title, location_id)).rowcount
         count += conn.execute("UPDATE war_prep_states SET buyer_name = ? WHERE location_id = ?", (title, location_id)).rowcount
-    for location_id, title in recycle_names.items():
-        count += conn.execute("UPDATE recycle_locations SET name = ? WHERE location_id = ?", (title, location_id)).rowcount
     return count
 
 
 def _apply_world_items(conn: sqlite3.Connection, names: dict[str, Any]) -> int:
-    count = 0
-    for item_id, title in _city_trade_goods(names).items():
-        count += conn.execute("UPDATE item_defs SET name = ? WHERE item_id = ?", (title, item_id)).rowcount
-    for item_id, title in _flatten_world_item_names(names["world_items"]).items():
-        count += conn.execute("UPDATE item_defs SET name = ? WHERE item_id = ?", (title, item_id)).rowcount
+    item_names = {**_city_trade_goods(names), **_flatten_world_item_names(names["world_items"])}
+    count = _safe_update_unique_names(conn, "item_defs", "item_id", "name", item_names)
+    count += _sync_trade_item_skin_metadata(conn, names)
+    count += _sync_world_item_skin_metadata(conn, names)
     return count
 
 
 def _apply_ring_items(conn: sqlite3.Connection, names: dict[str, Any]) -> int:
-    count = 0
-    for item_id, title in _ring_item_names(names).items():
-        count += conn.execute("UPDATE ring_item_defs SET name = ? WHERE ring_item_id = ?", (title, item_id)).rowcount
+    count = _safe_update_unique_names(conn, "ring_item_defs", "ring_item_id", "name", _ring_item_names(names))
     for item_id, title in names["weapons"]["skill_books"].items():
         count += conn.execute("UPDATE ring_item_defs SET name = ? WHERE ring_item_id = ?", (title, item_id)).rowcount
         count += conn.execute("UPDATE weapon_enchants SET name = ? WHERE enchant_id = ?", (title, item_id)).rowcount
+    return count
+
+
+def _sync_trade_item_skin_metadata(conn: sqlite3.Connection, names: dict[str, Any]) -> int:
+    """同步纯经济特产的展示产地、说明和 effect 派生文本。"""
+
+    count = 0
+    for city_id, city in names["places"]["cities"].items():
+        city_name = str(city["name"])
+        for item_id, item_name in city["trade_goods"].items():
+            row = conn.execute("SELECT effect, desc FROM item_defs WHERE item_id = ?", (item_id,)).fetchone()
+            if not row:
+                continue
+            effect = _json_dict(row["effect"])
+            effect["world_subtype"] = city_name
+            effect["world_subtype_key"] = str(city_id)
+            effect["home_location"] = city_name
+            effect["home_location_id"] = str(city_id)
+            desc = f"{item_name}：{city_name}流通的地方特产，只服务本界商路差价和地区供需，不从探险或秘境掉落。"
+            count += conn.execute(
+                """
+                UPDATE item_defs
+                SET category = '纯经济',
+                    effect = ?,
+                    desc = ?
+                WHERE item_id = ?
+                """,
+                (json.dumps(effect, ensure_ascii=False), desc, item_id),
+            ).rowcount
+            count += conn.execute(
+                "UPDATE trade_goods SET home_location = ? WHERE item_id = ?",
+                (city_name, item_id),
+            ).rowcount
+    return count
+
+
+def _sync_world_item_skin_metadata(conn: sqlite3.Connection, names: dict[str, Any]) -> int:
+    """同步非纯经济世界物资说明，避免查看详情时露出默认名。"""
+
+    count = 0
+    item_names = _flatten_world_item_names(names["world_items"])
+    for item_id, item_name in item_names.items():
+        row = conn.execute("SELECT category, effect, desc FROM item_defs WHERE item_id = ?", (item_id,)).fetchone()
+        if not row:
+            continue
+        effect = _json_dict(row["effect"])
+        subtype = str(effect.get("world_subtype") or row["category"] or "").strip()
+        old_desc = str(row["desc"] or "")
+        if "：" in old_desc:
+            old_desc = old_desc.split("：", 1)[1]
+        desc = f"{item_name}：{old_desc or subtype}"
+        count += conn.execute(
+            """
+            UPDATE item_defs
+            SET desc = ?
+            WHERE item_id = ?
+            """,
+            (desc, item_id),
+        ).rowcount
     return count
 
 
@@ -788,8 +841,7 @@ def _apply_actors(conn: sqlite3.Connection, names: dict[str, Any]) -> tuple[int,
         monster_count += conn.execute("UPDATE monster_defs SET name = ? WHERE monster_id = ?", (title, monster_id)).rowcount
     for kind_key, title in actors["enemy_kinds"].items():
         monster_count += conn.execute("UPDATE monster_defs SET kind = ? WHERE kind_key = ?", (title, kind_key)).rowcount
-    for physique_id, title in actors["physiques"].items():
-        physique_count += conn.execute("UPDATE physique_defs SET name = ? WHERE physique_id = ?", (title, physique_id)).rowcount
+    physique_count += _safe_update_unique_names(conn, "physique_defs", "physique_id", "name", actors["physiques"])
     return monster_count, physique_count
 
 
@@ -1210,8 +1262,34 @@ def _safe_skin_id(value: object) -> str:
 
 
 def _static_file_exists(public_path: str) -> bool:
-    relative = public_path.lstrip("/").split("/")
-    return SERVER_ROOT.joinpath(*relative).exists()
+    return _static_file_path(public_path).exists()
+
+
+def _static_file_path(public_path: str) -> Path:
+    relative = str(public_path or "").lstrip("/").split("/")
+    return SERVER_ROOT.joinpath(*relative)
+
+
+def _best_help_map_path_for_skin(skin_id: str) -> str:
+    skin = _safe_skin_id(skin_id)
+    if not skin:
+        return ""
+
+    candidates: list[tuple[int, int, str]] = []
+    for order, ext in enumerate(SKIN_HELP_MAP_EXTENSIONS):
+        public_path = f"{SKIN_HELP_MAP_DIR}/{skin}.{ext}"
+        file_path = _static_file_path(public_path)
+        if not file_path.exists() or not file_path.is_file():
+            continue
+        try:
+            size = file_path.stat().st_size
+        except OSError:
+            continue
+        candidates.append((order, size, public_path))
+
+    if not candidates:
+        return ""
+    return min(candidates)[2]
 
 
 def _definition_from_entry(entry: WorldSkinEntry, database: Any) -> WorldSkinDefinition | None:
@@ -1405,6 +1483,33 @@ def _secret_realm_environment_names(secret_realm: dict[str, Any]) -> dict[str, s
         if isinstance(row, dict):
             result[str(env_id)] = str(row.get("name") or "")
     return result
+
+
+def _safe_update_unique_names(
+    conn: sqlite3.Connection,
+    table: str,
+    id_column: str,
+    name_column: str,
+    values: dict[str, Any],
+) -> int:
+    """两阶段更新唯一名称列，避免换皮时新旧名称互相占位。"""
+
+    clean_values = {str(stable_id): str(title) for stable_id, title in values.items()}
+    if not clean_values:
+        return 0
+    marker = f"__world_skin_swap__{table}__"
+    count = 0
+    for stable_id in clean_values:
+        count += conn.execute(
+            f"UPDATE {table} SET {name_column} = ? WHERE {id_column} = ?",
+            (f"{marker}{stable_id}", stable_id),
+        ).rowcount
+    for stable_id, title in clean_values.items():
+        count += conn.execute(
+            f"UPDATE {table} SET {name_column} = ? WHERE {id_column} = ?",
+            (title, stable_id),
+        ).rowcount
+    return count
 
 
 def _fetch_conn_one(conn: sqlite3.Connection, sql: str, params: tuple[Any, ...] = ()) -> dict[str, Any] | None:

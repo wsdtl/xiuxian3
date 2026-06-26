@@ -12,7 +12,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from 修仙.format_text import T
-from 修仙.markdown_utils import MarkdownKeyboard, button, inline_command_link, markdown_message_from_text
+from 修仙.markdown_utils import MarkdownKeyboard, button, inline_command_link, markdown_link, markdown_message_from_text
 from 修仙.common import business_day, dump_json, now, ts
 from 修仙.notifications import notification_line, system_message_line
 from 修仙.sql import XiuxianDB
@@ -33,6 +33,14 @@ def test_inline_command_link_is_auto_send() -> None:
     assert _link("领取宗门大会奖励", "领取宗门大会奖励") == (
         "[领取宗门大会奖励]"
         "(mqqapi://aio/inlinecmd?command=%E9%A2%86%E5%8F%96%E5%AE%97%E9%97%A8%E5%A4%A7%E4%BC%9A%E5%A5%96%E5%8A%B1&enter=true&reply=false)"
+    )
+
+
+def test_markdown_link_hides_raw_web_url() -> None:
+    """网页入口统一显示改名链接，不在正文裸露真实 URL。"""
+
+    assert markdown_link("用户组后台", "https://example.com/xiuxian/user-groups") == (
+        "[用户组后台](https://example.com/xiuxian/user-groups)"
     )
 
 
@@ -251,12 +259,30 @@ def test_button_tags_to_markdown() -> None:
 
 
 def test_button_tags_keep_command_text() -> None:
-    """尖括号里的内容原样作为按钮命令，是否可用由业务自己决定。"""
+    """参数模板按钮保留命令模板，但点击后只填入输入框。"""
 
     message = markdown_message_from_text("原石不足。\n请先<存入货币 数量>")
     assert message is not None
     rows = message["keyboard"]["content"]["rows"]
-    assert rows[0]["buttons"][0]["action"]["data"] == "存入货币 数量"
+    action = rows[0]["buttons"][0]["action"]
+    assert action["data"] == "存入货币 数量"
+    assert action["type"] == 2
+    assert action["enter"] is False
+
+
+def test_parameter_button_templates_use_type_2() -> None:
+    """建立宗门这类缺参数入口使用 type=2，避免点击后直接发送半截命令。"""
+
+    keyboard = MarkdownKeyboard.from_commands(["建立宗门", "加入宗门 青云宗"]).to_content()
+    buttons = keyboard["content"]["rows"][0]["buttons"]
+    create_action = buttons[0]["action"]
+    join_action = buttons[1]["action"]
+    assert buttons[0]["render_data"]["label"] == "建立宗门"
+    assert create_action["data"] == "建立宗门 x y 宗门名"
+    assert create_action["type"] == 2
+    assert create_action["enter"] is False
+    assert join_action["data"] == "加入宗门 青云宗"
+    assert join_action["type"] == 1
 
 
 def test_reply_text_with_button_tags_to_markdown() -> None:
@@ -742,6 +768,17 @@ def test_command_guide_buttons() -> None:
     assert "商场推荐" in trade_commands
     assert "自动出售" in trade_commands
     assert "出售全部 武器" in trade_commands
+
+
+def test_web_help_uses_world_skin_map_image_rule() -> None:
+    """帮助入口按 QQ Markdown 图片规则展示当前世界地图。"""
+
+    text = help_service.web_help()
+    assert "[修仙帮助网页](" in text
+    assert "/xiuxian/help" in text
+    assert "发送：修仙帮助 查看指令速查图，发送：指南 查看关键入口。" in text
+    assert "![修仙界地图 #720px #400px](" in text
+    assert "/static/map/default.jpg" in text
 
 
 def _payload_commands(payload: dict) -> list[str]:

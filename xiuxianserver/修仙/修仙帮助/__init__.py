@@ -1,11 +1,13 @@
-"""修仙帮助组件 WS 命令。"""
+"""修仙帮助组件 命令。"""
 
 from __future__ import annotations
 
 from io import BytesIO
 
 from launch import C, OnEvent, logger
-from launch.adapter.ws import WsMessageHandler, manager as ws_manager
+from launch.adapter import Depends, MessageHandler, manager
+
+from ..identity import current_player_id
 
 from ..reply import send_reply
 from .service import HELP_IMAGE, service
@@ -25,31 +27,25 @@ async def start_help_site() -> None:
     )
 
 
-@WsMessageHandler.handler(cmd="帮助", priority=100, block=True)
-async def ws_web_help(client_id: str) -> None:
+@MessageHandler.handler(cmd="帮助", priority=100, block=True)
+async def ws_web_help(player_id: str = Depends(current_player_id)) -> None:
     """发送帮助入口提示。"""
 
     await send_reply(
-        client_id,
-        {
-            "code": 202,
-            "type": "markdown",
-            "message": {"content": service.web_help()},
-            "auto_buttons": False,
-            "default_buttons": False,
-        },
-        ws_manager,
+        player_id,
+        service.web_help(),
+        manager,
         service,
     )
 
 
-@WsMessageHandler.handler(cmd="修仙帮助", priority=100, block=True)
-async def ws_xiuxian_help_image(client_id: str) -> None:
+@MessageHandler.handler(cmd="修仙帮助", priority=100, block=True)
+async def ws_xiuxian_help_image(player_id: str = Depends(current_player_id)) -> None:
     """发送修仙帮助图。"""
 
     if not HELP_IMAGE.exists():
         await send_reply(
-            client_id,
+            player_id,
             {
                 "code": 202,
                 "type": "text",
@@ -57,7 +53,7 @@ async def ws_xiuxian_help_image(client_id: str) -> None:
                 "auto_buttons": False,
                 "default_buttons": False,
             },
-            ws_manager,
+            manager,
             service,
         )
         return
@@ -65,23 +61,23 @@ async def ws_xiuxian_help_image(client_id: str) -> None:
     image_bytes = HELP_IMAGE.read_bytes()
     image_io = BytesIO(image_bytes)
     await send_reply(
-        client_id,
+        player_id,
         {
             "code": 202,
             "type": "image",
             "message": image_io,
         },
-        ws_manager,
+        manager,
         service,
     )
 
 
-@WsMessageHandler.handler(cmd="指南", priority=100, block=True)
-async def ws_command_guide(client_id: str, message: str) -> None:
+@MessageHandler.handler(cmd="指南", priority=100, block=True)
+async def ws_command_guide(message: str, player_id: str = Depends(current_player_id)) -> None:
     """查看关键组件按钮导航。"""
 
     await send_reply(
-        client_id,
+        player_id,
         {
             "code": 202,
             "type": "text",
@@ -89,6 +85,6 @@ async def ws_command_guide(client_id: str, message: str) -> None:
             "auto_buttons": False,
             "default_buttons": False,
         },
-        ws_manager,
+        manager,
         service,
     )

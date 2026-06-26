@@ -1018,6 +1018,46 @@ class XiuxianDB:
                 created_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS user_groups (
+                group_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                primary_player_id TEXT NOT NULL UNIQUE,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS user_identities (
+                identity_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                group_id INTEGER NOT NULL,
+                client_id TEXT NOT NULL UNIQUE,
+                is_primary INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(group_id) REFERENCES user_groups(group_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS user_group_login_challenges (
+                challenge_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL UNIQUE,
+                player_id TEXT,
+                confirmed_at TEXT,
+                expires_at TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS user_group_sessions (
+                session_id TEXT PRIMARY KEY,
+                player_id TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS user_group_bind_codes (
+                code TEXT PRIMARY KEY,
+                player_id TEXT NOT NULL,
+                used_by_client_id TEXT,
+                used_at TEXT,
+                expires_at TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS bank_accounts (
                 client_id TEXT PRIMARY KEY,
                 star_level INTEGER NOT NULL DEFAULT 1,
@@ -1801,6 +1841,9 @@ class XiuxianDB:
 
             CREATE INDEX IF NOT EXISTS idx_backpack_client ON backpack_items(client_id);
             CREATE UNIQUE INDEX IF NOT EXISTS idx_players_display_name ON players(display_name);
+            CREATE INDEX IF NOT EXISTS idx_user_identities_group ON user_identities(group_id);
+            CREATE INDEX IF NOT EXISTS idx_user_group_sessions_expires ON user_group_sessions(expires_at);
+            CREATE INDEX IF NOT EXISTS idx_user_group_bind_codes_player ON user_group_bind_codes(player_id, expires_at);
             CREATE INDEX IF NOT EXISTS idx_ring_client ON ring_items(client_id);
             CREATE INDEX IF NOT EXISTS idx_gem_client ON gem_items(client_id);
             CREATE INDEX IF NOT EXISTS idx_vault_items_client ON vault_items(client_id);
@@ -2254,7 +2297,37 @@ class XiuxianDB:
             [(location_id_for_name(name), name, x, y, recommended, min_level, max_level, desc) for name, x, y, recommended, min_level, max_level, desc in EXPLORATION_LOCATIONS],
         )
         self._sync_location_identity_columns()
+        self._ensure_user_group_identities()
         self.conn.commit()
+
+    def _ensure_user_group_identities(self) -> None:
+        """确保每个已有角色都有一个用户组主身份。"""
+
+        assert self.conn is not None
+        self.conn.execute(
+            """
+            INSERT INTO user_groups (primary_player_id, created_at)
+            SELECT p.client_id, datetime('now')
+            FROM players AS p
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM user_groups AS g
+                WHERE g.primary_player_id = p.client_id
+            )
+            """
+        )
+        self.conn.execute(
+            """
+            INSERT INTO user_identities (group_id, client_id, is_primary, created_at)
+            SELECT g.group_id, g.primary_player_id, 1, datetime('now')
+            FROM user_groups AS g
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM user_identities AS i
+                WHERE i.client_id = g.primary_player_id
+            )
+            """
+        )
 
     def _apply_active_world_skin(self) -> None:
         """热重启后重放当前世界皮肤，避免默认种子覆盖展示名。"""

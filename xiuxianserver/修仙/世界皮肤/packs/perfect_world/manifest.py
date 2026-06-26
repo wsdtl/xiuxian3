@@ -6,7 +6,7 @@
 
 PACKAGE = {
     "package_format": 4,
-    "schema_version": 2026062309,
+    "schema_version": 2026062601,
     "skin_id": "perfect_world",
     "display_name": "完美世界",
     "version": "2026.06.24-official.3",

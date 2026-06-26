@@ -30,7 +30,7 @@ from ..constants import EQUIPMENT_MAX_HOLES, EQUIPMENT_SLOTS
 from ..combat_core import CombatCore
 from ..format_text import T
 from ..sql import db
-from ..world_skin import current_world_entries
+from ..world_skin import current_world_entries, skin_name
 
 
 XIUXIAN_DIR = Path(__file__).resolve().parent.parent
@@ -123,11 +123,18 @@ class EncyclopediaService:
         if not query:
             return T.hint(
                 "请在 修仙百科 后面写问题。",
-                "例如：修仙百科 轻身水晶有什么用，或 修仙百科 断念杖怎么玩。<修仙百科 轻身水晶有什么用><修仙百科 武器流派><修仙百科 跑商>",
+                "例如：修仙百科 宝石有什么用，或 修仙百科 武器流派怎么玩。<修仙百科 宝石><修仙百科 武器流派><修仙百科 跑商>",
             )
 
         if not self._entries:
             self.load()
+
+        shortcut = self._special_item_shortcut_lines(client_id, query)
+        if shortcut:
+            panel = T.panel()
+            panel.section(f"修仙百科：{query}")
+            panel.lines(shortcut)
+            return panel.render() + _answer_buttons(query, [])
 
         matches = self._focused_matches(query, self._search_with_player_names(client_id, query))
         if not matches:
@@ -150,8 +157,21 @@ class EncyclopediaService:
             query,
             entries,
             context,
+            database=self.db,
             item_helper=lambda entry, intent: self._item_assistant_lines(client_id, query, entry, intent),
         )
+
+    def _special_item_shortcut_lines(self, client_id: str, query: str) -> list[str]:
+        """旧功能词也要指向当前皮肤下的专属纳戒道具。"""
+
+        text = str(query or "")
+        if any(word in text for word in ("开孔器", "开孔材料", "装备开孔")):
+            return self._hole_opener_lines(client_id)
+        if any(word in text for word in ("洗髓液", "洗髓", "重塑体质", "体质重塑")):
+            return self._wash_item_lines(client_id)
+        if any(word in text for word in ("淬锋丹", "淬锋", "武器升限", "升限")):
+            return self._temper_item_lines(client_id)
+        return []
 
     def _item_assistant_lines(
         self,
@@ -260,7 +280,7 @@ class EncyclopediaService:
         weapon = self._current_weapon(client_id)
         effect = _effect_text(item.get("effect") if item else "") or _extract_field(entry.body, "效果")
         enchant_id = _effect_value(effect, "enchant_id") or entry.stable_id
-        style = _enchant_style(enchant_id, effect) or "特化附魔"
+        style = _style_label(_enchant_style(enchant_id, effect) or "特化附魔")
         desc = _last_plain_part(entry.body).rstrip("。")
         lines = [
             f"结论：{entry.title} 是{style}技能书，不走“使用”，要用“附魔武器 武器ID 技能书名”。",
@@ -428,7 +448,7 @@ class EncyclopediaService:
 
         weapon = self.db.fetch_one(
             """
-            SELECT pw.weapon_id, pw.level, pw.max_level, pw.quality, pw.enchant_effects, pw.custom_name,
+            SELECT pw.weapon_id, pw.weapon_def_id, pw.level, pw.max_level, pw.quality, pw.enchant_effects, pw.custom_name,
                    wd.name, wd.weapon_type, wd.weapon_type_key, wd.base_attack, wd.drop_location, wd.skill_id,
                    ws.name AS skill_name, ws.effect_desc, ws.interval, ws.power, ws.cost_mp
             FROM player_weapons AS pw
@@ -1374,37 +1394,87 @@ def _traits_from_effects(effects: dict[str, float]) -> set[str]:
     return traits
 
 
-def _enchant_display_name(enchant_id: str) -> str:
+def _enchant_display_name(enchant_id: str, database: Any = db) -> str:
     """按当前世界包读取附魔展示名。"""
 
     ref = str(enchant_id or "").strip()
     if not ref:
         return ""
-    row = db.fetch_one("SELECT name FROM weapon_enchants WHERE enchant_id = ?", (ref,))
+    row = database.fetch_one("SELECT name FROM weapon_enchants WHERE enchant_id = ?", (ref,))
     return str(row["name"]) if row else ref
 
 
-def _book_names(*enchant_ids: str) -> str:
+def _book_names(*enchant_ids: str, database: Any = db) -> str:
     """把稳定技能书 ID 拼成当前展示名列表。"""
 
-    names = [_enchant_display_name(enchant_id) for enchant_id in enchant_ids if str(enchant_id or "").strip()]
+    names = [_enchant_display_name(enchant_id, database) for enchant_id in enchant_ids if str(enchant_id or "").strip()]
     return "、".join(dict.fromkeys(name for name in names if name))
 
 
-def _book_pair(*enchant_ids: str) -> str:
+def _book_pair(*enchant_ids: str, database: Any = db) -> str:
     """两到三本书的短搭配展示。"""
 
-    return "/".join(_enchant_display_name(enchant_id) for enchant_id in enchant_ids if str(enchant_id or "").strip())
+    return "/".join(_enchant_display_name(enchant_id, database) for enchant_id in enchant_ids if str(enchant_id or "").strip())
 
 
-def _special_ring_item_name(ring_item_id: str) -> str:
+def _special_ring_item_name(ring_item_id: str, database: Any = db) -> str:
     """按稳定 ID 读取专属纳戒物品当前展示名。"""
 
     ref = str(ring_item_id or "").strip()
     if not ref:
         return "专属纳戒物品"
-    row = db.fetch_one("SELECT * FROM ring_item_defs WHERE ring_item_id = ?", (ref,))
+    row = database.fetch_one("SELECT * FROM ring_item_defs WHERE ring_item_id = ?", (ref,))
     return ring_item_display_name(dict(row) if row else None, ref)
+
+
+def _ring_name(ring_item_id: str, database: Any = db) -> str:
+    """按稳定 ID 读取纳戒物品当前展示名。"""
+
+    ref = str(ring_item_id or "").strip()
+    if not ref:
+        return "物品"
+    row = database.fetch_one("SELECT name FROM ring_item_defs WHERE ring_item_id = ?", (ref,))
+    return str(row["name"]) if row else ref
+
+
+def _weapon_name(weapon_def_id: str, database: Any = db) -> str:
+    """按稳定 ID 读取武器当前展示名。"""
+
+    ref = str(weapon_def_id or "").strip()
+    if not ref:
+        return "武器"
+    row = database.fetch_one("SELECT name FROM weapon_defs WHERE weapon_def_id = ?", (ref,))
+    return str(row["name"]) if row else ref
+
+
+STYLE_FLOW_KEYS = {
+    "高频连击": "worm_flow_swift",
+    "重击破防": "worm_flow_heavy",
+    "持续伤害": "worm_flow_dot",
+    "压制控制": "worm_flow_control",
+    "生存续航": "worm_flow_survival",
+    "反击护身": "worm_flow_counter",
+    "斩杀收割": "worm_flow_execute",
+    "首领协作": "worm_flow_leader",
+}
+
+
+def _style_label(style: str, database: Any = db) -> str:
+    """把内部稳定流派语义转成当前世界显示名。"""
+
+    text = str(style or "").strip()
+    if not text:
+        return ""
+    for default_label, flow_key in STYLE_FLOW_KEYS.items():
+        if default_label in text:
+            return text.replace(default_label, skin_name(("wormhole", "flows"), flow_key, default_label, database))
+    return text
+
+
+def _style_list_text(database: Any = db) -> str:
+    """当前世界包的主要武器/虫洞流派名称。"""
+
+    return "、".join(_style_label(label, database) for label in STYLE_FLOW_KEYS)
 
 
 def _percent(value: object) -> str:
@@ -1490,6 +1560,7 @@ def _smart_answer_lines(
     query: str,
     entries: list[KnowledgeEntry],
     context: PlayerContext | None = None,
+    database: Any = db,
     item_helper: Any = None,
 ) -> list[str]:
     """把命中资料合成答案，而不是展示搜索结果。"""
@@ -1499,7 +1570,7 @@ def _smart_answer_lines(
 
     primary = entries[0]
     intent = _query_intent(query)
-    document_answer = _document_synthesis_lines(query, entries)
+    document_answer = _document_synthesis_lines(query, entries, database)
     if document_answer and (primary.kind == "文档" or _is_broad_document_query(query)):
         return document_answer
 
@@ -1509,9 +1580,9 @@ def _smart_answer_lines(
 
     personal_entry = _personal_weapon_entry(query, primary, context)
     if personal_entry:
-        return _weapon_answer_lines(query, personal_entry, [personal_entry], "build", context)
+        return _weapon_answer_lines(query, personal_entry, [personal_entry], "build", context, database)
 
-    topic = _topic_answer_lines(query)
+    topic = _topic_answer_lines(query, database)
     if topic and _should_answer_as_topic(query, primary):
         return topic
 
@@ -1537,10 +1608,10 @@ def _smart_answer_lines(
         return _world_skin_answer_lines(primary)
 
     if primary.group == "武器" and primary.kind not in {"自带技能", "技能书附魔"}:
-        return _weapon_answer_lines(query, primary, entries, intent, context)
+        return _weapon_answer_lines(query, primary, entries, intent, context, database)
 
     if primary.kind == "技能书附魔":
-        return _enchant_answer_lines(query, primary, context)
+        return _enchant_answer_lines(query, primary, context, database)
 
     if primary.kind == "自带技能":
         return _skill_answer_lines(primary)
@@ -1609,7 +1680,7 @@ def _item_answer_lines(entry: KnowledgeEntry) -> list[str]:
 
     if rule_key == RING_CATEGORY_BOOK:
         enchant_id = _effect_value(effect, "enchant_id") or entry.stable_id
-        style = _enchant_style(enchant_id, effect) or "特化附魔"
+        style = _style_label(_enchant_style(enchant_id, effect) or "特化附魔")
         return [
             f"结论：{entry.title} 是技能书，用来附魔武器，不是直接吃的消耗品。",
             f"定位：{style}；{desc or '它会改变武器战斗倾向'}。",
@@ -1635,6 +1706,7 @@ def _weapon_answer_lines(
     entries: list[KnowledgeEntry],
     intent: str,
     context: PlayerContext | None = None,
+    database: Any = db,
 ) -> list[str]:
     """武器玩法类回答。"""
 
@@ -1643,7 +1715,7 @@ def _weapon_answer_lines(
     role = profile.style or _role_from_traits(profile.traits)
 
     lines = [
-        f"结论：{profile.title} 是{profile.weapon_type}，核心不是基础攻击，而是「{profile.skill}」带来的{role or '专属节奏'}。",
+        f"结论：{profile.title} 是{profile.weapon_type}，核心不是基础攻击，而是「{profile.skill}」带来的{_style_label(role, database) or '专属节奏'}。",
         _weapon_goal_summary(profile, goal),
         f"数值判断：{_tempo_text(profile.interval)}；{_power_text(profile.power)}；{_cost_text(profile.cost_mp)}；来源 {profile.source or '全地图随机'}。",
     ]
@@ -1654,31 +1726,32 @@ def _weapon_answer_lines(
     if weakness:
         lines.append(f"短板：{weakness}")
     lines.append(f"场景评分：{_score_text(_weapon_scores(profile))}")
-    lines.extend(_weapon_goal_advice(profile, goal))
-    lines.extend(_weapon_plan_lines(profile, goal))
+    lines.extend(_weapon_goal_advice(profile, goal, database))
+    lines.extend(_weapon_plan_lines(profile, goal, database))
     lines.extend(_context_weapon_lines(context, profile, goal))
     if intent == "build" and goal != "general":
         lines.append("取舍：同一把武器不能重复附魔同一本技能书，优先补当前目标最缺的一项，不要把栏位塞成四不像。")
     return [line for line in lines if line]
 
 
-def _enchant_answer_lines(query: str, entry: KnowledgeEntry, context: PlayerContext | None = None) -> list[str]:
+def _enchant_answer_lines(query: str, entry: KnowledgeEntry, context: PlayerContext | None = None, database: Any = db) -> list[str]:
     """技能书回答。"""
 
     effect = _extract_field(entry.body, "效果")
     style = _enchant_style(entry.rule_key or entry.stable_id, effect) or "特化附魔"
+    display_style = _style_label(style, database)
     mp_delta = _extract_field(entry.body, "精神消耗修正")
     effects = _parse_effect_values(effect)
     goal = _goal_from_query(query)
     scene = _enchant_best_scene(style, effects, goal)
     suffix = "，不是万能增伤件" if "不是首选" not in scene else ""
     return [
-        f"结论：{entry.title} 是{style}技能书，适合{scene}{suffix}。",
+        f"结论：{entry.title} 是{display_style}技能书，适合{scene}{suffix}。",
         f"效果拆解：{_human_effect_text(effect) or effect}；精神消耗修正 {mp_delta or '0'}。",
         f"场景评分：{_score_text(_enchant_scores(style, effects))}",
         f"适合：{_enchant_fit_text(style, effects, goal)}",
         f"不适合：{_enchant_bad_text(effects)}",
-        _enchant_plan_text(style, effects, goal),
+        _enchant_plan_text(style, effects, goal, database),
         *_context_enchant_lines(context, entry.title, style, effects, goal),
         "附魔提醒：同一把武器不能重复附魔同一本技能书，且附魔不可撤销；先看武器自带技能，再决定是否占栏位。",
     ]
@@ -1698,7 +1771,7 @@ def _skill_answer_lines(entry: KnowledgeEntry) -> list[str]:
     ]
 
 
-def _topic_answer_lines(query: str) -> list[str]:
+def _topic_answer_lines(query: str, database: Any = db) -> list[str]:
     """玩法主题回答。"""
 
     if "跑商" in query or "商场" in query:
@@ -1708,8 +1781,8 @@ def _topic_answer_lines(query: str) -> list[str]:
             "赚不到钱时先查三件事：当前位置是否有货、背包容量和负重是否够、出售地点是否真的有价差。",
         ]
     if "首领" in query or "岁时" in query:
-        hole_name = _special_ring_item_name("kaikongqi")
-        wash_name = _special_ring_item_name("xisuiye")
+        hole_name = _special_ring_item_name("kaikongqi", database)
+        wash_name = _special_ring_item_name("xisuiye", database)
         return [
             f"结论：首领是珍贵物品主产出玩法，铭刻之羽、{hole_name}、{wash_name}都应重点看首领奖励。",
             "普通日也有首领，但珍贵物品概率较低；节气、传统节日，尤其高权重节日更值得组织挑战。",
@@ -1718,32 +1791,32 @@ def _topic_answer_lines(query: str) -> list[str]:
     if "宝石" in query:
         return [
             "结论：宝石是装备孔位的长期成长线，强在可叠加到全身装备，但每颗宝石应该服务一个明确方向。",
-            "探险向看轻身水晶，跑商向看聚财紫晶，生存看护心玉、玄龟石、抗暴符文，精神看明心佛珠、清心玛瑙。",
+            f"探险向看{_ring_name('qingshen shuijing', database)}，跑商向看{_ring_name('jucai zijing', database)}，生存看{_ring_name('huxinyu', database)}、{_ring_name('xuangui shi', database)}、{_ring_name('kangbao fuwen', database)}，精神看{_ring_name('mingxin fozhu', database)}、{_ring_name('qingxin manao', database)}。",
             "不要只问等级高不高，要看当前缺的是输出、生存、精神、探险收益还是跑商收益。",
         ]
     if any(word in query for word in ("开荒", "前期", "新手", "初期")):
         return [
             "结论：前期开荒优先选快节奏、低精神消耗、有续航或命中稳定的武器，不要一上来迷信最高攻击。",
-            "推荐方向：短剑、飞刃、匕这类高频武器刷图最舒服；万药藤杖这类续航武器适合稳过连续战斗；重斧、重戟更适合后面打硬目标。",
-            f"附魔思路：先补 {_book_names('fengren_shu', 'liuguang_shu', 'zhuixing_shu')} 提高节奏，血气吃紧再补 {_book_pair('huichun_shu', 'xuandun_shu')}；早期不建议把栏位全塞慢速爆发书。",
+            f"推荐方向：快节奏武器刷图最舒服；{_weapon_name('wanyao_tengzhang', database)}这类续航武器适合稳过连续战斗；重斧、重戟更适合后面打硬目标。",
+            f"附魔思路：先补 {_book_names('fengren_shu', 'liuguang_shu', 'zhuixing_shu', database=database)} 提高节奏，血气吃紧再补 {_book_pair('huichun_shu', 'xuandun_shu', database=database)}；早期不建议把栏位全塞慢速爆发书。",
         ]
     if "武器" in query or "流派" in query:
         return [
             "结论：武器不该只看攻击力。真正决定玩法的是武器类型、速度负重、自带技能、蓄势基准、技能书附魔组合。",
             "快节奏武器适合连击和命中，重武器适合破防和爆发，杖类更适合精神压制、续航或控制。",
-            "附魔时按流派堆：高频连击、重击破防、持续伤害、压制控制、生存续航、反击护身、斩杀收割、首领协作、决斗扰乱。",
+            f"附魔时按流派堆：{_style_list_text(database)}、决斗扰乱。",
         ]
     return []
 
 
-def _document_synthesis_lines(query: str, entries: list[KnowledgeEntry]) -> list[str]:
+def _document_synthesis_lines(query: str, entries: list[KnowledgeEntry], database: Any = db) -> list[str]:
     """把多个 Markdown 章节综合成百科式回答。"""
 
     documents = _dedupe_entries([entry for entry in entries if entry.kind == "文档"])
     if not documents:
         return []
 
-    relevant = _rank_document_sentences(query, documents)
+    relevant = _rank_document_sentences(query, documents, database)
     if not relevant:
         return []
 
@@ -1821,11 +1894,11 @@ def _dedupe_entries(entries: list[KnowledgeEntry]) -> list[KnowledgeEntry]:
     return result
 
 
-def _rank_document_sentences(query: str, documents: list[KnowledgeEntry]) -> list[tuple[str, str, str]]:
+def _rank_document_sentences(query: str, documents: list[KnowledgeEntry], database: Any = db) -> list[tuple[str, str, str]]:
     """从文档章节中抽取最有用的句子。"""
 
     terms = _query_terms(query)
-    sect_reward_terms = ("周期", "周日", "领取", "奖励", "影响力", "贡献", "成员", "武器升限", "专属道具", _special_ring_item_name("cuifengdan"))
+    sect_reward_terms = ("周期", "周日", "领取", "奖励", "影响力", "贡献", "成员", "武器升限", "专属道具", _special_ring_item_name("cuifengdan", database))
     scored: list[tuple[int, str, str, str]] = []
     for entry in documents:
         source = _document_source_text(entry)
@@ -2017,7 +2090,7 @@ def _personal_clarify_lines(
     if not context.exists:
         return [
             "结论：我还没有读到你的修仙角色，暂时不能按你的当前状态推荐。",
-            "下一步：先创建角色或换成具体问题，例如“修仙百科 断念杖怎么配”。",
+            "下一步：先创建角色，或直接问“修仙百科 武器流派怎么配”。",
         ]
     if not context.weapon_name:
         return [
@@ -2106,14 +2179,14 @@ def _answer_conclusion(query: str, entries: list[KnowledgeEntry]) -> str:
         if intent == "build":
             style = _style_from_entries(entries)
             if style:
-                return f"结论：{primary.title} 是{weapon_type}，适合围绕「{skill}」走{style}；来源：{drop}。"
+                return f"结论：{primary.title} 是{weapon_type}，适合围绕「{skill}」走{_style_label(style)}；来源：{drop}。"
             return f"结论：{primary.title} 是{weapon_type}，核心看自带技能「{skill}」和蓄势节奏；来源：{drop}。"
         return f"结论：{primary.title} 是{weapon_type}，自带技能「{skill}」，来源：{drop}。"
 
     if primary.kind == "技能书附魔":
         effect = _extract_field(primary.body, "效果")
         style = _enchant_style(primary.rule_key or primary.stable_id, effect)
-        return f"结论：{primary.title} 属于{style or '技能书附魔'}，适合给同方向武器补强，不建议当万能书乱塞。"
+        return f"结论：{primary.title} 属于{_style_label(style or '技能书附魔')}，适合给同方向武器补强，不建议当万能书乱塞。"
 
     if primary.kind == "自带技能":
         return f"结论：{primary.title} 是武器自带技能，核心参数是{body}。"
@@ -2503,22 +2576,22 @@ def _weapon_weakness(profile: WeaponProfile) -> str:
     return "；".join(weakness) + "。" if weakness else ""
 
 
-def _weapon_goal_advice(profile: WeaponProfile, goal: str) -> list[str]:
+def _weapon_goal_advice(profile: WeaponProfile, goal: str, database: Any = db) -> list[str]:
     """按目标给武器附魔建议。"""
 
     traits = profile.traits
-    quick = _book_names("fengren_shu", "shaying_shu", "liuguang_shu", "zhuixing_shu")
-    quick_pair = _book_pair("fengren_shu", "liuguang_shu")
-    sustain = _book_names("huichun_shu", "xuandun_shu", "lingmu_shu")
-    sustain_pair = _book_pair("huichun_shu", "xuandun_shu")
-    boss = _book_names("pozhen_shu", "yujing_shu", "xingluo_shu")
-    boss_pair = _book_pair("pozhen_shu", "yujing_shu", "xingluo_shu")
-    control = _book_names("duannian_shu", "zhenhun_shu", "tianji_shu", "mengwu_shu", "qingxin_shu")
-    control_pair = _book_pair("duannian_shu", "mengwu_shu")
-    dot = _book_names("zhuoxin_shu", "xueyu_shu", "duyun_shu", "canyan_shu")
-    pierce = _book_names("poxie_shu", "bengshan_shu", "chuanyun_shu", "zhenyue_shu")
-    pvp = _book_names("yueshi_shu", "jinghu_shu", "yingye_shu", "qingxin_shu")
-    burst = _book_names("wuxiang_shu", "duanhai_shu", "pojun_shu")
+    quick = _book_names("fengren_shu", "shaying_shu", "liuguang_shu", "zhuixing_shu", database=database)
+    quick_pair = _book_pair("fengren_shu", "liuguang_shu", database=database)
+    sustain = _book_names("huichun_shu", "xuandun_shu", "lingmu_shu", database=database)
+    sustain_pair = _book_pair("huichun_shu", "xuandun_shu", database=database)
+    boss = _book_names("pozhen_shu", "yujing_shu", "xingluo_shu", database=database)
+    boss_pair = _book_pair("pozhen_shu", "yujing_shu", "xingluo_shu", database=database)
+    control = _book_names("duannian_shu", "zhenhun_shu", "tianji_shu", "mengwu_shu", "qingxin_shu", database=database)
+    control_pair = _book_pair("duannian_shu", "mengwu_shu", database=database)
+    dot = _book_names("zhuoxin_shu", "xueyu_shu", "duyun_shu", "canyan_shu", database=database)
+    pierce = _book_names("poxie_shu", "bengshan_shu", "chuanyun_shu", "zhenyue_shu", database=database)
+    pvp = _book_names("yueshi_shu", "jinghu_shu", "yingye_shu", "qingxin_shu", database=database)
+    burst = _book_names("wuxiang_shu", "duanhai_shu", "pojun_shu", database=database)
     if goal == "daily":
         if "control" in traits:
             return [
@@ -2533,22 +2606,22 @@ def _weapon_goal_advice(profile: WeaponProfile, goal: str) -> list[str]:
     if goal == "boss":
         if "control" in traits:
             return [
-                f"首领虫洞配法：{boss} 优先补贡献和稳定命中，{_book_pair('zhenhun_shu', 'tianji_shu')} 保留一格做压制就够。",
+                f"首领虫洞配法：{boss} 优先补贡献和稳定命中，{_book_pair('zhenhun_shu', 'tianji_shu', database=database)} 保留一格做压制就够。",
                 "不要只叠断念系：Boss 长战更看穿透、持续伤害、命中和站场时间。",
             ]
         if "dot" in traits:
-            return [f"首领虫洞配法：{dot} 能把长战收益拉起来，再补 {_enchant_display_name('yujing_shu')} 保命中。"]
+            return [f"首领虫洞配法：{dot} 能把长战收益拉起来，再补 {_enchant_display_name('yujing_shu', database)} 保命中。"]
         if "pierce" in traits or "burst" in traits:
-            return [f"首领虫洞配法：{_book_names('pozhen_shu', 'chuanyun_shu', 'yujing_shu', 'xingluo_shu')} 优先；精神吃紧时少塞高消耗书。"]
-        return [f"首领虫洞配法：优先补 {boss}；站不住再补 {_book_pair('xuandun_shu', 'lingmu_shu')}。"]
+            return [f"首领虫洞配法：{_book_names('pozhen_shu', 'chuanyun_shu', 'yujing_shu', 'xingluo_shu', database=database)} 优先；精神吃紧时少塞高消耗书。"]
+        return [f"首领虫洞配法：优先补 {boss}；站不住再补 {_book_pair('xuandun_shu', 'lingmu_shu', database=database)}。"]
     if goal == "pvp":
         if "control" in traits:
             return [
                 f"决斗抢劫配法：{control} 最贴合，核心是让对方技能慢、精神亏、出手乱。",
-                f"如果你自己容易被秒，{_book_pair('xuandun_shu', 'jinghu_shu')} 比继续堆输出更有用。",
+                f"如果你自己容易被秒，{_book_pair('xuandun_shu', 'jinghu_shu', database=database)} 比继续堆输出更有用。",
             ]
         if "burst" in traits or "execute" in traits:
-            return [f"决斗抢劫配法：{burst} 打爆发，{_book_pair('jinghu_shu', 'qingxin_shu')} 补稳定。"]
+            return [f"决斗抢劫配法：{burst} 打爆发，{_book_pair('jinghu_shu', 'qingxin_shu', database=database)} 补稳定。"]
         return [f"决斗抢劫配法：{pvp} 能补扰乱和容错。"]
     if "control" in traits:
         return [
@@ -2556,13 +2629,13 @@ def _weapon_goal_advice(profile: WeaponProfile, goal: str) -> list[str]:
             "一句话：它不是刷低级怪的最快答案，但在对战和高压长战里很有特色。",
         ]
     if "fast" in traits or "combo" in traits:
-        return [f"分场景配法：日常优先 {quick}；打硬目标再补 {_book_pair('poxie_shu', 'chuanyun_shu')}。"]
+        return [f"分场景配法：日常优先 {quick}；打硬目标再补 {_book_pair('poxie_shu', 'chuanyun_shu', database=database)}。"]
     if "dot" in traits:
-        return [f"分场景配法：{dot} 适合长战；短战想提速可补 {_book_pair('liuguang_shu', 'yujing_shu')}。"]
+        return [f"分场景配法：{dot} 适合长战；短战想提速可补 {_book_pair('liuguang_shu', 'yujing_shu', database=database)}。"]
     if "pierce" in traits or "burst" in traits:
         return [f"分场景配法：{pierce} 打硬目标；日常探险要防蓄势过慢。"]
     if "sustain" in traits:
-        return [f"分场景配法：{_book_names('huichun_shu', 'xuandun_shu', 'xueqi_shu', 'lingmu_shu')} 走长战；想打贡献再补 {_book_pair('pozhen_shu', 'yujing_shu')}。"]
+        return [f"分场景配法：{_book_names('huichun_shu', 'xuandun_shu', 'xueqi_shu', 'lingmu_shu', database=database)} 走长战；想打贡献再补 {_book_pair('pozhen_shu', 'yujing_shu', database=database)}。"]
     return ["搭配建议：优先强化自带技能方向，再补一个当前最缺的生存、命中或精神续航。"]
 
 
@@ -2673,10 +2746,10 @@ def _score_text(scores: dict[str, int]) -> str:
     return "｜".join(f"{name} {scores.get(name, 5)}/10" for name in order)
 
 
-def _weapon_plan_lines(profile: WeaponProfile, goal: str) -> list[str]:
+def _weapon_plan_lines(profile: WeaponProfile, goal: str, database: Any = db) -> list[str]:
     """给武器生成最优和替代附魔方案。"""
 
-    best, alternatives, avoid = _weapon_plan(profile, goal)
+    best, alternatives, avoid = _weapon_plan(profile, goal, database)
     lines = [f"最优方案：{best}。"]
     if alternatives:
         lines.append(f"替代方案：{alternatives}。")
@@ -2685,108 +2758,108 @@ def _weapon_plan_lines(profile: WeaponProfile, goal: str) -> list[str]:
     return lines
 
 
-def _weapon_plan(profile: WeaponProfile, goal: str) -> tuple[str, str, str]:
+def _weapon_plan(profile: WeaponProfile, goal: str, database: Any = db) -> tuple[str, str, str]:
     """按武器和场景选择附魔方案。"""
 
     traits = profile.traits
     if goal == "daily":
         if "control" in traits:
             return (
-                f"{_book_pair('huichun_shu', 'xuandun_shu')} + {_book_pair('duannian_shu', 'mengwu_shu')}，先稳连续战斗",
-                f"{_book_pair('fengren_shu', 'liuguang_shu')} 补节奏",
+                f"{_book_pair('huichun_shu', 'xuandun_shu', database=database)} + {_book_pair('duannian_shu', 'mengwu_shu', database=database)}，先稳连续战斗",
+                f"{_book_pair('fengren_shu', 'liuguang_shu', database=database)} 补节奏",
                 "全堆断念系，清小怪会慢",
             )
         if "fast" in traits or "combo" in traits:
             return (
-                f"{_book_pair('fengren_shu', 'shaying_shu')} + {_book_pair('liuguang_shu', 'zhuixing_shu')}",
-                f"缺生存补 {_book_pair('huichun_shu', 'xuandun_shu')}",
+                f"{_book_pair('fengren_shu', 'shaying_shu', database=database)} + {_book_pair('liuguang_shu', 'zhuixing_shu', database=database)}",
+                f"缺生存补 {_book_pair('huichun_shu', 'xuandun_shu', database=database)}",
                 "把蓄势堆慢的重击书塞太多",
             )
         return (
-            f"{_book_pair('fengren_shu', 'liuguang_shu')} + {_book_pair('huichun_shu', 'xuandun_shu')}",
-            f"缺伤害再补 {_book_pair('poxie_shu', 'chuanyun_shu')}",
+            f"{_book_pair('fengren_shu', 'liuguang_shu', database=database)} + {_book_pair('huichun_shu', 'xuandun_shu', database=database)}",
+            f"缺伤害再补 {_book_pair('poxie_shu', 'chuanyun_shu', database=database)}",
             "只看单次爆发",
         )
     if goal == "boss":
         if "control" in traits:
             return (
-                f"{_book_pair('pozhen_shu', 'yujing_shu', 'xingluo_shu')}，保留 {_book_pair('zhenhun_shu', 'tianji_shu')} 一格做压制",
-                f"{_book_names('chuanyun_shu', 'zhuoxin_shu', 'xuandun_shu')} 按缺口替换",
+                f"{_book_pair('pozhen_shu', 'yujing_shu', 'xingluo_shu', database=database)}，保留 {_book_pair('zhenhun_shu', 'tianji_shu', database=database)} 一格做压制",
+                f"{_book_names('chuanyun_shu', 'zhuoxin_shu', 'xuandun_shu', database=database)} 按缺口替换",
                 "全堆削精神，贡献会虚",
             )
         if "dot" in traits:
             return (
-                f"{_book_pair('zhuoxin_shu', 'xueyu_shu')} + {_book_pair('duyun_shu', 'canyan_shu')}",
-                f"{_enchant_display_name('yujing_shu')} 补命中，{_enchant_display_name('xuandun_shu')} 补站场",
+                f"{_book_pair('zhuoxin_shu', 'xueyu_shu', database=database)} + {_book_pair('duyun_shu', 'canyan_shu', database=database)}",
+                f"{_enchant_display_name('yujing_shu', database)} 补命中，{_enchant_display_name('xuandun_shu', database)} 补站场",
                 "短战思路，持续伤害没时间滚起来",
             )
         if "pierce" in traits or "burst" in traits:
             return (
-                f"{_book_pair('pozhen_shu', 'chuanyun_shu')} + {_book_pair('yujing_shu', 'xingluo_shu')}",
-                f"精神吃紧时用 {_book_pair('xuandun_shu', 'lingmu_shu')} 替换一格",
+                f"{_book_pair('pozhen_shu', 'chuanyun_shu', database=database)} + {_book_pair('yujing_shu', 'xingluo_shu', database=database)}",
+                f"精神吃紧时用 {_book_pair('xuandun_shu', 'lingmu_shu', database=database)} 替换一格",
                 "高消耗书堆太满导致放不出技能",
             )
         return (
-            _book_pair("pozhen_shu", "yujing_shu", "xingluo_shu"),
-            f"{_book_pair('xuandun_shu', 'lingmu_shu')} 补生存",
+            _book_pair("pozhen_shu", "yujing_shu", "xingluo_shu", database=database),
+            f"{_book_pair('xuandun_shu', 'lingmu_shu', database=database)} 补生存",
             "只堆控制或只堆回血",
         )
     if goal == "pvp":
         if "control" in traits:
             return (
-                f"{_book_pair('duannian_shu', 'zhenhun_shu')} + {_book_pair('tianji_shu', 'mengwu_shu', 'qingxin_shu')}",
-                f"怕被秒就用 {_book_pair('xuandun_shu', 'jinghu_shu')} 替一格",
+                f"{_book_pair('duannian_shu', 'zhenhun_shu', database=database)} + {_book_pair('tianji_shu', 'mengwu_shu', 'qingxin_shu', database=database)}",
+                f"怕被秒就用 {_book_pair('xuandun_shu', 'jinghu_shu', database=database)} 替一格",
                 "照搬首领贡献配法",
             )
         if "burst" in traits or "execute" in traits:
             return (
-                _book_pair("wuxiang_shu", "duanhai_shu", "pojun_shu"),
-                f"{_book_pair('jinghu_shu', 'qingxin_shu')} 补稳定",
+                _book_pair("wuxiang_shu", "duanhai_shu", "pojun_shu", database=database),
+                f"{_book_pair('jinghu_shu', 'qingxin_shu', database=database)} 补稳定",
                 "完全不补命中和容错",
             )
         return (
-            f"{_book_pair('yueshi_shu', 'jinghu_shu')} + {_book_pair('yingye_shu', 'qingxin_shu')}",
-            f"{_enchant_display_name('xuandun_shu')} 补生存",
+            f"{_book_pair('yueshi_shu', 'jinghu_shu', database=database)} + {_book_pair('yingye_shu', 'qingxin_shu', database=database)}",
+            f"{_enchant_display_name('xuandun_shu', database)} 补生存",
             "只堆刷图提速书",
         )
     if "control" in traits:
         return (
             "按目标切换：探险稳，首领补贡献，决斗堆压制",
-            f"不确定目标时先 {_book_pair('huichun_shu', 'xuandun_shu')} 保底",
+            f"不确定目标时先 {_book_pair('huichun_shu', 'xuandun_shu', database=database)} 保底",
             "一套附魔想通吃所有玩法",
         )
     if "fast" in traits or "combo" in traits:
         return (
-            f"{_book_pair('fengren_shu', 'shaying_shu')} + {_book_pair('liuguang_shu', 'zhuixing_shu')}",
-            f"{_book_pair('poxie_shu', 'chuanyun_shu')} 补硬目标",
+            f"{_book_pair('fengren_shu', 'shaying_shu', database=database)} + {_book_pair('liuguang_shu', 'zhuixing_shu', database=database)}",
+            f"{_book_pair('poxie_shu', 'chuanyun_shu', database=database)} 补硬目标",
             "为了面板把节奏拖慢",
         )
     if "sustain" in traits:
         return (
-            _book_pair("huichun_shu", "xuandun_shu", "lingmu_shu"),
-            f"{_book_pair('pozhen_shu', 'yujing_shu')} 补贡献",
+            _book_pair("huichun_shu", "xuandun_shu", "lingmu_shu", database=database),
+            f"{_book_pair('pozhen_shu', 'yujing_shu', database=database)} 补贡献",
             "只有回血没有输出",
         )
     return (
         "围绕自带技能强化，再补一个生存或命中位",
-        f"按目标在 {_book_names('pozhen_shu', 'fengren_shu', 'xuandun_shu')} 里选",
+        f"按目标在 {_book_names('pozhen_shu', 'fengren_shu', 'xuandun_shu', database=database)} 里选",
         "只看稀有度",
     )
 
 
-def _enchant_plan_text(style: str, effects: dict[str, float], goal: str) -> str:
+def _enchant_plan_text(style: str, effects: dict[str, float], goal: str, database: Any = db) -> str:
     """给技能书生成落地建议。"""
 
     if "首领协作" in style:
         if goal == "pvp":
-            return f"搭配建议：它可以在决斗里客串稳控或减伤，但第一优先仍是 {_book_names('yueshi_shu', 'jinghu_shu', 'yingye_shu', 'qingxin_shu')}。"
+            return f"搭配建议：它可以在决斗里客串稳控或减伤，但第一优先仍是 {_book_names('yueshi_shu', 'jinghu_shu', 'yingye_shu', 'qingxin_shu', database=database)}。"
         return "搭配建议：优先给打首领、虫洞的武器；日常探险慎用，容易为了贡献牺牲刷图节奏。"
     if "决斗扰乱" in style:
         if goal == "boss":
-            return f"搭配建议：打首领时它只能补扰乱或容错，主要贡献仍应靠 {_book_names('pozhen_shu', 'yujing_shu', 'xingluo_shu')}。"
+            return f"搭配建议：打首领时它只能补扰乱或容错，主要贡献仍应靠 {_book_names('pozhen_shu', 'yujing_shu', 'xingluo_shu', database=database)}。"
         return "搭配建议：优先给决斗、抢劫武器；日常探险和首领贡献都不是它的主场。"
     if "压制控制" in style:
-        return f"搭配建议：给压制控制武器最顺；打首领时至少搭一格 {_book_names('pozhen_shu', 'yujing_shu', 'xingluo_shu')} 补贡献。"
+        return f"搭配建议：给压制控制武器最顺；打首领时至少搭一格 {_book_names('pozhen_shu', 'yujing_shu', 'xingluo_shu', database=database)} 补贡献。"
     if "高频连击" in style:
         return "搭配建议：给短刃、飞刃、匕、多段技能武器最舒服；重武器用它主要是补节奏。"
     if "持续伤害" in style:
@@ -2939,7 +3012,7 @@ def _enchant_fit_text(style: str, effects: dict[str, float], goal: str) -> str:
     if any(key in effects for key in ("hit_bonus", "dodge_bonus")):
         fits.append("需要命中、闪避稳定性的武器")
     if not fits:
-        fits.append(style.replace("流派", "") or "同方向武器")
+        fits.append(_style_label(style).replace("流派", "") or "同方向武器")
     scene_fit = _style_matches_goal(style, goal)
     if goal != "general" and scene_fit:
         fits.append(f"当前问题偏{_goal_name(goal)}，优先取与这个目标有关的收益")

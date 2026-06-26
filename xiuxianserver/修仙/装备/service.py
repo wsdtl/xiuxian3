@@ -190,7 +190,7 @@ class EquipmentService(CoreService):
             return error
         parts = split_words(message)
         if len(parts) < 3:
-            return T.hint("镶嵌格式不正确。", "发送：镶嵌 装备位 孔位号 宝石名称，例如：镶嵌 护甲 1 护心玉")
+            return T.hint("镶嵌格式不正确。", "发送：镶嵌 装备位 孔位号 宝石名称，例如：镶嵌 护甲 1 宝石名")
         slot = parts[0]
         hole_no = to_int(parts[1])
         item_name, wanted_level = parse_name_level(" ".join(parts[2:]))

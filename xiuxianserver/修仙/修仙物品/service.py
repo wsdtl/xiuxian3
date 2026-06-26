@@ -31,7 +31,7 @@ class ItemInfoService(CoreService):
             return error
         name = item_name.strip()
         if not name:
-            return T.hint("缺少物品名称。", "发送：查看修仙物品 福袋")
+            return T.hint("缺少物品名称。", "发送：查看修仙物品 物品名，或发送：世界皮肤 查看当前世界名录。<世界皮肤>")
 
         definition = current_world_definition(name, self.db, kinds=ITEM_INFO_KINDS)
         if definition:

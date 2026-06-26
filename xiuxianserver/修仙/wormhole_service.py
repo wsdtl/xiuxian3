@@ -12,7 +12,7 @@ from statistics import median
 from typing import Any
 
 from . import combat_log_text
-from .combat_core import service as combat_service
+from .combat_core import CombatCore
 from .common import (
     CoreService,
     RING_CATEGORY_BOOK,
@@ -190,6 +190,7 @@ class WormholeService(CoreService):
         super().__init__(database)
         self.world_material = WorldMaterialService(database)
         self.weapon_core = WeaponCore(database)
+        self.combat_core = CombatCore(database)
 
     def status(self, client_id: str) -> str:
         """查看当前异界虫洞。"""
@@ -831,7 +832,7 @@ class WormholeService(CoreService):
 
         action_limit = 10 + min(4, int(player["level"]) // 25)
         combat_kind = self._combat_kind_for_event(event)
-        return combat_service.fight_boss(
+        return self.combat_core.fight_boss(
             player,
             event,
             boss_kind=combat_kind,
@@ -1227,8 +1228,7 @@ class WormholeService(CoreService):
         meta = load_json(raw_result, {})
         return meta if isinstance(meta, dict) else {}
 
-    @staticmethod
-    def _random_combat_profile_meta() -> dict[str, str]:
+    def _random_combat_profile_meta(self) -> dict[str, str]:
         """生成虫洞的展示法则和真实战斗模板。
 
         Boss 名属于世界皮肤，不能拿来决定技能模板；这里在虫洞生成时随机一次，
@@ -1236,7 +1236,7 @@ class WormholeService(CoreService):
         """
 
         profile_key, flow_key, flow, kinds = random.choice(WORMHOLE_COMBAT_PROFILES)
-        flow = WormholeService._wormhole_name(("wormhole", "flows"), flow_key, flow)
+        flow = self._wormhole_name(("wormhole", "flows"), flow_key, flow)
         return {
             "boss_flow_key": flow_key,
             "boss_flow": flow,
@@ -1244,11 +1244,10 @@ class WormholeService(CoreService):
             "combat_kind": random.choice(kinds),
         }
 
-    @staticmethod
-    def _wormhole_name(path: tuple[str, ...], stable_id: str, default: str) -> str:
+    def _wormhole_name(self, path: tuple[str, ...], stable_id: str, default: str) -> str:
         """读取当前世界皮肤下的虫洞展示名。"""
 
-        return skin_name(path, stable_id, default)
+        return skin_name(path, stable_id, default, self.db)
 
     @staticmethod
     def _combat_kind_for_event(event: dict[str, Any]) -> str:

@@ -26,6 +26,10 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 
+# 未配置公开域名时，用本机地址生成项目内公开链接。
+DEFAULT_PUBLIC_HOST = "127.0.0.1"
+
+
 # 唯一配置入口：项目根目录下的 .env 文件。
 ENV_FILE = BASE_DIR / ".env"
 
@@ -35,7 +39,13 @@ PROJECT_ENV_KEYS = {"PROJECT_NAME", "PROJECT_DEBUG", "PROJECT_TIMEZONE", "PROJEC
 
 
 # 服务监听配置在 .env 里的键名。
-SERVER_ENV_KEYS = {"SERVER_HOST", "SERVER_PORT"}
+SERVER_ENV_KEYS = {
+    "SERVER_HOST",
+    "SERVER_PORT",
+    "SERVER_RELOAD",
+    "SERVER_SSL_CERTFILE",
+    "SERVER_SSL_KEYFILE",
+}
 
 
 # 日志配置在 .env 里的键名。默认值在 load_config() 中维护。
@@ -60,8 +70,18 @@ ROUTER_ENV_KEYS = {
 }
 
 
+# 通信适配器配置在 .env 里的键名。
+ADAPTER_ENV_KEYS = {"ADAPTERS"}
+
+
 # 项目已经认识的配置键名；其他 .env 项会进入 config.custom。
-SYSTEM_ENV_KEYS = PROJECT_ENV_KEYS | SERVER_ENV_KEYS | LOG_ENV_KEYS | ROUTER_ENV_KEYS
+SYSTEM_ENV_KEYS = (
+    PROJECT_ENV_KEYS
+    | SERVER_ENV_KEYS
+    | LOG_ENV_KEYS
+    | ROUTER_ENV_KEYS
+    | ADAPTER_ENV_KEYS
+)
 
 
 def read_env_file(path: Path = ENV_FILE) -> dict[str, str]:
@@ -205,6 +225,9 @@ class ServerConfig:
 
     host: str
     port: int
+    reload: bool
+    ssl_certfile: Path | None
+    ssl_keyfile: Path | None
 
 
 @dataclass(frozen=True)
@@ -236,6 +259,19 @@ class RouterConfig:
     router_folders: List[str]
     router_groups: List[str]
     router_child_folders: List[str]
+
+
+@dataclass(frozen=True)
+class AdapterConfig:
+    """
+    通信适配器配置。
+
+    .env 中必须写成列表：
+
+        ADAPTERS=["qq","ws"]
+    """
+
+    enabled: List[str]
 
 
 @dataclass(frozen=True)
@@ -271,6 +307,7 @@ class Config:
     server: ServerConfig
     log: LogConfig
     router: RouterConfig
+    adapter: AdapterConfig
     custom: dict[str, str]
 
     def get(self, name: str, default: str = "") -> str:
@@ -321,6 +358,9 @@ def load_config() -> Config:
     server = ServerConfig(
         host=env.get("SERVER_HOST", "0.0.0.0"),
         port=int(env.get("SERVER_PORT", "1234") or "1234"),
+        reload=env.get_bool("SERVER_RELOAD", False),
+        ssl_certfile=env.get_path("SERVER_SSL_CERTFILE", "") if env.get("SERVER_SSL_CERTFILE") else None,
+        ssl_keyfile=env.get_path("SERVER_SSL_KEYFILE", "") if env.get("SERVER_SSL_KEYFILE") else None,
     )
 
     # 日志配置默认写在这里，需要变化时再放到 .env 覆盖。
@@ -345,6 +385,11 @@ def load_config() -> Config:
         router_child_folders=env.get_list("ROUTER_CHILD_FOLDERS", []),
     )
 
+    # 通信适配器配置。默认同时启用 QQ webhook 和 WebSocket。
+    adapter = AdapterConfig(
+        enabled=env.get_list("ADAPTERS", ["qq", "ws"]),
+    )
+
     # 未被系统识别的键都作为自定义配置。
     custom = {key: value for key, value in raw.items() if key not in SYSTEM_ENV_KEYS}
 
@@ -356,6 +401,7 @@ def load_config() -> Config:
         server=server,
         log=log,
         router=router,
+        adapter=adapter,
         custom=custom,
     )
 

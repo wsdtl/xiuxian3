@@ -12,7 +12,6 @@ from ..common import (
     business_day,
     currency_name,
     dump_json,
-    format_effect,
     load_json,
     money,
     player_level_label,
@@ -22,7 +21,6 @@ from ..common import (
     ring_item_display_name,
     ts,
     weapon_label_name,
-    world_state_for_day,
 )
 from ..constants import DAY_RESET_HOUR, DEFAULT_LOCATION_ID
 from ..sql import db
@@ -253,9 +251,6 @@ class XiuxianHistoryService(CoreService):
         panel.section(f"修仙早报·{day}")
         panel.line(f"小编按：今日修仙界从 {DAY_RESET_HOUR:02d}:00 起算，茶摊照例收风。")
         panel.hr()
-        panel.section("天地气象")
-        panel.lines(self._world_state_lines(day))
-        panel.hr()
         panel.section("头版人物")
         panel.line(self._top_damage_text(start, end))
         panel.line(self._top_rich_text())
@@ -272,19 +267,6 @@ class XiuxianHistoryService(CoreService):
         panel.section("首领动向")
         panel.lines(self._boss_trend_lines(day, start, end))
         return panel.render() + "<商场推荐><首领>"
-
-    def _world_state_lines(self, day: str) -> list[str]:
-        """生成早报里的全服天气和灵潮栏目。"""
-
-        state = world_state_for_day(day)
-        weather = state["weather"]
-        tide = state["tide"]
-        total = format_effect(state["effect"])
-        return [
-            f"今日天气：{weather['name']}。{weather['flavor']}（{format_effect(weather['effect'])}）",
-            f"今日灵潮：{tide['name']}。{tide['flavor']}（{format_effect(tide['effect'])}）",
-            f"全服生效：{total}",
-        ]
 
     def _city_wind_lines(self) -> list[str]:
         """生成城池世界物资风向。"""

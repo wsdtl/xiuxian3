@@ -20,7 +20,7 @@ from ..common import (
     weapon_label_name,
 )
 from ..constants import EQUIPMENT_DEFAULT_HOLES, EQUIPMENT_MAX_HOLES, EQUIPMENT_SLOTS
-from ..item_effects import service as item_effects
+from ..item_effects import ItemEffectService
 from ..sql import db
 
 HOLE_ITEM_ID = "kaikongqi"
@@ -30,6 +30,10 @@ TEMPER_ITEM_ID = "cuifengdan"
 
 class RingService(CoreService):
     """纳戒库存和专属纳戒物品消耗。"""
+
+    def __init__(self, database) -> None:
+        super().__init__(database)
+        self.item_effects = ItemEffectService(database)
 
     def list_items(self, client_id: str) -> str:
         """查看纳戒。"""
@@ -55,7 +59,7 @@ class RingService(CoreService):
             return error
         item_name, quantity = parse_name_quantity_optional(item_message)
         if quantity <= 0:
-            return T.hint("使用数量必须大于 0。", "发送：使用 物品名 数量，例如：使用 福袋 5")
+            return T.hint("使用数量必须大于 0。", "发送：使用 物品名 数量，例如：使用 恢复物 5")
         item = self.ring_item_def_by_name(item_name)
         if not item:
             return T.hint(f"没有找到纳戒物品：{item_name}。", "发送：纳戒 查看已拥有的物品。<纳戒>")
@@ -65,7 +69,7 @@ class RingService(CoreService):
         with self.db.transaction() as conn:
             if not self.remove_ring_conn(conn, client_id, item["ring_item_id"], quantity):
                 return T.hint(f"纳戒里没有足够的 {item['name']} x{quantity}。", "发送：纳戒 确认库存，或继续探险获取。<纳戒><探险>")
-            return item_effects.apply_many_conn(conn, client_id, item, "纳戒", quantity)
+            return self.item_effects.apply_many_conn(conn, client_id, item, "纳戒", quantity)
 
     def remold_physique(self, client_id: str) -> str:
         """消耗体质重塑道具刷新体质。"""
@@ -83,7 +87,7 @@ class RingService(CoreService):
                     f"纳戒里没有{item_name}。",
                     f"{item_name}可从岁时情劫首领或异界虫洞奖励中获得，获得后发送：体质重塑<体质重塑>",
                 )
-            return item_effects.apply_conn(conn, client_id, item, "体质重塑")
+            return self.item_effects.apply_conn(conn, client_id, item, "体质重塑")
 
     def raise_weapon_limit(self, client_id: str, message: str) -> str:
         """消耗武器升限道具提升武器等级上限。"""

@@ -5,6 +5,7 @@ from typing import Any, Callable, Dict, List, Optional, Pattern, Set, Tuple, Uni
 
 from .manager import ConnectionManager
 from ..base_handler import BaseMessageHandler
+from ..depends import call_with_dependencies
 
 
 Command = Union[str, Pattern]
@@ -406,16 +407,7 @@ class WsMessageHandler(BaseMessageHandler):
         声明 **kwargs 时会收到完整 context。
         """
 
-        params = WsMessageHandler._get_func_params(rule.func)
-        kwargs = context if params is None else {
-            name: value
-            for name, value in context.items()
-            if name in params
-        }
-
-        result = rule.func(**kwargs)
-        if inspect.isawaitable(result):
-            await result
+        await call_with_dependencies(rule.func, context)
 
     @staticmethod
     def _get_func_params(func: Callable) -> Optional[Set[str]]:

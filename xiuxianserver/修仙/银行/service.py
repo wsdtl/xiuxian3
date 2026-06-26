@@ -26,7 +26,7 @@ class BankService(CoreService):
         panel.section("银行")
         panel.line(f"星级：{level_conf['name']}")
         panel.line(f"随身{currency_name()}：**{money(player['raw_stones'])}**")
-        panel.line(f"银行存量：**{money(account['balance'])}/{money(level_conf['limit'])}**")
+        panel.line(f"银行{currency_name()}：**{money(account['balance'])}/{money(level_conf['limit'])}**")
         daily_interest_claimed = self._display_daily_interest_claimed(account)
         panel.line(f"今日利息：**{currency_amount(daily_interest_claimed)}/{money(level_conf['daily_interest_limit'])}**")
         return panel.render() + "<银行结息><升级银行>"

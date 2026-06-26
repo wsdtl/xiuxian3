@@ -1,6 +1,7 @@
 import json
 from base64 import b64encode
 from io import BytesIO
+from pathlib import Path
 from typing import Any
 
 
@@ -48,7 +49,8 @@ def _format_message(message: object, message_type: str) -> object:
     """按消息类型整理 message。
 
     text 直接转字符串。
-    image 支持 bytes / bytearray / memoryview / BytesIO。
+    image 支持 bytes / bytearray / memoryview / BytesIO / Path。
+    文字图文格式 {"content": "...", "image": image} 在 WS 旧协议中只传 image。
     返回纯 base64 字符串，不带 data:image/... 头。
     markdown 保持 dict/list 原结构，避免按钮和 markdown 内容被转成字符串。
     """
@@ -68,6 +70,8 @@ def _format_message(message: object, message_type: str) -> object:
 def _read_image_bytes(message: object) -> bytes | None:
     """读取图片二进制；读取 BytesIO 后尽量恢复指针位置。"""
 
+    if isinstance(message, dict):
+        return _read_image_bytes(message.get("image"))
     if isinstance(message, bytes):
         return message
     if isinstance(message, bytearray | memoryview):
@@ -78,6 +82,33 @@ def _read_image_bytes(message: object) -> bytes | None:
         data = message.read()
         message.seek(position)
         return data
+    if isinstance(message, Path):
+        return message.read_bytes()
+    if hasattr(message, "read"):
+        return _read_file_like_bytes(message)
+    return None
+
+
+def _read_file_like_bytes(message: object) -> bytes | None:
+    """读取类文件对象，尽量恢复指针位置。"""
+
+    position = None
+    try:
+        if hasattr(message, "tell"):
+            position = message.tell()
+        if hasattr(message, "seek"):
+            message.seek(0)
+        data = message.read()
+    finally:
+        if position is not None and hasattr(message, "seek"):
+            message.seek(position)
+
+    if isinstance(data, str):
+        return data.encode("utf-8")
+    if isinstance(data, bytes):
+        return data
+    if isinstance(data, bytearray | memoryview):
+        return bytes(data)
     return None
 
 

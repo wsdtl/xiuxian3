@@ -3,74 +3,23 @@
 from __future__ import annotations
 
 from pathlib import Path
-
-from launch import config
+from typing import Any
 
 from ..common import CoreService, currency_name
 from ..format_text import T
+from ..public_url import public_url
 from ..sql import db
-from ..world_skin import DEFAULT_HELP_MAP_PATH, current_help_map_url
+from ..world_skin import current_help_map_path
 
 HELP_IMAGE = Path(__file__).with_name("help.png")
-HELP_MAP_PATH = DEFAULT_HELP_MAP_PATH
 
 
-def _project_base_url() -> str:
-    """按 .env 中配置的公开域名生成项目访问基地址。"""
-
-    port = str(config.server.port)
-    domain = (config.project.domain or "127.0.0.1").strip().rstrip("/")
-    return _with_project_port(domain, port)
-
-
-def _with_project_port(domain: str, port: str) -> str:
-    """生成项目访问基地址；80 端口不展示，其他端口自动展示。"""
-
-    if domain.startswith(("http://", "https://")):
-        scheme, rest = domain.split("://", 1)
-    else:
-        scheme, rest = "http", domain
-
-    host, _, path = rest.partition("/")
-    hostname = host
-    explicit_port = ""
-    if ":" in host and not host.startswith("["):
-        hostname, explicit_port = host.rsplit(":", 1)
-
-    final_port = explicit_port or port
-    netloc = hostname if final_port == "80" else f"{hostname}:{final_port}"
-    suffix = f"/{path.strip('/')}" if path else ""
-    return f"{scheme}://{netloc}{suffix}".rstrip("/")
-
-
-HELP_BASE_URL = _project_base_url()
-HELP_PAGE_URL = f"{HELP_BASE_URL}/xiuxian/help"
-GUIDE_SECTIONS: dict[str, tuple[str, str, tuple[str, ...]]] = {
-    "成长": (
-        "修行成长",
-        f"角色状态、每日收益、休息恢复和{currency_name()}管理。",
-        ("修仙信息", "状态", "签到", "新手礼包", "休息", "结束休息", "银行", "银行结息", "升级银行"),
-    ),
-    "行囊": (
-        "行囊装备",
-        "背包、纳戒、保险箱、武器、装备、宝石和特殊消耗品。",
-        ("背包", "纳戒", "保险箱", "武器", "装备", "孔位", "宝石", "体质重塑", "武器升限", "铭刻之羽"),
-    ),
-    "战斗": (
-        "探险战斗",
-        "探险、休整、首领、虫洞和玩家对战。",
-        ("地图", "探险列表", "探险状态", "结束探险", "首领", "首领状态", "挑战首领", "首领奖励", "虫洞", "虫洞奖励", "决斗记录"),
-    ),
-    "交易": (
-        "交易流通",
-        "跑商、出售、藏宝图、二手市场和背包清理。",
-        ("商场推荐", "跑商记录", "跑商限制", "跑商奖励", "自动出售", "出售全部 武器", "出售全部 宝石", "出售全部 技能书", "藏宝图", "领取藏宝图", "二手市场"),
-    ),
-    "世界": (
-        "宗门世界",
-        "地图、宗门、世界记录、百科和帮助文档。",
-        ("地图", "宗门", "宗门成员", "宗门大会", "领取宗门大会奖励", "风云榜", "修仙早报", "修仙界历史", "修仙百科 武器", "修仙百科 跑商", "帮助", "修仙帮助"),
-    ),
+GUIDE_COMMANDS: dict[str, tuple[str, tuple[str, ...]]] = {
+    "成长": ("修行成长", ("修仙信息", "状态", "签到", "新手礼包", "休息", "结束休息", "银行", "银行结息", "升级银行", "用户组")),
+    "行囊": ("行囊装备", ("背包", "纳戒", "保险箱", "武器", "装备", "孔位", "宝石", "体质重塑", "武器升限", "铭刻之羽")),
+    "战斗": ("探险战斗", ("地图", "探险列表", "探险状态", "结束探险", "首领", "首领状态", "挑战首领", "首领奖励", "虫洞", "虫洞奖励", "决斗记录")),
+    "交易": ("交易流通", ("商场推荐", "跑商记录", "跑商限制", "跑商奖励", "自动出售", "出售全部 武器", "出售全部 宝石", "出售全部 技能书", "藏宝图", "领取藏宝图", "二手市场")),
+    "世界": ("宗门世界", ("地图", "宗门", "宗门成员", "宗门大会", "领取宗门大会奖励", "风云榜", "修仙早报", "修仙界历史", "修仙百科 武器", "修仙百科 跑商", "帮助", "修仙帮助")),
 }
 GUIDE_ALIASES = {
     "主": "",
@@ -104,10 +53,12 @@ class HelpService(CoreService):
     def web_help(self) -> str:
         """返回当前阶段的帮助入口提示。"""
 
+        help_url = public_url("/xiuxian/help")
+        map_url = public_url(current_help_map_path(self.db))
         return (
-            f"[修仙帮助网页]({HELP_PAGE_URL})\n\n"
+            f"[修仙帮助网页]({help_url})\n\n"
             "发送：修仙帮助 查看指令速查图，发送：指南 查看关键入口。\n\n"
-            f"![修仙界地图 #720px #400px]({current_help_map_url(HELP_BASE_URL, self.db)})"
+            f"![修仙界地图 #720px #400px]({map_url})"
         )
 
     def command_guide(self, section: str = "") -> str:
@@ -116,7 +67,8 @@ class HelpService(CoreService):
         key = self._guide_key(section)
         if not key:
             return self._guide_index()
-        if key not in GUIDE_SECTIONS:
+        sections = self._guide_sections()
+        if key not in sections:
             return T.hint(
                 f"没有这个指南方向：{section.strip()}。",
                 "可用方向：成长、行囊、战斗、交易、世界。",
@@ -127,17 +79,18 @@ class HelpService(CoreService):
     def _guide_index(self) -> str:
         """返回指南方向首页。"""
 
+        sections = self._guide_sections()
         panel = T.panel()
         panel.section("指南")
         panel.line("关键业务已经按方向拆分，先选方向，再进入具体按钮。")
-        for key, (title, desc, _commands) in GUIDE_SECTIONS.items():
+        for key, (title, desc, _commands) in sections.items():
             panel.line(f"{title}：{desc} 发送：指南 {key}")
         return panel.render() + T.buttons(*self._guide_section_buttons())
 
     def _guide_section(self, key: str) -> str:
         """返回单个方向的按钮页。"""
 
-        title, desc, commands = GUIDE_SECTIONS[key]
+        title, desc, commands = self._guide_sections()[key]
         panel = T.panel()
         panel.section(f"指南·{title}")
         panel.line(desc)
@@ -153,11 +106,42 @@ class HelpService(CoreService):
             return ""
         return GUIDE_ALIASES.get(value, value)
 
-    @staticmethod
-    def _guide_section_buttons() -> tuple[str, ...]:
+    def _guide_section_buttons(self) -> tuple[str, ...]:
         """主指南方向按钮。"""
 
-        return tuple(f"指南 {key}:{title}" for key, (title, _desc, _commands) in GUIDE_SECTIONS.items())
+        return tuple(f"指南 {key}:{title}" for key, (title, _desc, _commands) in self._guide_sections().items())
+
+    @staticmethod
+    def _guide_sections() -> dict[str, tuple[str, str, tuple[str, ...]]]:
+        """动态生成指南文案，避免世界皮肤切换后货币名仍停在旧值。"""
+
+        return {
+            "成长": (
+                GUIDE_COMMANDS["成长"][0],
+                f"角色状态、每日收益、休息恢复和{currency_name()}管理。",
+                GUIDE_COMMANDS["成长"][1],
+            ),
+            "行囊": (
+                GUIDE_COMMANDS["行囊"][0],
+                "背包、纳戒、保险箱、武器、装备、宝石和特殊消耗品。",
+                GUIDE_COMMANDS["行囊"][1],
+            ),
+            "战斗": (
+                GUIDE_COMMANDS["战斗"][0],
+                "探险、休整、首领、虫洞和玩家对战。",
+                GUIDE_COMMANDS["战斗"][1],
+            ),
+            "交易": (
+                GUIDE_COMMANDS["交易"][0],
+                "跑商、出售、藏宝图、二手市场和背包清理。",
+                GUIDE_COMMANDS["交易"][1],
+            ),
+            "世界": (
+                GUIDE_COMMANDS["世界"][0],
+                "地图、宗门、世界记录、百科和帮助文档。",
+                GUIDE_COMMANDS["世界"][1],
+            ),
+        }
 
 
 service = HelpService(db)

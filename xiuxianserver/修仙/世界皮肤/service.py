@@ -2,17 +2,13 @@
 
 from __future__ import annotations
 
-import ast
 import sqlite3
 from typing import Any
-
-from launch import config
 
 from ..common import CoreService
 from ..format_text import T
 from ..sql import db
 from ..world_skin import (
-    current_help_map_path,
     current_skin_id,
     list_skin_packages,
     load_skin_package,
@@ -24,7 +20,7 @@ from ..world_skin import (
 class WorldSkinService(CoreService):
     """世界皮肤包查看和主人切换。"""
 
-    def info(self, client_id: str) -> str:
+    def info(self, client_id: str, *, is_master: bool = False) -> str:
         """查看当前世界皮肤和可用包。"""
 
         player, error = self.require_player(client_id)
@@ -35,25 +31,24 @@ class WorldSkinService(CoreService):
         panel = T.panel()
         panel.section("世界皮肤")
         panel.line(f"当前：**{active_id}**")
-        panel.line(f"地图：{current_help_map_path(self.db)}")
         panel.hr()
         panel.line("可用包：")
         for package in packages:
             marker = "当前" if package.skin_id == active_id else "可切换"
             panel.line(f"{package.skin_id}｜{package.display_name}｜{package.version}｜{marker}")
-        if self._is_master(player):
+        if is_master:
             panel.hr()
             panel.line("主人命令：世界皮肤切换 包名")
             panel.line("切换会先自动校验，失败不写库，异常会回滚。")
         return panel.render()
 
-    def switch(self, client_id: str, message: str) -> str:
+    def switch(self, client_id: str, message: str, *, is_master: bool = False) -> str:
         """校验并切换世界皮肤。"""
 
         player, error = self.require_player(client_id)
         if error:
             return error
-        if not self._is_master(player):
+        if not is_master:
             return T.hint("只有主人可以切换世界皮肤。", "普通玩家可以发送：世界皮肤 查看当前包。<世界皮肤>")
         skin_id = message.strip()
         if not skin_id:
@@ -82,7 +77,6 @@ class WorldSkinService(CoreService):
         panel.section("世界皮肤切换完成")
         panel.line(f"当前：**{package.skin_id}**｜{package.display_name}")
         panel.line(f"版本：{package.version}｜作者：{package.author or '未注明'}")
-        panel.line(f"地图：{current_help_map_path(self.db)}")
         panel.hr()
         panel.line(
             "写入："
@@ -111,25 +105,6 @@ class WorldSkinService(CoreService):
         panel.hr()
         panel.line("切换已停止，数据库没有写入。")
         return panel.render() + "<世界皮肤>"
-
-    def _is_master(self, player: dict[str, Any]) -> bool:
-        masters = self._master_names()
-        return str(player.get("display_name") or "").strip() in masters
-
-    @staticmethod
-    def _master_names() -> set[str]:
-        raw = str(config.get("MASTER_NAME", "") or "").strip()
-        if not raw:
-            return set()
-        try:
-            parsed = ast.literal_eval(raw)
-        except (SyntaxError, ValueError):
-            parsed = raw
-        if isinstance(parsed, str):
-            return {parsed.strip()} if parsed.strip() else set()
-        if isinstance(parsed, (list, tuple, set)):
-            return {str(item).strip() for item in parsed if str(item).strip()}
-        return set()
 
 
 service = WorldSkinService(db)

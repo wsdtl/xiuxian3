@@ -13,7 +13,7 @@ from urllib.parse import quote
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import HTMLResponse
 
-from ..world_skin import WorldSkinEntry, current_help_map_path, current_world_entries
+from ..world_skin import WorldSkinEntry, current_world_entries
 
 
 XIUXIAN_DIR = Path(__file__).resolve().parent.parent
@@ -65,17 +65,21 @@ class CommandSection:
 
 @dataclass(frozen=True)
 class HelpSite:
-    """启动时收集好的帮助站数据。"""
+    """启动时收集好的帮助站数据。世界皮肤资料每次渲染时动态读取。"""
 
     docs: tuple[HelpDoc, ...]
     groups: tuple[tuple[str, tuple[HelpDoc, ...]], ...]
     command_sections: tuple[CommandSection, ...]
-    world_entries: tuple[WorldSkinEntry, ...]
-    help_map_path: str
 
     @property
     def by_slug(self) -> dict[str, HelpDoc]:
         return {doc.slug: doc for doc in self.docs}
+
+    @property
+    def world_entries(self) -> tuple[WorldSkinEntry, ...]:
+        """读取当前世界皮肤名录，避免帮助站缓存住旧皮肤。"""
+
+        return current_world_entries()
 
 
 def build_help_site() -> HelpSite:
@@ -107,8 +111,6 @@ def build_help_site() -> HelpSite:
         docs=tuple(docs),
         groups=tuple((group, tuple(items)) for group, items in grouped.items()),
         command_sections=_command_sections_from_docs(docs),
-        world_entries=current_world_entries(),
-        help_map_path=current_help_map_path(),
     )
 
 
@@ -171,7 +173,7 @@ def render_index(site: HelpSite) -> str:
     {_search_results_shell()}
     {_starter_panel()}
     {_command_overview(site.command_sections)}
-    {_world_overview(site.world_entries, site.help_map_path)}
+    {_world_overview(site.world_entries)}
     <section class="home-panel" id="component-docs">
       <div class="section-heading">
         <h2>组件文档</h2>
@@ -539,19 +541,17 @@ def _command_item(line: str) -> str:
           </li>"""
 
 
-def _world_overview(entries: tuple[WorldSkinEntry, ...], help_map_path: str) -> str:
+def _world_overview(entries: tuple[WorldSkinEntry, ...]) -> str:
     """渲染当前皮肤下的世界资料栏目。"""
 
     groups = _world_groups(entries)
     cards = "\n".join(_world_card(title, items) for title, items in groups)
-    map_note = f"当前地图资源：{help_map_path or '默认地图'}"
     return f"""
   <section class="world-overview home-panel" id="world-snapshot">
     <div class="section-heading">
       <h2>当前世界</h2>
       <p>这里来自当前世界皮肤和数据库定义；命令仍以主要命令为准。</p>
     </div>
-    <p class="world-map-note">{escape(map_note)}</p>
     <div class="world-grid">
 {cards}
     </div>
@@ -1366,11 +1366,6 @@ h2.article-head { font-size: 1.6em; margin: 0 0 6px; }
   grid-column: 1 / -1;
   color: var(--gray);
   font-size: .9em;
-}
-.world-map-note {
-  margin: -4px 0 14px;
-  color: var(--gray);
-  font-size: .92em;
 }
 .world-grid {
   display: grid;

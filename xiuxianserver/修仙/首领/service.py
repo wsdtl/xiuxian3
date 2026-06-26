@@ -14,7 +14,7 @@ from typing import Any
 from lunardate import LunarDate
 
 from .. import combat_log_text
-from ..combat_core import service as combat_service
+from ..combat_core import CombatCore
 from ..common import (
     CoreService,
     RING_CATEGORY_BOOK,
@@ -42,7 +42,7 @@ from ..format_text import T
 from ..rules import damage_after_defense, monster_exp
 from ..sect_war import record_sect_merit_conn, sect_direction_bonus_conn
 from ..sql import db
-from ..weapon_core import service as weapon_service
+from ..weapon_core import WeaponCore
 
 from .seasonal_package import (
     ALL_BOSS_DEFS,
@@ -69,6 +69,11 @@ SEASONAL_FEATHER_CHANCE_CAP = 0.22
 
 class SeasonalBossService(CoreService):
     """按节令出现的岁时情劫首领。"""
+
+    def __init__(self, database) -> None:
+        super().__init__(database)
+        self.combat_core = CombatCore(database)
+        self.weapon_core = WeaponCore(database)
 
     def status(self, client_id: str) -> str:
         """查看今日岁时情劫。"""
@@ -327,7 +332,7 @@ class SeasonalBossService(CoreService):
                 feather_lines.append(f"获得铭刻之羽 〔{int(cursor.lastrowid)}〕：{event['boss_name']}遗羽")
             weapon_texts = []
             for drop in reward.get("weapons", []):
-                weapon_id = weapon_service.create_weapon_conn(
+                weapon_id = self.weapon_core.create_weapon_conn(
                     conn,
                     client_id,
                     drop["weapon_def_id"],
@@ -549,7 +554,7 @@ class SeasonalBossService(CoreService):
         """只计算一次战斗并返回逐次出手结果；数据库记录由外层 challenge() 写入。"""
 
         action_limit = 10 + min(4, int(player["level"]) // 25)
-        return combat_service.fight_boss(
+        return self.combat_core.fight_boss(
             player,
             event,
             boss_kind=SEASONAL_BOSS_KIND,
@@ -771,7 +776,7 @@ class SeasonalBossService(CoreService):
             item = self._random_equipment_item(RING_CATEGORY_BOOK)
             item = self.maybe_upgrade_extreme_book_item(item, location_name, 0.006)
             return {"kind": "book", "item_id": item["ring_item_id"], "name": item["name"]} if item else None
-        return {"kind": "weapon", "drop": weapon_service.roll_weapon_drop()}
+        return {"kind": "weapon", "drop": self.weapon_core.roll_weapon_drop()}
 
     @staticmethod
     def _feather_chance(

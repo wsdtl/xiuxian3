@@ -38,7 +38,7 @@ from 修仙.constants import (
     WORMHOLE_DAILY_MIN_LIMIT,
 )
 from 修仙.notifications import collect_notifications
-from 修仙.item_effects import ItemEffectService
+from 修仙.public_url import build_public_base_url
 from 修仙.rules import (
     exp_need,
     monster_exp,
@@ -52,11 +52,17 @@ from 修仙.rules import (
 )
 from 修仙.sect_war import record_sect_merit_conn, sect_level_exp_need, sect_war_cycle_finished
 from 修仙.sql import XiuxianDB
-from 修仙.weapon_core import WeaponCore
+from 修仙.world_skin import (
+    apply_world_skin_package,
+    current_help_map_path,
+    load_skin_package,
+    validate_skin_package,
+)
 from 修仙.world_materials import WorldMaterialService
 from 修仙.贸易服务.service import TradeService
 from 修仙.修仙物品.service import ItemInfoService
 from 修仙.战斗日志.site import _action_text
+from 修仙.battle_log_links import battle_log_url
 from 修仙.对战.service import DuelService
 from 修仙.wormhole_service import WormholeService
 from 修仙.探险.service import ExplorationService
@@ -65,6 +71,7 @@ from 修仙.武器.service import WeaponService
 from 修仙.银行.service import BankService
 from 修仙.修仙帮助.service import HelpService
 from 修仙.修仙百科.service import EncyclopediaService
+from 修仙.用户组.service import UserGroupService
 from 修仙.玩家.service import PlayerService
 from 修仙.宗门.service import SectService
 from 修仙.纳戒.service import RingService
@@ -75,13 +82,8 @@ from 修仙.首领.service import BOSS_DEFS, DAILY_BOSS_DEFS, SeasonalBossServic
 from 修仙.首领.seasonal_package import SEASONAL_BOSS_KIND, SEASONAL_SKILL_TEMPLATES, seasonal_skill_for_event
 from 修仙.修仙界历史.service import XiuxianHistoryService
 
-combat_core_module = import_module("修仙.combat_core")
-exploration_service_module = import_module("修仙.探险.service")
-ring_service_module = import_module("修仙.纳戒.service")
-backpack_service_module = import_module("修仙.背包.service")
-duel_service_module = import_module("修仙.对战.service")
-wormhole_service_module = import_module("修仙.wormhole_service")
 seasonal_boss_service_module = import_module("修仙.首领.service")
+exploration_service_module = import_module("修仙.探险.service")
 
 
 def main() -> None:
@@ -91,6 +93,8 @@ def main() -> None:
     _check_weapon_enchant_slots()
     _check_weapon_interval_rules()
     _check_battle_log_renderer()
+    _check_public_urls()
+    _check_newbie_gift_skin_names()
     with TemporaryDirectory() as temp_dir:
         db = XiuxianDB(Path(temp_dir) / "xiuxian_test.db")
         services = _build_services(db)
@@ -119,22 +123,7 @@ def main() -> None:
 
 
 def _build_services(db: XiuxianDB) -> dict[str, object]:
-    """创建测试服务，并把跨模块公共能力换成同一个临时库。"""
-
-    item_effects = ItemEffectService(db)
-    weapon_core = WeaponCore(db)
-    combat_core_module.weapon_core = weapon_core
-    combat_core = CombatCore(db)
-
-    ring_service_module.item_effects = item_effects
-    backpack_service_module.item_effects = item_effects
-    exploration_service_module.weapon_service = weapon_core
-    exploration_service_module.combat_service = combat_core
-    duel_service_module.combat_service = combat_core
-    wormhole_service_module.weapon_service = weapon_core
-    wormhole_service_module.combat_service = combat_core
-    seasonal_boss_service_module.weapon_service = weapon_core
-    seasonal_boss_service_module.combat_service = combat_core
+    """创建绑定同一个临时库的测试服务。"""
 
     return {
         "player": PlayerService(db),
@@ -152,11 +141,34 @@ def _build_services(db: XiuxianDB) -> dict[str, object]:
         "trade": TradeService(db),
         "treasure": ItemInfoService(db),
         "duel": DuelService(db),
-        "combat": combat_core,
+        "combat": CombatCore(db),
         "wormhole": WormholeService(db),
         "seasonal_boss": SeasonalBossService(db),
         "history": XiuxianHistoryService(db),
+        "user_group": UserGroupService(db),
     }
+
+
+def _check_newbie_gift_skin_names() -> None:
+    """新手礼包发稳定物品 ID，展示名必须跟随当前世界皮肤。"""
+
+    with TemporaryDirectory() as temp_dir:
+        test_db = XiuxianDB(Path(temp_dir) / "skin_gift.db")
+        try:
+            package = load_skin_package("perfect_world")
+            errors = validate_skin_package(package, test_db)
+            assert not errors, errors
+            with test_db.transaction() as conn:
+                apply_world_skin_package(conn, package, switched_by="test")
+
+            player = PlayerService(test_db)
+            player.create("skin_newbie", "SkinTester")
+            text = player.newbie_gift("skin_newbie")
+            _must_contain(text, "真血契丹 2")
+            _must_contain(text, "阴冥宝草 2")
+            assert "血契丹 2、阴冥草 2" not in text
+        finally:
+            test_db.close()
 
 
 def _check_encyclopedia(services: dict[str, object]) -> None:
@@ -267,6 +279,23 @@ def _check_battle_log_renderer() -> None:
     _must_contain(mirror_text, "消耗精神 7")
     _must_contain(mirror_text, "我方血气 675，精神 680")
     _must_not_contain(mirror_text, "怪物战斗记录")
+
+
+def _check_public_urls() -> None:
+    """公开链接协议跟随后端 SSL 状态。"""
+
+    assert build_public_base_url("example.com", 8080, https_enabled=False) == "http://example.com:8080"
+    assert build_public_base_url("example.com", 8443, https_enabled=True) == "https://example.com:8443"
+    assert build_public_base_url("https://example.com", 443, https_enabled=False) == "https://example.com"
+    assert build_public_base_url("http://example.com", 80, https_enabled=True) == "http://example.com"
+    assert build_public_base_url("example.com/base", 8443, https_enabled=True) == "https://example.com:8443/base"
+    assert battle_log_url("explore", 1).startswith("https://")
+    with TemporaryDirectory() as temp_dir:
+        test_db = XiuxianDB(Path(temp_dir) / "help_map.db")
+        try:
+            assert current_help_map_path(test_db).endswith("/static/map/default.jpg")
+        finally:
+            test_db.close()
 
 
 def _advance_rest_seconds(player: PlayerService, client_id: str, seconds: int) -> None:
@@ -429,17 +458,41 @@ def _check_player(services: dict[str, object]) -> None:
     player: PlayerService = services["player"]  # type: ignore[assignment]
     help_service: HelpService = services["help"]  # type: ignore[assignment]
     bank: BankService = services["bank"]  # type: ignore[assignment]
+    user_group: UserGroupService = services["user_group"]  # type: ignore[assignment]
 
     _check_bank_interest_caps()
     _must_contain(help_service.command_guide(), "<指南 战斗:探险战斗>")
+    _must_contain(help_service.command_guide("成长"), "<用户组>")
     _must_contain(help_service.command_guide("战斗"), "<探险状态>")
     _must_contain(help_service.command_guide("战斗"), "<结束探险>")
+    user_group_overview = user_group.overview()
+    _must_contain(user_group_overview, "[用户组后台](")
+    assert "网页登录：http" not in user_group_overview
     create_text = player.create("u1", "青衫客")
     _must_contain(create_text, "创建成功")
     _must_contain(create_text, "青岚短剑")
     assert "u1" not in create_text
+    assert user_group.resolve_player_id("u1") == "u1"
     _must_contain(player.create("u9", "青衫客"), "名称已经被使用")
     _must_contain(player.create("u1", "青衫客"), "已经创建过用户")
+    _must_contain(player.create("user_group_existing", "系舟客"), "创建成功")
+    challenge = user_group.create_login_challenge()
+    _must_contain(user_group.confirm_admin_login("u1", str(challenge["challenge_id"])), "用户组后台登录已确认")
+    status = user_group.login_status(str(challenge["session_id"]))
+    assert status["confirmed"] is True
+    assert status["player_id"] == "u1"
+    bind_code = user_group.create_bind_code(str(challenge["session_id"]))
+    _must_contain(user_group.bind_user_group("u1_alt", str(bind_code["code"])), "用户组绑定成功")
+    assert user_group.resolve_player_id("u1_alt") == "u1"
+    identities = user_group.identities(str(challenge["session_id"]))
+    assert {row["client_id"] for row in identities} == {"u1", "u1_alt"}
+    second_bind = user_group.create_bind_code(str(challenge["session_id"]))
+    _must_contain(
+        user_group.bind_user_group("user_group_existing", str(second_bind["code"])),
+        "当前账号已经创建过修仙用户",
+    )
+    user_group.cleanup_expired()
+    assert user_group.db.fetch_one("SELECT 1 FROM user_group_bind_codes WHERE code = ?", (bind_code["code"],)) is None
     profile_text = player.profile("u1")
     _must_contain(profile_text, "攻击")
     _must_contain(profile_text, "防御")
@@ -450,8 +503,8 @@ def _check_player(services: dict[str, object]) -> None:
     _must_contain(profile_text, "凡体")
     _must_contain(profile_text, "头部 Lv0")
     _must_contain(profile_text, "气运：未签到")
-    _must_contain(profile_text, "天气：")
-    _must_contain(profile_text, "灵潮：")
+    assert "天气：" not in profile_text
+    assert "灵潮：" not in profile_text
     _must_contain(profile_text, "今日加成：")
     _must_contain(profile_text, "战斗日志：简要")
     _must_contain(profile_text, "青岚短剑")
@@ -1870,10 +1923,10 @@ def _check_history(services: dict[str, object]) -> None:
 
     text = history.newspaper("u1")
     _must_contain(text, "修仙早报")
-    _must_contain(text, "天地气象")
-    _must_contain(text, "今日天气")
-    _must_contain(text, "今日灵潮")
-    _must_contain(text, "全服生效")
+    assert "天地气象" not in text
+    assert "今日天气" not in text
+    assert "今日灵潮" not in text
+    assert "全服生效" not in text
     _must_contain(text, "城池建设")
     _must_contain(text, "药路最紧")
     _must_contain(text, "民生最盛")
@@ -2078,7 +2131,7 @@ def _check_seasonal_boss(services: dict[str, object]) -> None:
     assert seasonal_skill["name"] in seasonal_skill_names
     assert seasonal_skill["name"] not in common_boss_skill_names
     captured_boss_call: dict[str, Any] = {}
-    original_fight_boss = seasonal_boss_service_module.combat_service.fight_boss
+    original_fight_boss = seasonal_boss.combat_core.fight_boss
     try:
         def _capture_seasonal_boss_fight(player_arg: dict, _event_arg: dict, **kwargs: Any) -> dict[str, Any]:
             captured_boss_call.update(kwargs)
@@ -2094,12 +2147,12 @@ def _check_seasonal_boss(services: dict[str, object]) -> None:
                 "actions": [],
             }
 
-        seasonal_boss_service_module.combat_service.fight_boss = _capture_seasonal_boss_fight  # type: ignore[method-assign]
+        seasonal_boss.combat_core.fight_boss = _capture_seasonal_boss_fight  # type: ignore[method-assign]
         player_row = seasonal_boss.player("u1")
         assert player_row is not None
         seasonal_boss._fight_boss(player_row, event)
     finally:
-        seasonal_boss_service_module.combat_service.fight_boss = original_fight_boss  # type: ignore[method-assign]
+        seasonal_boss.combat_core.fight_boss = original_fight_boss  # type: ignore[method-assign]
     assert captured_boss_call["boss_kind"] == SEASONAL_BOSS_KIND
     assert captured_boss_call["enemy_skill"]["name"] == seasonal_skill["name"]
     seasonal_boss.db.execute(
