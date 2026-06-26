@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass
+from math import ceil
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
-from ..common import CoreService, currency_amount, random, ring_item_display_name, ts
+from ..common import CoreService, currency_amount, load_json, random, ring_item_display_name, ts
 from ..constants import WISH_TOKEN_ITEM_ID
 from ..format_text import T
 from ..public_url import public_url
@@ -118,7 +119,11 @@ class WishService(CoreService):
 
             cost_token_id = str(pool["cost_token_id"] or WISH_TOKEN_ITEM_ID)
             cost_each = max(1, int(pool["cost_token_quantity"] or 1))
-            total_cost = cost_each * draw_count
+            draws_per_token = self._wish_draws_per_token_conn(conn, cost_token_id)
+            # `cost_token_quantity` 表示每抽基础消耗多少“凭证单位”，
+            # `wish_draws` 表示一枚凭证能提供多少次祈愿额度。当前流光签为 1，
+            # 行为不变；以后若增加高阶凭证，也不用再改祈愿结算公式。
+            total_cost = max(1, ceil(cost_each * draw_count / draws_per_token))
             token_name = self._ring_item_name_conn(conn, cost_token_id)
             owned = self._ring_quantity_conn(conn, client_id, cost_token_id)
             if owned < total_cost:
@@ -480,6 +485,21 @@ class WishService(CoreService):
             (ring_item_id,),
         ).fetchone()
         return ring_item_display_name(dict(row) if row else None, ring_item_id)
+
+    @staticmethod
+    def _wish_draws_per_token_conn(conn: sqlite3.Connection, ring_item_id: str) -> int:
+        """读取一枚祈愿凭证可抵扣的祈愿次数。
+
+        这个值来自 `ring_item_defs.effect.wish_draws`，属于道具定义能力；
+        缺失或写错时按 1 处理，避免奖池配置异常导致免费抽或除零。
+        """
+
+        row = conn.execute(
+            "SELECT effect FROM ring_item_defs WHERE ring_item_id = ?",
+            (ring_item_id,),
+        ).fetchone()
+        effect = load_json(row["effect"], {}) if row else {}
+        return max(1, int(effect.get("wish_draws") or 1))
 
     @staticmethod
     def _backpack_item_name_conn(conn: sqlite3.Connection, item_id: str) -> str:

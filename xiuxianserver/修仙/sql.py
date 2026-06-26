@@ -33,6 +33,7 @@ from .common import (
     weapon_type_key,
 )
 from .constants import DEFAULT_LOCATION_ID, EQUIPMENT_SLOTS, SCHEMA_VERSION, WISH_TOKEN_ITEM_ID, WORLD_COORD_MAX, WORLD_COORD_MIN
+from .runtime_cache import clear_runtime_caches
 
 
 PHYSIQUE_DEFS = (
@@ -851,6 +852,7 @@ class XiuxianDB:
             self._apply_active_world_skin()
             self._validate_seed_data()
             self._set_schema_version()
+            clear_runtime_caches(reason="db_initialized")
             self.initialized = True
 
     def close(self) -> None:

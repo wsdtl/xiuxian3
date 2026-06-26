@@ -29,6 +29,7 @@ from .common import (
     set_quality_label_overrides,
 )
 from .constants import SCHEMA_VERSION
+from .runtime_cache import clear_runtime_caches
 from .sql import db
 
 
@@ -349,6 +350,7 @@ def apply_world_skin_package(
         )
     _refresh_runtime_skin_labels(conn)
     clear_world_skin_cache()
+    clear_runtime_caches(reason="world_skin_switched")
     return counts
 
 

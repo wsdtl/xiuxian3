@@ -3,18 +3,21 @@
 from __future__ import annotations
 
 from collections import Counter
+from contextvars import ContextVar
 from html import escape
-from typing import Any
+from typing import Any, Callable
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import HTMLResponse
 
 from ..common import load_json, player_level_label, quality_label, row_value
+from ..definition_cache import item_def_by_id, ring_item_def_by_id
 from ..sql import db
 from ..battle_log_links import LOG_BASE_PATH
 from ..combat_core import CombatCore
 
 router = APIRouter()
+_RENDER_CACHE: ContextVar[dict[str, dict[str, str]] | None] = ContextVar("battle_log_render_cache", default=None)
 
 
 @router.get(f"{LOG_BASE_PATH}/explore/{{record_id}}", response_class=HTMLResponse)
@@ -26,7 +29,9 @@ async def exploration_log(record_id: int, detail: int = 0) -> HTMLResponse:
         raise HTTPException(status_code=404, detail="exploration record not found")
     result = _dict_json(record["result"])
     player = db.fetch_one("SELECT * FROM players WHERE client_id = ?", (record["client_id"],))
-    return HTMLResponse(_render_exploration(dict(record), result, dict(player) if player else {}, bool(detail)))
+    return HTMLResponse(
+        _render_with_page_cache(lambda: _render_exploration(dict(record), result, dict(player) if player else {}, bool(detail)))
+    )
 
 
 @router.get(f"{LOG_BASE_PATH}/duel/{{record_id}}", response_class=HTMLResponse)
@@ -37,7 +42,7 @@ async def duel_log(record_id: int, detail: int = 0) -> HTMLResponse:
     if not record:
         raise HTTPException(status_code=404, detail="duel record not found")
     result = _dict_json(row_value(record, "result", "{}"))
-    return HTMLResponse(_render_duel(dict(record), result, bool(detail)))
+    return HTMLResponse(_render_with_page_cache(lambda: _render_duel(dict(record), result, bool(detail))))
 
 
 @router.get(f"{LOG_BASE_PATH}/robbery/{{record_id}}", response_class=HTMLResponse)
@@ -48,7 +53,7 @@ async def robbery_log(record_id: int, detail: int = 0) -> HTMLResponse:
     if not record:
         raise HTTPException(status_code=404, detail="robbery record not found")
     result = _dict_json(row_value(record, "result", "{}"))
-    return HTMLResponse(_render_robbery(dict(record), result, bool(detail)))
+    return HTMLResponse(_render_with_page_cache(lambda: _render_robbery(dict(record), result, bool(detail))))
 
 
 @router.get(f"{LOG_BASE_PATH}/boss/{{record_id}}", response_class=HTMLResponse)
@@ -64,7 +69,9 @@ async def boss_log(record_id: int, player: str = Query("", alias="player"), deta
     client_id = player or str(record["client_id"])
     participant = _participant("seasonal_boss_participants", "event_id", int(event["event_id"]), client_id)
     result = _dict_json(record["result"])
-    return HTMLResponse(_render_boss_challenge("首领", dict(event), dict(record), participant, result, bool(detail)))
+    return HTMLResponse(
+        _render_with_page_cache(lambda: _render_boss_challenge("首领", dict(event), dict(record), participant, result, bool(detail)))
+    )
 
 
 @router.get(f"{LOG_BASE_PATH}/wormhole/{{record_id}}", response_class=HTMLResponse)
@@ -80,7 +87,24 @@ async def wormhole_log(record_id: int, player: str = Query("", alias="player"), 
     client_id = player or str(record["client_id"])
     participant = _participant("wormhole_participants", "wormhole_id", int(event["wormhole_id"]), client_id)
     result = _dict_json(record["result"])
-    return HTMLResponse(_render_boss_challenge("虫洞", dict(event), dict(record), participant, result, bool(detail)))
+    return HTMLResponse(
+        _render_with_page_cache(lambda: _render_boss_challenge("虫洞", dict(event), dict(record), participant, result, bool(detail)))
+    )
+
+
+def _render_with_page_cache(factory: Callable[[], str]) -> str:
+    """在单个战斗日志请求内建立临时查询缓存。
+
+    战斗日志常在一页里反复展示同一个掉落物、药品或玩家名。这里的缓存只挂在
+    当前 ContextVar 上，请求结束立即 reset；它不会跨请求保留，也不会跨世界皮肤
+    切换保留。跨命令的定义表缓存由 `definition_cache` 负责统一失效。
+    """
+
+    token = _RENDER_CACHE.set({"items": {}, "ring_items": {}, "players": {}})
+    try:
+        return factory()
+    finally:
+        _RENDER_CACHE.reset(token)
 
 
 def _participant(table: str, key: str, value: int, client_id: str) -> dict[str, Any]:
@@ -504,30 +528,75 @@ def _weapon_exp(event: dict[str, Any]) -> int:
 
 
 def _item_name(item_id: str) -> str:
-    """物品名。"""
+    """物品名。
 
-    row = db.fetch_one("SELECT name FROM item_defs WHERE item_id = ?", (item_id,))
-    return str(row["name"]) if row else item_id
+    优先命中当前页面缓存；未命中时从定义表缓存读取当前世界皮肤下的展示名。
+    """
+
+    value = str(item_id or "")
+    if not value:
+        return ""
+    cached = _page_cache_get("items", value)
+    if cached is not None:
+        return cached
+    row = item_def_by_id(db, value)
+    name = str(row["name"]) if row else value
+    _page_cache_set("items", value, name)
+    return name
 
 
 def _ring_item_name(item_id: str) -> str:
-    """纳戒物品名。"""
+    """纳戒物品名。
 
-    row = db.fetch_one("SELECT name FROM ring_item_defs WHERE ring_item_id = ?", (item_id,))
-    if row:
-        return str(row["name"])
-    row = db.fetch_one("SELECT name FROM item_defs WHERE item_id = ?", (item_id,))
-    return str(row["name"]) if row else item_id
+    少量历史日志可能把背包物品 ID 记录在纳戒字段里，所以保留背包物品兜底；
+    两段查找都只读定义缓存，不在页面里重复打数据库。
+    """
+
+    value = str(item_id or "")
+    if not value:
+        return ""
+    cached = _page_cache_get("ring_items", value)
+    if cached is not None:
+        return cached
+    row = ring_item_def_by_id(db, value)
+    name = str(row["name"]) if row else _item_name(value)
+    _page_cache_set("ring_items", value, name)
+    return name
 
 
 def _player_name(client_id: Any) -> str:
-    """玩家展示名。"""
+    """玩家展示名。
+
+    玩家名会变，所以这里只做单页缓存，不能放进跨命令定义缓存。
+    """
 
     value = str(client_id or "")
     if not value:
         return "无"
+    cached = _page_cache_get("players", value)
+    if cached is not None:
+        return cached
     row = db.fetch_one("SELECT display_name FROM players WHERE client_id = ?", (value,))
-    return str(row["display_name"]) if row else value
+    name = str(row["display_name"]) if row else value
+    _page_cache_set("players", value, name)
+    return name
+
+
+def _page_cache_get(bucket: str, key: str) -> str | None:
+    """读取当前页面缓存；不在渲染上下文里时直接视为未命中。"""
+
+    cache = _RENDER_CACHE.get()
+    if cache is None:
+        return None
+    return cache.setdefault(bucket, {}).get(key)
+
+
+def _page_cache_set(bucket: str, key: str, value: str) -> None:
+    """写入当前页面缓存；不在渲染上下文里时静默跳过。"""
+
+    cache = _RENDER_CACHE.get()
+    if cache is not None:
+        cache.setdefault(bucket, {})[key] = value
 
 
 def _event_drop_text(event: dict[str, Any]) -> str:

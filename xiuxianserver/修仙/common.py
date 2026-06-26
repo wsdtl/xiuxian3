@@ -31,6 +31,13 @@ from .constants import (
     WORLD_LONG_RECORD_RETENTION_DAYS,
     WORLD_SHORT_RECORD_RETENTION_DAYS,
 )
+from .definition_cache import (
+    item_def_by_id as cached_item_def_by_id,
+    item_def_by_name as cached_item_def_by_name,
+    recycle_location_by_name as cached_recycle_location_by_name,
+    ring_item_def_by_id as cached_ring_item_def_by_id,
+    ring_item_def_by_name as cached_ring_item_def_by_name,
+)
 from .format_text import T
 from .rules import (
     base_attack,
@@ -907,15 +914,16 @@ class CoreService:
         return bool(row)
 
     def recycle_location(self, location_name: str, recycle_type: str | None = None) -> dict[str, Any] | None:
-        """读取系统回收地点；可按类型过滤。"""
+        """读取系统回收地点；可按类型过滤。
+
+        回收建筑属于种子定义数据，只会在世界皮肤切换或初始化时变化，
+        走定义缓存可以避免出售/批量回收链路反复查同一张小表。
+        """
 
         name = location_name.strip()
         if recycle_type is None:
-            return self.db.fetch_one("SELECT * FROM recycle_locations WHERE name = ?", (name,))
-        return self.db.fetch_one(
-            "SELECT * FROM recycle_locations WHERE name = ? AND recycle_type = ?",
-            (name, recycle_type),
-        )
+            return cached_recycle_location_by_name(self.db, name)
+        return cached_recycle_location_by_name(self.db, name, recycle_type)
 
     def require_player(self, client_id: str) -> tuple[dict[str, Any] | None, str | None]:
         """要求玩家已创建。"""
@@ -2779,27 +2787,28 @@ class CoreService:
         return True
 
     def item_def_by_name(self, name: str) -> dict[str, Any] | None:
-        """按名称读取背包物品定义。"""
+        """按名称读取背包物品定义。
 
-        return self.db.fetch_one("SELECT * FROM item_defs WHERE name = ?", (name.strip(),))
+        物品定义属于启动种子和世界皮肤切换维护的静态资料，走定义缓存；
+        背包数量和玩家持有状态仍由各业务实时读库。
+        """
+
+        return cached_item_def_by_name(self.db, name.strip())
 
     def item_def(self, item_id: str) -> dict[str, Any] | None:
-        """按 id 读取背包物品定义。"""
+        """按 id 读取背包物品定义，走定义缓存。"""
 
-        return self.db.fetch_one("SELECT * FROM item_defs WHERE item_id = ?", (item_id,))
+        return cached_item_def_by_id(self.db, item_id)
 
     def ring_item_def_by_name(self, name: str) -> dict[str, Any] | None:
-        """按名称读取纳戒物品定义。"""
+        """按名称读取纳戒物品定义，走定义缓存。"""
 
-        return self.db.fetch_one("SELECT * FROM ring_item_defs WHERE name = ?", (name.strip(),))
+        return cached_ring_item_def_by_name(self.db, name.strip())
 
     def ring_item_def(self, ring_item_id: str) -> dict[str, Any] | None:
-        """按 id 读取纳戒物品定义。"""
+        """按 id 读取纳戒物品定义，走定义缓存。"""
 
-        return self.db.fetch_one(
-            "SELECT * FROM ring_item_defs WHERE ring_item_id = ?",
-            (ring_item_id,),
-        )
+        return cached_ring_item_def_by_id(self.db, ring_item_id)
 
     def maybe_upgrade_extreme_book(
         self,

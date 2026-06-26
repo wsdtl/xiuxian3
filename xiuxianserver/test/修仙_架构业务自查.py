@@ -530,6 +530,7 @@ def _check_known_effect_keys() -> None:
         "weapon_max_level_cap",
         "weapon_max_level_delta",
         "wash_physique",
+        "wish_draws",
         "world_category",
         "world_category_key",
         "world_subtype",

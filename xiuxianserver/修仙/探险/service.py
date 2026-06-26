@@ -25,6 +25,23 @@ from ..common import (
     weapon_id_label,
 )
 from ..constants import DEFAULT_LOCATION_ID, ENCOUNTER_SECONDS, EXPLORE_MINUTES, MAX_LEVEL, WISH_TOKEN_ITEM_ID, WORLD_COORD_MAX, WORLD_COORD_MIN
+from ..definition_cache import (
+    all_exploration_locations,
+    all_monster_defs,
+    exploration_location_by_name,
+    exploration_location_by_point,
+    first_monster_def,
+    monster_defs_by_level,
+    recycle_location_by_point,
+    ring_item_defs_by_categories,
+    special_buyer_by_point,
+    trade_location_by_id,
+    trade_location_by_name,
+    trade_location_by_point,
+    world_item_defs_by_categories,
+    world_location_by_id,
+    world_location_by_point,
+)
 from ..format_text import T
 from ..sect_war import sect_direction_bonus_conn
 from ..sql import db
@@ -137,14 +154,7 @@ class ExplorationService(CoreService):
         if error:
             return error
         assert player is not None
-        rows = self.db.fetch_all(
-            """
-            SELECT e.*, COALESCE(w.terrain, '') AS terrain
-            FROM exploration_locations AS e
-            LEFT JOIN world_locations AS w ON w.location_id = e.location_id
-            ORDER BY e.recommended_level, e.name
-            """
-        )
+        rows = all_exploration_locations(self.db)
         panel = T.panel()
         panel.section("探险地图")
         panel.line(f"范围：左下角 ({WORLD_COORD_MIN},{WORLD_COORD_MIN})｜右上角 ({WORLD_COORD_MAX},{WORLD_COORD_MAX})")
@@ -287,7 +297,7 @@ class ExplorationService(CoreService):
     def _default_location_name(self) -> str:
         """读取主城当前展示名，避免世界皮肤切换后按钮还写死旧名。"""
 
-        row = self.db.fetch_one("SELECT name FROM world_locations WHERE location_id = ?", (DEFAULT_LOCATION_ID,))
+        row = world_location_by_id(self.db, DEFAULT_LOCATION_ID)
         return str(row["name"]) if row else "主城"
 
     def start(self, client_id: str, location_name: str = "") -> str:
@@ -607,21 +617,12 @@ class ExplorationService(CoreService):
             return self._precompute_secret_realm(client_id, player)
 
         min_level, max_level = self._monster_level_range(player)
-        monsters = self.db.fetch_all(
-            """
-            SELECT * FROM monster_defs
-            WHERE level BETWEEN ? AND ?
-            ORDER BY level
-            """,
-            (min_level, max_level),
-        )
+        monsters = monster_defs_by_level(self.db, min_level, max_level)
         if not monsters:
-            monsters = self.db.fetch_all(
-                "SELECT * FROM monster_defs WHERE level BETWEEN ? AND ? ORDER BY level",
-                (max(1, player["level"] - 5), max(5, player["level"] + 8)),
-            )
+            monsters = monster_defs_by_level(self.db, max(1, player["level"] - 5), max(5, player["level"] + 8))
         if not monsters:
-            monsters = self.db.fetch_all("SELECT * FROM monster_defs ORDER BY level LIMIT 1")
+            first = first_monster_def(self.db)
+            monsters = [first] if first else []
         fight_count = max(1, EXPLORE_MINUTES * 60 // ENCOUNTER_SECONDS)
         events = []
         hp_left = player["hp"]
@@ -739,9 +740,10 @@ class ExplorationService(CoreService):
     def _precompute_secret_realm(self, client_id: str, player: dict) -> dict:
         """预计算太虚秘境：怪物按玩家等级浮动，日志和时长独立。"""
 
-        templates = self.db.fetch_all("SELECT * FROM monster_defs ORDER BY level")
+        templates = all_monster_defs(self.db)
         if not templates:
-            templates = self.db.fetch_all("SELECT * FROM monster_defs ORDER BY level LIMIT 1")
+            first = first_monster_def(self.db)
+            templates = [first] if first else []
         events = []
         hp_left = player["hp"]
         mp_left = player["mp"]
@@ -1143,42 +1145,38 @@ class ExplorationService(CoreService):
         return max(1, player["level"] - 5), max(5, player["level"] + 8)
 
     def _exploration_location(self, name: str) -> dict | None:
-        """读取探险地点，并补上导航坐标。"""
+        """读取探险地点，并补上导航坐标。
 
-        location = self.db.fetch_one(
-            "SELECT * FROM exploration_locations WHERE name = ?",
-            (name.strip(),),
-        )
-        if not location:
-            return None
-        location["x"] = int(location["x"])
-        location["y"] = int(location["y"])
-        return location
+        探险地点是世界种子定义，世界皮肤切换时会统一失效缓存；
+        不包含玩家进度，所以适合走定义缓存。
+        """
+
+        return exploration_location_by_name(self.db, name.strip())
 
     def _world_point_at(self, x: int, y: int) -> dict | None:
         """读取当前位置上的命名世界点。"""
 
-        return self.db.fetch_one("SELECT * FROM world_locations WHERE x = ? AND y = ?", (int(x), int(y)))
+        return world_location_by_point(self.db, int(x), int(y))
 
     def _exploration_location_at(self, x: int, y: int) -> dict | None:
         """读取当前位置上的探险地点。"""
 
-        return self.db.fetch_one("SELECT * FROM exploration_locations WHERE x = ? AND y = ?", (int(x), int(y)))
+        return exploration_location_by_point(self.db, int(x), int(y))
 
     def _trade_location_at(self, x: int, y: int) -> dict | None:
         """读取当前位置上的商路城池。"""
 
-        return self.db.fetch_one("SELECT * FROM trade_locations WHERE x = ? AND y = ?", (int(x), int(y)))
+        return trade_location_by_point(self.db, int(x), int(y))
 
     def _special_buyer_at(self, x: int, y: int) -> dict | None:
         """读取当前位置上的特殊收购点。"""
 
-        return self.db.fetch_one("SELECT * FROM special_buyers WHERE x = ? AND y = ?", (int(x), int(y)))
+        return special_buyer_by_point(self.db, int(x), int(y))
 
     def _recycle_location_at(self, x: int, y: int) -> dict | None:
         """读取当前位置上的回收建筑。"""
 
-        return self.db.fetch_one("SELECT * FROM recycle_locations WHERE x = ? AND y = ?", (int(x), int(y)))
+        return recycle_location_by_point(self.db, int(x), int(y))
 
     def _treasure_pickup_at(self, x: int, y: int) -> dict | None:
         """读取脚下可拾取藏宝图。"""
@@ -1218,9 +1216,9 @@ class ExplorationService(CoreService):
         row = None
         stable_id = str(location_id or "").strip()
         if stable_id:
-            row = self.db.fetch_one("SELECT specialties FROM trade_locations WHERE location_id = ?", (stable_id,))
+            row = trade_location_by_id(self.db, stable_id)
         if not row:
-            row = self.db.fetch_one("SELECT specialties FROM trade_locations WHERE name = ?", (location_name,))
+            row = trade_location_by_name(self.db, location_name)
         if not row:
             return "无"
         names = [name.strip() for name in str(row["specialties"]).split(",") if name.strip()]
@@ -1286,19 +1284,12 @@ class ExplorationService(CoreService):
         """按当前地点随机一个古界物资掉落；纯经济不从探险产出。"""
 
         _ = location_name
-        rows = self.db.fetch_all(
-            """
-            SELECT item_id
-            FROM item_defs
-            WHERE json_extract(effect, '$.world_category_key') IN ('medicine', 'life', 'build', 'relic')
-            """
-        )
+        rows = world_item_defs_by_categories(self.db, ("medicine", "life", "build", "relic"))
         if not rows:
             return ""
         weights = []
         for row in rows:
-            item = self.item_def(row["item_id"])
-            effect = load_json(item["effect"], {}) if item else {}
+            effect = load_json(row.get("effect"), {})
             category_key = str(effect.get("world_category_key") or "")
             weights.append({"medicine": 34, "life": 26, "build": 28, "relic": 12}.get(category_key, 10))
         return random.choices(rows, weights=weights, k=1)[0]["item_id"]
@@ -1306,23 +1297,16 @@ class ExplorationService(CoreService):
     def _roll_secret_realm_location_drop(self) -> str:
         """太虚秘境低频掉落古界物资，偏古物、战利品和高阶建设。"""
 
-        rows = self.db.fetch_all(
-            """
-            SELECT item_id
-            FROM item_defs
-            WHERE json_extract(effect, '$.world_category_key') IN ('relic', 'loot', 'build')
-            """
-        )
+        rows = world_item_defs_by_categories(self.db, ("relic", "loot", "build"))
         if not rows:
             return ""
         weights = []
         for row in rows:
-            item = self.item_def(row["item_id"])
-            effect = load_json(item["effect"], {}) if item else {}
+            effect = load_json(row.get("effect"), {})
             category_key = str(effect.get("world_category_key") or "")
-            base_price = int(item["base_price"]) if item else 1
-            factor = quality_factor(item["quality"]) if item else 1.0
-            rank = quality_rank(item["quality"]) if item else 1
+            base_price = int(row.get("base_price") or 1)
+            factor = quality_factor(row.get("quality") or "")
+            rank = quality_rank(row.get("quality") or "")
             if category_key == "relic":
                 weights.append(max(10, int(base_price / 120 * factor)))
             elif category_key == "loot":
@@ -1352,14 +1336,7 @@ class ExplorationService(CoreService):
     def _roll_secret_realm_gem_drop(self) -> dict | None:
         """太虚秘境掉落 1-8 级宝石，高等级极低概率。"""
 
-        rows = self.db.fetch_all(
-            """
-            SELECT ring_item_id
-            FROM ring_item_defs
-            WHERE category_key = ?
-            """,
-            (RING_CATEGORY_GEM,),
-        )
+        rows = ring_item_defs_by_categories(self.db, (RING_CATEGORY_GEM,))
         if not rows:
             return None
         return {
@@ -1402,13 +1379,12 @@ class ExplorationService(CoreService):
         恢复类、宝石和技能书都进纳戒，所以探险获得时直接写入纳戒。
         """
 
-        rows = self.db.fetch_all("""
-            SELECT ring_item_id, category_key
-            FROM ring_item_defs
-            WHERE category_key IN (?, ?, ?)
-              AND ring_item_id != 'cuifengdan'
-              AND ring_item_id NOT LIKE 'extreme_%'
-            """, (RING_CATEGORY_RECOVERY, RING_CATEGORY_GEM, RING_CATEGORY_BOOK))
+        rows = ring_item_defs_by_categories(
+            self.db,
+            (RING_CATEGORY_RECOVERY, RING_CATEGORY_GEM, RING_CATEGORY_BOOK),
+            exclude_ids=("cuifengdan",),
+            exclude_prefixes=("extreme_",),
+        )
         if not rows:
             return ""
 

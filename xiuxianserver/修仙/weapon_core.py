@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from .common import CoreService, dump_json, enchant_label_name, quality_key, quality_label, random, random_quality, ts, weapon_id_label
+from .definition_cache import all_weapon_defs, weapon_def_by_id, weapon_skill_def_by_id, world_location_by_name
 from .sql import db
 
 
@@ -38,7 +39,7 @@ class WeaponCore(CoreService):
         传入地点时优先从该地点武器里抽；不传地点时从全部武器里抽。
         """
 
-        rows = self.db.fetch_all("SELECT * FROM weapon_defs")
+        rows = all_weapon_defs(self.db)
         if location_name:
             location_id = self._location_id_for_drop(location_name)
             same_location = [row for row in rows if str(row.get("drop_location_id") or "") == location_id]
@@ -54,10 +55,7 @@ class WeaponCore(CoreService):
     def _location_id_for_drop(self, location_name: str) -> str:
         """按当前展示名读取武器掉落地点 ID。"""
 
-        row = self.db.fetch_one(
-            "SELECT location_id FROM world_locations WHERE name = ?",
-            (str(location_name or "").strip(),),
-        )
+        row = world_location_by_name(self.db, str(location_name or "").strip())
         return str(row["location_id"]) if row else ""
 
     def create_weapon(
@@ -91,7 +89,7 @@ class WeaponCore(CoreService):
     ) -> int:
         """在事务里创建一把玩家真实拥有的武器。"""
 
-        weapon_def = self.db.fetch_one("SELECT * FROM weapon_defs WHERE weapon_def_id = ?", (weapon_def_id,))
+        weapon_def = weapon_def_by_id(self.db, weapon_def_id)
         if not weapon_def:
             raise ValueError("武器定义不存在")
         if equipped:
@@ -161,7 +159,7 @@ class WeaponCore(CoreService):
     def skill(self, skill_id: str) -> dict:
         """读取武器自带技能；缺失时给一个普通攻击兜底。"""
 
-        return self.db.fetch_one("SELECT * FROM weapon_skill_defs WHERE skill_id = ?", (skill_id,)) or {
+        return weapon_skill_def_by_id(self.db, skill_id) or {
             "skill_id": "",
             "name": "普通攻击",
             "cost_mp": 0,

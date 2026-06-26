@@ -9,12 +9,19 @@ from __future__ import annotations
 
 import ast
 import sqlite3
+from functools import lru_cache
+from time import monotonic
 from typing import Any
 
 from launch.adapter import Depends
 from launch import config
 
+from .runtime_cache import database_cache_key, register_runtime_cache
 from .sql import db
+
+
+IDENTITY_CACHE_TTL_SECONDS = 30.0
+_IDENTITY_CACHE: dict[tuple[str, str], tuple[str, float]] = {}
 
 
 def current_player_id(client_id: str) -> str:
@@ -41,6 +48,12 @@ def resolve_player_id(client_id: str, database: Any | None = None) -> str:
         return ""
 
     database = _database(database)
+    cache_key = (database_cache_key(database), raw_id)
+    cached = _IDENTITY_CACHE.get(cache_key)
+    current = monotonic()
+    if cached and cached[1] > current:
+        return cached[0]
+
     try:
         row = database.fetch_one(
             """
@@ -56,7 +69,9 @@ def resolve_player_id(client_id: str, database: Any | None = None) -> str:
         return raw_id
 
     player_id = str(row.get("primary_player_id") or "").strip() if row else ""
-    return player_id or raw_id
+    resolved = player_id or raw_id
+    _IDENTITY_CACHE[cache_key] = (resolved, current + IDENTITY_CACHE_TTL_SECONDS)
+    return resolved
 
 
 def player_id_dep() -> Depends:
@@ -92,8 +107,14 @@ def is_master_player(player_id: str, database: Any | None = None) -> bool:
     return bool(display_name and display_name in master_names())
 
 
+@lru_cache(maxsize=1)
 def master_names() -> set[str]:
-    """读取 .env 的 MASTER_NAME 主人显示名列表。"""
+    """读取 .env 的 MASTER_NAME 主人显示名列表。
+
+    `.env` 属于启动配置，正常不会在运行期热改；缓存后可以避免每条主人
+    权限命令都重新解析一次字符串。若未来做后台热改配置，调用
+    `clear_identity_cache()` 即可同步失效。
+    """
 
     raw = str(config.get("MASTER_NAME", "") or "").strip()
     if not raw:
@@ -169,6 +190,7 @@ def ensure_player_identity(player_id: str, database: Any | None = None) -> int:
             """,
             (group_id, normalized),
         )
+        clear_identity_cache()
         return group_id
 
 
@@ -200,6 +222,7 @@ def bind_client_to_player(client_id: str, player_id: str, database: Any | None =
             """,
             (group_id, normalized_client),
         )
+    clear_identity_cache()
 
 
 def identities_for_player(player_id: str, database: Any | None = None) -> list[dict[str, Any]]:
@@ -239,3 +262,16 @@ def _group_id_for_player_conn(conn: sqlite3.Connection, player_id: str) -> int |
         (player_id,),
     ).fetchone()
     return int(row["group_id"]) if row else None
+
+
+def clear_identity_cache() -> None:
+    """清理身份映射缓存和主人名单缓存。
+
+    绑定、创建用户组主身份、测试重置数据库或后台身份治理后都需要清理。
+    """
+
+    _IDENTITY_CACHE.clear()
+    master_names.cache_clear()
+
+
+register_runtime_cache("identity", clear_identity_cache)

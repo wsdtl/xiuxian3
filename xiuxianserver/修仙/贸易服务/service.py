@@ -42,6 +42,19 @@ from ..constants import (
     WORLD_COORD_MAX,
     WORLD_COORD_MIN,
 )
+from ..definition_cache import (
+    all_special_buyers,
+    all_trade_locations,
+    all_world_locations,
+    location_goods as cached_location_goods,
+    recycle_location_by_type as cached_recycle_location_by_type,
+    special_buyer_by_name as cached_special_buyer_by_name,
+    trade_goods_by_item_id,
+    trade_location_by_id,
+    trade_location_by_name,
+    world_location_by_name,
+    world_location_by_point,
+)
 from ..rules import (
     book_recycle_price_rate,
     book_recycle_single_cap,
@@ -84,7 +97,7 @@ class TradeService(WeaponCore):
             )
         if not item["tradeable"]:
             return T.hint(f"{item['name']} 不是跑商商品。", "跑商只能查询特产商品；其他物品可发送：背包 或 纳戒<背包><纳戒>")
-        rows = self.db.fetch_all("SELECT name FROM trade_locations ORDER BY name")
+        rows = all_trade_locations(self.db)
         panel = T.panel()
         panel.section(f"{item['name']}市价")
         for row in rows:
@@ -111,7 +124,7 @@ class TradeService(WeaponCore):
         location_id = str(location.get("location_id") or "")
         if not location_id:
             return T.hint("当前位置缺少稳定地点 ID，暂时不能交易。", "请检查 trade_locations 与 world_locations 配置。")
-        home = self.db.fetch_one("SELECT home_location, home_location_id FROM trade_goods WHERE item_id = ?", (item["item_id"],))
+        home = trade_goods_by_item_id(self.db, item["item_id"])
         if not home or str(home["home_location_id"] or "") != location_id:
             return T.hint(f"{player['location_name']} 不出售 {item['name']}。", "发送：商场行情 商品名 查看各地价格，再导航到产地购买。")
         buy_price, _sell_price = self.price(player["location_name"], item["item_id"], save=True)
@@ -707,7 +720,7 @@ class TradeService(WeaponCore):
         trade_group = self._trade_group(item)
         loc = self._location(location_name)
         location_id = str(loc.get("location_id") or "") if loc else ""
-        home = self.db.fetch_one("SELECT home_location, home_location_id FROM trade_goods WHERE item_id = ?", (item_id,))
+        home = trade_goods_by_item_id(self.db, item_id)
         home_name = str(home["home_location"]) if home else location_name
         home_id = str(home["home_location_id"] or "") if home else location_id
         home_loc = self._location_by_id(home_id) or self._location(home_name)
@@ -774,7 +787,7 @@ class TradeService(WeaponCore):
             quantity = self._max_buy_quantity(client_id, item, buy_price, buy_fee_rate, raw_stones)
             if quantity <= 0:
                 continue
-            for loc in self.db.fetch_all("SELECT name, x, y FROM trade_locations"):
+            for loc in all_trade_locations(self.db):
                 if loc["name"] == current:
                     continue
                 _, sell_price = self.price(loc["name"], item["item_id"])
@@ -918,7 +931,7 @@ class TradeService(WeaponCore):
         profit_rate = self._trade_profit_rate_for_quantity(market_state, quantity)
         best: dict | None = None
         best_value = -1
-        for row in self.db.fetch_all("SELECT name, x, y FROM trade_locations"):
+        for row in all_trade_locations(self.db):
             if self._resale_lock_text(client_id, str(item["item_id"]), row["name"]):
                 continue
             _buy, sell_price = self.price(row["name"], str(item["item_id"]), save=True)
@@ -1001,7 +1014,7 @@ class TradeService(WeaponCore):
         current = self._location(str(player["location_name"]))
         if current:
             return dict(current)
-        rows = self.db.fetch_all("SELECT name, x, y FROM trade_locations")
+        rows = all_trade_locations(self.db)
         if not rows:
             return None
         x = int(player["x"])
@@ -1020,13 +1033,13 @@ class TradeService(WeaponCore):
             self._write_game_log_conn(conn, client_id, action, f"location={name}, x={x}, y={y}")
 
     def recycle_location_by_type(self, recycle_type: str) -> dict | None:
-        """读取某类纳戒资产的回收点。"""
+        """读取某类纳戒资产的回收点。
 
-        row = self.db.fetch_one(
-            "SELECT * FROM recycle_locations WHERE recycle_type = ? ORDER BY rowid LIMIT 1",
-            (recycle_type,),
-        )
-        return dict(row) if row else None
+        回收点是系统定义建筑，不随玩家出售动作变化；统一走定义缓存，
+        让出售全部、自动出售和单件回收共用同一份地点资料。
+        """
+
+        return cached_recycle_location_by_type(self.db, recycle_type)
 
     def _buyer_for_item(self, item_id: str) -> dict | None:
         """读取收购指定战利品的特殊收购点。"""
@@ -1289,34 +1302,24 @@ class TradeService(WeaponCore):
         return " ".join(parts[:-1]), to_int(parts[-1])
 
     def _location(self, name: str) -> dict | None:
-        """读取地点。"""
+        """读取跑商城池定义。"""
 
-        return self.db.fetch_one("SELECT * FROM trade_locations WHERE name = ?", (name.strip(),))
+        return trade_location_by_name(self.db, name.strip())
 
     def _special_buyer(self, name: str) -> dict | None:
-        """读取特殊收购地点。"""
+        """读取特殊收购地点定义。"""
 
-        return self.db.fetch_one("SELECT * FROM special_buyers WHERE buyer_name = ?", (name.strip(),))
+        return cached_special_buyer_by_name(self.db, name.strip())
 
     def _navigation_location(self, name: str) -> dict | None:
         """读取任意可命名导航地点。"""
 
-        row = self.db.fetch_one("SELECT location_id, name, terrain, x, y FROM world_locations WHERE name = ?", (name.strip(),))
-        return {"location_id": row["location_id"], "name": row["name"], "terrain": row["terrain"], "x": int(row["x"]), "y": int(row["y"])} if row else None
+        return world_location_by_name(self.db, name.strip())
 
     def _location_by_id(self, location_id: str) -> dict | None:
         """按稳定 ID 读取跑商城池。"""
 
-        row = self.db.fetch_one(
-            """
-            SELECT t.location_id, t.name, COALESCE(w.terrain, '') AS terrain, t.x, t.y
-            FROM trade_locations AS t
-            LEFT JOIN world_locations AS w ON w.location_id = t.location_id
-            WHERE t.location_id = ?
-            """,
-            (str(location_id),),
-        )
-        return {"location_id": row["location_id"], "name": row["name"], "terrain": row["terrain"], "x": int(row["x"]), "y": int(row["y"])} if row else None
+        return trade_location_by_id(self.db, str(location_id))
 
     @staticmethod
     def _location_id_for_point_conn(conn, name: str, x: int, y: int) -> str:
@@ -1336,16 +1339,12 @@ class TradeService(WeaponCore):
     def _all_navigation_locations(self) -> list[dict]:
         """读取全部 NPC 地点，供坐标导航使用。"""
 
-        return [
-            {"location_id": row["location_id"], "name": row["name"], "terrain": row["terrain"], "x": int(row["x"]), "y": int(row["y"])}
-            for row in self.db.fetch_all("SELECT location_id, name, terrain, x, y FROM world_locations")
-        ]
+        return all_world_locations(self.db)
 
     def _known_location_at(self, x: int, y: int) -> dict | None:
         """读取精确坐标上的 NPC 地点。"""
 
-        row = self.db.fetch_one("SELECT location_id, name, terrain, x, y FROM world_locations WHERE x = ? AND y = ?", (x, y))
-        return {"location_id": row["location_id"], "name": row["name"], "terrain": row["terrain"], "x": int(row["x"]), "y": int(row["y"])} if row else None
+        return world_location_by_point(self.db, x, y)
 
     def _nearest_location(self, x: int, y: int) -> dict | None:
         """按坐标找最近地点。"""
@@ -2054,23 +2053,17 @@ class TradeService(WeaponCore):
         return int(row["total"] if row else 0)
 
     def _location_goods(self, location_name: str) -> list[dict]:
-        """读取地点可购买商品。"""
+        """读取地点可购买商品。
+
+        商品列表由 item_defs/trade_goods 决定，是静态产地关系；
+        今日价格、热度和购买锁会在后续步骤实时计算，不在这里缓存。
+        """
 
         location = self._location(location_name)
         location_id = str(location.get("location_id") or "") if location else ""
         if not location_id:
             return []
-        return self.db.fetch_all(
-            """
-            SELECT i.*
-            FROM trade_goods g
-            JOIN item_defs i ON i.item_id = g.item_id
-            WHERE g.home_location_id = ?
-              AND i.tradeable = 1
-            ORDER BY i.base_price, i.name
-            """,
-            (location_id,),
-        )
+        return cached_location_goods(self.db, location_id)
 
     def _can_buy_one(self, client_id: str, player: dict, item: dict, buy_fee_rate: float) -> bool:
         """推荐前确认当前玩家至少能买 1 个该商品。"""
@@ -2086,9 +2079,12 @@ class TradeService(WeaponCore):
         return ok
 
     def _special_buyers_ordered(self) -> list[dict]:
-        """按初始化顺序读取特殊收购地点。"""
+        """按初始化顺序读取特殊收购地点。
 
-        return self.db.fetch_all("SELECT rowid, * FROM special_buyers ORDER BY rowid")
+        顺序本身来自种子表，用来决定自动出售的导航顺序，不是动态状态。
+        """
+
+        return all_special_buyers(self.db)
 
     def _special_auto_sell_plan(self, client_id: str, buyers: list[dict]) -> list[tuple[dict, list[dict]]]:
         """按收购地点整理可自动出售的背包物品。"""
