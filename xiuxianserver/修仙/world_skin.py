@@ -134,6 +134,7 @@ def list_skin_packages() -> tuple[WorldSkinPackage, ...]:
         try:
             result.append(load_skin_package(pack_dir.name))
         except Exception:
+            # 列表页跳过坏包；真正切换到该包时会给出完整校验错误。
             continue
     return tuple(result)
 
@@ -190,6 +191,7 @@ def resolve_skin_package(value: str) -> WorldSkinPackage:
     try:
         return load_skin_package(raw_value)
     except ValueError:
+        # 不是目录名时继续按 display_name 匹配，支持玩家输入中文包名切换。
         pass
 
     matches = [
@@ -209,33 +211,62 @@ def validate_skin_package(package: WorldSkinPackage, database: Any = db) -> list
     """校验皮肤包是否覆盖当前代码和数据库需要的稳定键。"""
 
     errors: list[str] = []
-    names = package.names
-    places = _dict_at(names, "places", errors)
-    cities = _dict_at(places, "cities", errors)
-    realm = _dict_at(places, "realm", errors)
-    buyers = _dict_at(places, "buyers", errors)
-    recycles = _dict_at(places, "recycles", errors)
-    world_items = _dict_at(names, "world_items", errors)
-    ring = _dict_at(names, "ring", errors)
-    weapons = _dict_at(names, "weapons", errors)
-    actors = _dict_at(names, "actors", errors)
-    wormhole = _dict_at(names, "wormhole", errors)
-    secret_realm = _dict_at(names, "secret_realm", errors)
-    system = _dict_at(names, "system", errors)
+    sections = _skin_sections(package.names, errors)
     if errors:
         return errors
 
-    _require_count(errors, "普通城池", cities, 11)
-    _require_count(errors, "太虚秘境", realm, 1)
-    _require_count(errors, "特殊收购点", buyers, 6)
-    _require_count(errors, "回收点", recycles, 3)
-    _require_keys(errors, "世界物资大类", world_items, {"medicine", "life", "build", "relic", "loot"})
-    _require_keys(errors, "纳戒分组", ring, {"recovery", "gems", "special"})
-    _require_keys(errors, "武器分组", weapons, {"skill_books", "types"})
-    _require_keys(errors, "生物分组", actors, {"monsters", "physiques", "enemy_kinds", "enemy_skills"})
-    _require_keys(errors, "虫洞分组", wormhole, {"bosses", "flows", "war_prep_bosses", "war_prep_affixes"})
-    _require_keys(errors, "太虚秘境分组", secret_realm, {"environments"})
-    _require_keys(errors, "系统分组", system, {"quality", "currency", "levels"})
+    _validate_skin_section_shape(errors, sections)
+    _validate_city_skin_entries(errors, sections["cities"])
+    _validate_named_place_entries(errors, sections)
+    _validate_skin_content_counts(errors, sections, package.names)
+
+    _validate_database_coverage(package, database, errors)
+    _validate_unique_display_names(package, errors)
+    return errors
+
+
+def _skin_sections(names: dict[str, Any], errors: list[str]) -> dict[str, dict[str, Any]]:
+    """取出皮肤包顶层配置段。
+
+    皮肤包最怕“看似少一层还能跑”，所以这里先把所有大段显式取出来。
+    后续校验只面对这些命名段，读起来更像审表，而不是在嵌套 dict 里摸路。
+    """
+
+    places = _dict_at(names, "places", errors)
+    return {
+        "places": places,
+        "cities": _dict_at(places, "cities", errors),
+        "realm": _dict_at(places, "realm", errors),
+        "buyers": _dict_at(places, "buyers", errors),
+        "recycles": _dict_at(places, "recycles", errors),
+        "world_items": _dict_at(names, "world_items", errors),
+        "ring": _dict_at(names, "ring", errors),
+        "weapons": _dict_at(names, "weapons", errors),
+        "actors": _dict_at(names, "actors", errors),
+        "wormhole": _dict_at(names, "wormhole", errors),
+        "secret_realm": _dict_at(names, "secret_realm", errors),
+        "system": _dict_at(names, "system", errors),
+    }
+
+
+def _validate_skin_section_shape(errors: list[str], sections: dict[str, dict[str, Any]]) -> None:
+    """校验皮肤包大段数量和必需子段。"""
+
+    _require_count(errors, "普通城池", sections["cities"], 11)
+    _require_count(errors, "太虚秘境", sections["realm"], 1)
+    _require_count(errors, "特殊收购点", sections["buyers"], 6)
+    _require_count(errors, "回收点", sections["recycles"], 3)
+    _require_keys(errors, "世界物资大类", sections["world_items"], {"medicine", "life", "build", "relic", "loot"})
+    _require_keys(errors, "纳戒分组", sections["ring"], {"recovery", "gems", "special"})
+    _require_keys(errors, "武器分组", sections["weapons"], {"skill_books", "types"})
+    _require_keys(errors, "生物分组", sections["actors"], {"monsters", "physiques", "enemy_kinds", "enemy_skills"})
+    _require_keys(errors, "虫洞分组", sections["wormhole"], {"bosses", "flows", "war_prep_bosses", "war_prep_affixes"})
+    _require_keys(errors, "太虚秘境分组", sections["secret_realm"], {"environments"})
+    _require_keys(errors, "系统分组", sections["system"], {"quality", "currency", "levels"})
+
+
+def _validate_city_skin_entries(errors: list[str], cities: dict[str, Any]) -> None:
+    """校验 11 个普通城池的名称、地貌、特产和武器绑定。"""
 
     city_weapon_count = 0
     city_trade_count = 0
@@ -252,21 +283,35 @@ def validate_skin_package(package: WorldSkinPackage, database: Any = db) -> list
             continue
         city_trade_count += len(city.get("trade_goods") or {})
         city_weapon_count += len(weapons_map)
-        for weapon_id, weapon in weapons_map.items():
-            if not isinstance(weapon, dict):
-                errors.append(f"武器配置必须是字典：{weapon_id}")
-                continue
-            _require_text(errors, f"{weapon_id}.name", weapon.get("name"))
-            innate = weapon.get("innate_skill")
-            if not isinstance(innate, dict):
-                errors.append(f"{weapon_id}.innate_skill 必须是字典")
-                continue
-            _require_text(errors, f"{weapon_id}.innate_skill.skill_id", innate.get("skill_id"))
-            _require_text(errors, f"{weapon_id}.innate_skill.name", innate.get("name"))
+        _validate_city_weapon_entries(errors, weapons_map)
     _require_exact(errors, "普通城池特产", city_trade_count, 33)
     _require_exact(errors, "城池武器", city_weapon_count, 72)
 
-    for label, group in (("太虚秘境", realm), ("特殊收购点", buyers), ("回收点", recycles)):
+
+def _validate_city_weapon_entries(errors: list[str], weapons_map: dict[str, Any]) -> None:
+    """校验城池武器名和自带技能名，保证武器和技能能成组换皮。"""
+
+    for weapon_id, weapon in weapons_map.items():
+        if not isinstance(weapon, dict):
+            errors.append(f"武器配置必须是字典：{weapon_id}")
+            continue
+        _require_text(errors, f"{weapon_id}.name", weapon.get("name"))
+        innate = weapon.get("innate_skill")
+        if not isinstance(innate, dict):
+            errors.append(f"{weapon_id}.innate_skill 必须是字典")
+            continue
+        _require_text(errors, f"{weapon_id}.innate_skill.skill_id", innate.get("skill_id"))
+        _require_text(errors, f"{weapon_id}.innate_skill.name", innate.get("name"))
+
+
+def _validate_named_place_entries(errors: list[str], sections: dict[str, dict[str, Any]]) -> None:
+    """校验非城池地点：必须有展示名和地貌。"""
+
+    for label, group in (
+        ("太虚秘境", sections["realm"]),
+        ("特殊收购点", sections["buyers"]),
+        ("回收点", sections["recycles"]),
+    ):
         for stable_id, row in group.items():
             if not isinstance(row, dict):
                 errors.append(f"{label}配置必须是字典：{stable_id}")
@@ -274,6 +319,16 @@ def validate_skin_package(package: WorldSkinPackage, database: Any = db) -> list
             _require_text(errors, f"{stable_id}.name", row.get("name"))
             _require_text(errors, f"{stable_id}.terrain", row.get("terrain"))
 
+
+def _validate_skin_content_counts(errors: list[str], sections: dict[str, dict[str, Any]], names: dict[str, Any]) -> None:
+    """校验具体内容覆盖量，缺一个稳定键都不能上线切换。"""
+
+    world_items = sections["world_items"]
+    ring = sections["ring"]
+    weapons = sections["weapons"]
+    actors = sections["actors"]
+    secret_realm = sections["secret_realm"]
+    system = sections["system"]
     _require_count(errors, "非纯经济世界物资", _flatten_world_item_names(world_items), 125)
     _require_count(errors, "恢复纳戒物品", ring.get("recovery"), 7)
     _require_count(errors, "宝石", ring.get("gems"), 9)
@@ -286,10 +341,6 @@ def validate_skin_package(package: WorldSkinPackage, database: Any = db) -> list
     _require_count(errors, "等级显示", system.get("levels"), len(PLAYER_LEVEL_DEFS))
     _require_keys(errors, "品质显示", _dict_or_empty(system.get("quality")), set(QUALITY_DEFS))
     _require_keys(errors, "货币显示", _dict_or_empty(system.get("currency")), set(CURRENCY_DEFS))
-
-    _validate_database_coverage(package, database, errors)
-    _validate_unique_display_names(package, errors)
-    return errors
 
 
 def apply_world_skin_package(
@@ -575,6 +626,7 @@ def _skin_value(path: tuple[str, ...] | list[str], stable_id: str, database: Any
     try:
         node: Any = _active_skin_package(database).names
     except Exception:
+        # 当前皮肤缺失或损坏时，展示层退回调用方默认名。
         return None
     for part in path:
         if not isinstance(node, dict):
@@ -1421,6 +1473,7 @@ def _fetch_one(database: Any, sql: str, params: tuple[Any, ...] = ()) -> dict[st
     try:
         row = database.fetch_one(sql, params)
     except Exception:
+        # 世界皮肤检索是展示辅助；查询失败时退回默认展示，不中断主流程。
         return None
     return dict(row) if row else None
 
@@ -1429,6 +1482,7 @@ def _fetch_all(database: Any, sql: str, params: tuple[Any, ...] = ()) -> list[di
     try:
         return list(database.fetch_all(sql, params))
     except Exception:
+        # 同上，列表类展示辅助失败时按空结果处理。
         return []
 
 

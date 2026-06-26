@@ -158,9 +158,8 @@ class TradeService(WeaponCore):
                 "INSERT INTO game_logs (client_id, action, detail, created_at) VALUES (?, '商场购买', ?, ?)",
                 (client_id, f"item={item['item_id']}, quantity={quantity}, total={total}, fee={fee}", ts()),
             )
-        return f"购买成功：{item['name']} x{quantity}，花费 {money(total)}，手续费 {money(fee)}。" + self.wormhole.try_discover(
-            client_id, "trade_buy", player["location_name"], location_id
-        )
+        notice = self.wormhole.try_discover(client_id, "trade_buy", player["location_name"], location_id)
+        return T.attach(f"购买成功：{item['name']} x{quantity}，花费 {money(total)}，手续费 {money(fee)}。", notice)
 
     def sell(self, client_id: str, message: str) -> str:
         """商场出售。"""
@@ -177,7 +176,7 @@ class TradeService(WeaponCore):
         item = self.item_def_by_name(item_name)
         if not item or not item["tradeable"]:
             return T.hint(f"{item_name} 不是可出售的跑商商品。", "发送：背包 查看可出售的跑商货物。<背包>")
-        return self._sell_item(client_id, player["location_name"], item, quantity) + "<跑商奖励>"
+        return T.attach(self._sell_item(client_id, player["location_name"], item, quantity), "<跑商奖励>")
 
     def sell_any(self, client_id: str, message: str) -> str:
         """统一出售入口；背包和纳戒物品都从这里按类型分流。"""
@@ -329,7 +328,7 @@ class TradeService(WeaponCore):
         buttons = []
         if moved and not special_auto_moved:
             buttons.append(f"导航 {origin['x']} {origin['y']}:回原处")
-        return panel.render() + T.buttons(*buttons)
+        return T.attach(panel.render(), T.buttons(*buttons))
 
     def recommend(self, client_id: str) -> str:
         """按单位负重收益推荐当前能买的跑商路线。"""
@@ -352,12 +351,14 @@ class TradeService(WeaponCore):
                 f"导航 {option['target']} -> 商场出售 {option['item_name']} {option['quantity']}\n"
                 f"预计净赚 **{money(option['total_profit'])}**｜单件 **{money(option['unit_profit'])}**"
             )
-        return (
-            panel.render()
-            + f"<商场购买 {options[0]['item_name']} {options[0]['quantity']}>"
-            + f"<导航 {options[0]['target']}>"
-            + f"<商场出售 {options[0]['item_name']} {options[0]['quantity']}>"
-            + f"<自动出售>"
+        return T.attach(
+            panel.render(),
+            T.buttons(
+                f"商场购买 {options[0]['item_name']} {options[0]['quantity']}",
+                f"导航 {options[0]['target']}",
+                f"商场出售 {options[0]['item_name']} {options[0]['quantity']}",
+                "自动出售",
+            ),
         )
 
     def records(self, client_id: str) -> str:
@@ -491,7 +492,7 @@ class TradeService(WeaponCore):
                 "跑商奖励",
                 f"day={day}, quantity={quantity}, net_profit={net_profit}, reward={reward}",
             )
-        return f"跑商奖励领取成功：今日出售 {quantity} 件，普通跑商净利润 {money(net_profit)}，奖励{currency_amount(reward)}。"
+        return T.success(f"跑商奖励领取成功：今日出售 {quantity} 件，普通跑商净利润 {money(net_profit)}，奖励{currency_amount(reward)}。")
 
     def special_sell(self, client_id: str, message: str) -> str:
         """在特殊收购地点出售战利品。"""
@@ -543,12 +544,14 @@ class TradeService(WeaponCore):
             )
             war_prep = self.world_material.add_war_prep_conn(conn, buyer["buyer_name"], item, quantity, client_id)
             war_prep_text = str(war_prep.get("text") or "")
-        return (
+        text = (
             f"战利品出售成功：{item['name']} x{quantity}，"
             f"原价 {money(raw_total)}，当前倍率 {int(rate * 100)}%，收入 {money(total)}。"
-            + (f"\n{war_prep_text}。" if war_prep_text else "")
-            + self.wormhole.try_discover(client_id, "special_sell", buyer["buyer_name"], buyer_location_id)
         )
+        if war_prep_text:
+            text = f"{text}\n{war_prep_text}。"
+        notice = self.wormhole.try_discover(client_id, "special_sell", buyer["buyer_name"], buyer_location_id)
+        return T.attach(text, notice)
 
     def special_auto_sell(self, client_id: str, origin: dict | None = None) -> str:
         """自动导航并出售背包里的所有特殊收购物。"""
@@ -650,7 +653,7 @@ class TradeService(WeaponCore):
         panel.section("战利品自动出售")
         for line in lines[1:]:
             panel.line(line)
-        return panel.render() + T.buttons(f"导航 {origin_x} {origin_y}:回原处", "探险列表", "自动出售")
+        return T.attach(panel.render(), T.buttons(f"导航 {origin_x} {origin_y}:回原处", "探险列表", "自动出售"))
 
     def navigate(self, client_id: str, message: str) -> str:
         """导航到地点或精确坐标。"""
@@ -698,7 +701,7 @@ class TradeService(WeaponCore):
                 (client_id, f"location={name}, x={x}, y={y}", ts()),
             )
         notice = self.wormhole.try_discover(client_id, "navigate", wormhole_location, wormhole_location_id) if wormhole_location else ""
-        return f"已到达 {name} ({x},{y})｜地貌：{terrain}。" + notice + "<探险><商场推荐><自动出售>"
+        return T.attach(f"已到达 {name} ({x},{y})｜地貌：{terrain}。{notice}", "<探险><商场推荐><自动出售>")
 
     def price(self, location_name: str, item_id: str, save: bool = False) -> tuple[int, int]:
         """获取当天价格。
@@ -888,7 +891,7 @@ class TradeService(WeaponCore):
         if medicine_text:
             text += "\n商路顺药：" + medicine_text
         if discover:
-            text += self.wormhole.try_discover(client_id, "trade_sell", location_name, location_id)
+            return T.attach(text, self.wormhole.try_discover(client_id, "trade_sell", location_name, location_id))
         return text
 
     def _sell_backpack_item(self, client_id: str, item: dict, quantity: int) -> str:

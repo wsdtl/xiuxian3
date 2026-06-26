@@ -69,7 +69,7 @@ class XiuxianHistoryService(CoreService):
         panel.line(self._top_explore_text(start, end))
         panel.line(self._top_luck_text(start, end))
         panel.line(self._top_active_text(start, end))
-        return panel.render() + "<风云榜><修仙早报><修仙界历史>"
+        return T.attach(panel.render(), "<风云榜><修仙早报><修仙界历史>")
 
     def newspaper(self, client_id: str) -> str:
         """查看今日修仙早报。"""
@@ -146,7 +146,7 @@ class XiuxianHistoryService(CoreService):
             panel.line(current_day)
             for entry in entries:
                 panel.line(f"- {entry}")
-        return panel.render() + HISTORY_NAV_BUTTONS
+        return T.attach(panel.render(), HISTORY_NAV_BUTTONS)
 
     def history_volume(self, client_id: str, volume: str) -> str:
         """查看一个史册分卷。"""
@@ -177,7 +177,7 @@ class XiuxianHistoryService(CoreService):
             panel.line("暂无足以入史的记录。")
         panel.hr()
         panel.line("史册只收破纪录、首创、周期霸主和特殊事件，普通流水会按清理周期散入风里。")
-        return panel.render() + HISTORY_NAV_BUTTONS
+        return T.attach(panel.render(), HISTORY_NAV_BUTTONS)
 
     def profile(self, client_id: str, message: str) -> str:
         """公开查看一位玩家的修仙界档案。"""
@@ -266,7 +266,7 @@ class XiuxianHistoryService(CoreService):
         panel.hr()
         panel.section("首领动向")
         panel.lines(self._boss_trend_lines(day, start, end))
-        return panel.render() + "<商场推荐><首领>"
+        return T.attach(panel.render(), "<商场推荐><首领>")
 
     def _city_wind_lines(self) -> list[str]:
         """生成城池世界物资风向。"""

@@ -61,7 +61,7 @@ class InsuranceBoxService(CoreService):
             panel.section("武器")
             for weapon in weapon_rows:
                 panel.line(self._weapon_text(weapon))
-        return panel.render() + "<背包><纳戒><武器>"
+        return T.attach(panel.render(), "<背包><纳戒><武器>")
 
     def deposit(self, client_id: str, message: str) -> str:
         """存入保险箱。"""

@@ -8,6 +8,46 @@ from __future__ import annotations
 from .markdown_utils import split_button_tags
 
 
+SECTION_ICON_RULES: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("世界皮肤",), "🎭"),
+    (("指南", "修仙帮助", "修仙百科", "百科"), "📜"),
+    (("历史", "风云", "史榜", "名局", "奇闻", "早报", "人物志", "日记", "记录", "日志"), "📜"),
+    (("状态", "今日加成", "体质", "修仙信息"), "🌱"),
+    (("宗门", "大会", "成员", "影响力", "贡献"), "🏯"),
+    (("地图", "位置", "城池", "商路", "地标", "导航", "秘境"), "🗺️"),
+    (("银行", "商场", "跑商", "市价", "贸易", "二手市场", "出售", "收益", "曲线"), "💰"),
+    (("背包", "纳戒", "保险箱", "物品", "资产", "凭证", "奖品"), "📦"),
+    (("武器", "装备", "孔位", "宝石", "铭刻"), "⚔️"),
+    (("探险", "战力", "战斗", "对战", "切磋", "决斗", "首领", "虫洞"), "⚔️"),
+    (("祈愿", "奖池", "奖励", "收获", "藏宝图"), "✨"),
+    (("用户组", "后台", "使用流程", "边界"), "🧩"),
+)
+SECTION_ICON_PREFIXES = tuple(dict.fromkeys(icon for _keywords, icon in SECTION_ICON_RULES))
+
+
+def section_title(title: object) -> str:
+    """给正文卡栏目补一个轻量语义图标。
+
+    图标只服务展示层，不进入命令、数据库字段或业务判断。这里按关键词
+    做集中映射，避免各组件各写一套小装饰，后续新增栏目也能自然收敛。
+    """
+
+    value = str(title).strip()
+    if not value or value.startswith(SECTION_ICON_PREFIXES):
+        return value
+    icon = _section_icon(value)
+    return f"{icon} {value}" if icon else value
+
+
+def _section_icon(title: str) -> str:
+    """按栏目关键词选择图标；越具体、越高频的规则放越前。"""
+
+    for keywords, icon in SECTION_ICON_RULES:
+        if any(keyword in title for keyword in keywords):
+            return icon
+    return ""
+
+
 class MdPanel:
     """引用块正文卡，适合资料和详情展示。"""
 
@@ -17,7 +57,7 @@ class MdPanel:
     def section(self, title: str) -> "MdPanel":
         """添加栏目标题。"""
 
-        return self.line(f"**{title.strip()}**")
+        return self.line(f"**{section_title(title)}**")
 
     def line(self, text: object = "") -> "MdPanel":
         """添加一行正文；渲染时自动补引用符号。"""

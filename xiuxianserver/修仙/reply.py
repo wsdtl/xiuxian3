@@ -179,6 +179,7 @@ def _player_header(client_id: str, database: Any) -> str:
             (client_id,),
         )
     except Exception:
+        # 回复头不能反过来影响业务回复；数据库暂时不可读时按未建档展示。
         return "【未建档】"
     if not row:
         return "【未建档】"
@@ -219,18 +220,34 @@ def _button_commands(
 
     result: list[Any] = [*commands]
     if auto_buttons:
-        predictive = _predict_button_commands(content)
-        if not result:
-            result.extend(predictive)
-            if result:
-                result.extend(_context_button_commands(service))
-        elif len(result) < 2:
-            result.extend(predictive[: 2 - len(result)])
-        if not result:
-            result.extend(_context_button_commands(service))
+        result.extend(_supplemental_button_commands(len(result), content, service))
     if default_buttons and not result:
         result.extend(DEFAULT_BUTTONS)
     return result
+
+
+def _supplemental_button_commands(handwritten_count: int, content: str, service: Any) -> list[str]:
+    """给回复补一点顺手按钮。
+
+    手写按钮代表业务已经明确安排了下一步，优先级最高；没有手写按钮时，
+    预测按钮负责“读懂这条回复”，组件按钮负责“回到当前玩法”。只有一个
+    手写按钮时，最多再补一个预测按钮，不把整排按钮铺满。
+    """
+
+    predictive = _predict_button_commands(content)
+    if handwritten_count <= 0:
+        return _full_auto_button_commands(predictive, service)
+    if handwritten_count == 1:
+        return predictive[:1]
+    return []
+
+
+def _full_auto_button_commands(predictive: list[str], service: Any) -> list[str]:
+    """没有业务手写按钮时，生成完整的自动按钮候选。"""
+
+    if predictive:
+        return [*predictive, *_context_button_commands(service)]
+    return _context_button_commands(service)
 
 
 def _predict_button_commands(content: str) -> list[str]:

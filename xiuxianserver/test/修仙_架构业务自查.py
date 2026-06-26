@@ -12,6 +12,7 @@
 - WS 精确命令不能重复挂到不同函数。
 - 战斗效果公共函数只能在 common.py 定义。
 - 二级组件必须有说明文档，并写清命令/HTTP/回调入口和组件关联。
+- 玩家可见的正文卡和按钮必须通过富文本工具组合，不能重新硬拼。
 """
 
 from __future__ import annotations
@@ -63,6 +64,7 @@ def main() -> None:
     _check_ws_command_duplicates()
     _check_deprecated_commands_removed()
     _check_shared_combat_helpers()
+    _check_rich_text_output_style()
     print("修仙架构业务自查通过")
 
 
@@ -760,6 +762,31 @@ def _check_shared_combat_helpers() -> None:
             if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and node.name in helper_names:
                 offenders.append(f"{file}:{node.lineno}: {node.name}")
     assert not offenders, "战斗公共函数被重复定义：\n" + "\n".join(offenders)
+
+
+def _check_rich_text_output_style() -> None:
+    """检查玩家可见输出没有绕过富文本工具硬拼。
+
+    `T.attach()` 会负责拆出手写按钮并放到消息末尾；直接
+    `panel.render() + "<按钮>"` 虽然能跑，但容易让正文、提示和按钮边界
+    慢慢散掉。这里只拦明确坏味道，不检查 HTML 战报和内部纯格式函数。
+    """
+
+    patterns = {
+        "正文卡按钮请用 T.attach(panel.render(), T.buttons(...))": "panel.render() +",
+        "成功文本按钮请用 T.attach(T.success(...), T.buttons(...))": ") + T.buttons(",
+        "虫洞发现提示请用 T.attach(text, notice)，不要硬贴到上一句后面": "+ self.wormhole.try_discover",
+    }
+    offenders: list[str] = []
+    for file in XIUXIAN_ROOT.rglob("*.py"):
+        if "战斗日志" in file.parts:
+            continue
+        text = file.read_text(encoding="utf-8")
+        for title, pattern in patterns.items():
+            for index, line in enumerate(text.splitlines(), start=1):
+                if pattern in line:
+                    offenders.append(f"{file}:{index}: {title}: {line.strip()}")
+    assert not offenders, "富文本输出风格不统一：\n" + "\n".join(offenders)
 
 
 def _iter_ws_commands() -> list[tuple[str, str]]:

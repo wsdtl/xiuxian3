@@ -52,7 +52,7 @@ class EquipmentService(CoreService):
         panel.hr()
         panel.section("总加成")
         panel.line(f"血气 +**{int(bonuses['max_hp_bonus'])}**｜" f"精神 +**{int(bonuses['max_mp_bonus'])}**｜" f"防御 +**{int(bonuses['defense_bonus'])}**")
-        return panel.render() + "<升 左手><升 右手><升 左脚><升 右脚>" + "<升 头部><升 护甲><升 饰品>"
+        return T.attach(panel.render(), "<升 左手><升 右手><升 左脚><升 右脚><升 头部><升 护甲><升 饰品>")
 
     def upgrade(self, client_id: str, slot: str) -> str:
         """升级装备。"""
@@ -120,10 +120,19 @@ class EquipmentService(CoreService):
                 panel.line(f"{index}：未开孔")
             else:
                 panel.line(f"{index}：{used.get(index, '空')}")
-        return panel.render() + (
-            f"<宝石升级 {slot} 1:升级1孔><宝石升级 {slot} 2:升级2孔><宝石升级 {slot} 3:升级3孔>"
-            + f"<宝石升级 {slot} 4:升级4孔><宝石升级 {slot} 5:升级5孔><宝石升级 {slot} 6:升级6孔>"
-            + f"<宝石升级 {slot} 7:升级7孔><宝石升级 {slot} 8:升级8孔><宝石升级 {slot} 9:升级9孔>"
+        return T.attach(
+            panel.render(),
+            T.buttons(
+                f"宝石升级 {slot} 1:升级1孔",
+                f"宝石升级 {slot} 2:升级2孔",
+                f"宝石升级 {slot} 3:升级3孔",
+                f"宝石升级 {slot} 4:升级4孔",
+                f"宝石升级 {slot} 5:升级5孔",
+                f"宝石升级 {slot} 6:升级6孔",
+                f"宝石升级 {slot} 7:升级7孔",
+                f"宝石升级 {slot} 8:升级8孔",
+                f"宝石升级 {slot} 9:升级9孔",
+            ),
         )
 
     def _holes_overview(self, client_id: str) -> str:

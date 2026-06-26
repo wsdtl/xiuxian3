@@ -29,7 +29,7 @@ class BankService(CoreService):
         panel.line(f"银行{currency_name()}：**{money(account['balance'])}/{money(level_conf['limit'])}**")
         daily_interest_claimed = self._display_daily_interest_claimed(account)
         panel.line(f"今日利息：**{currency_amount(daily_interest_claimed)}/{money(level_conf['daily_interest_limit'])}**")
-        return panel.render() + "<银行结息><升级银行>"
+        return T.attach(panel.render(), "<银行结息><升级银行>")
 
     def settle(self, client_id: str) -> str:
         """手动结息。"""
@@ -43,7 +43,7 @@ class BankService(CoreService):
                 "INSERT INTO game_logs (client_id, action, detail, created_at) VALUES (?, '银行结息', ?, ?)",
                 (client_id, f"reward={reward}, hours={hours:.2f}", ts()),
             )
-        return f"银行结息完成，本次计算 {hours:.2f} 小时，获得{currency_amount(reward)}。"
+        return T.success(f"银行结息完成，本次计算 {hours:.2f} 小时，获得{currency_amount(reward)}。")
 
     def upgrade(self, client_id: str) -> str:
         """升级银行。"""
@@ -65,7 +65,7 @@ class BankService(CoreService):
                 "INSERT INTO game_logs (client_id, action, detail, created_at) VALUES (?, '升级银行', ?, ?)",
                 (client_id, f"star_level={next_star_level}, cost={cost}", ts()),
             )
-        return f"银行升级成功，当前为 {BANK_LEVELS[next_star_level]['name']}。"
+        return T.success(f"银行升级成功，当前为 {BANK_LEVELS[next_star_level]['name']}。")
 
     def deposit(self, client_id: str, amount: int) -> str:
         """存入货币。"""
@@ -93,7 +93,7 @@ class BankService(CoreService):
                 "INSERT INTO game_logs (client_id, action, detail, created_at) VALUES (?, '存入货币', ?, ?)",
                 (client_id, f"amount={can_deposit}", ts()),
             )
-        return f"已存入：{currency_amount(can_deposit)}。<银行><银行结息>"
+        return T.attach(f"已存入：{currency_amount(can_deposit)}。", "<银行><银行结息>")
 
     def withdraw(self, client_id: str, amount: int) -> str:
         """取出货币。"""
@@ -123,7 +123,7 @@ class BankService(CoreService):
                 "INSERT INTO game_logs (client_id, action, detail, created_at) VALUES (?, '取出货币', ?, ?)",
                 (client_id, f"amount={amount}", ts()),
             )
-        return f"已取出：{currency_amount(amount)}。<银行><银行结息>"
+        return T.attach(f"已取出：{currency_amount(amount)}。", "<银行><银行结息>")
 
     def _account(self, client_id: str) -> dict:
         """读取或创建银行账户。"""

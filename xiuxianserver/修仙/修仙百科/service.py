@@ -28,7 +28,9 @@ from ..common import (
 )
 from ..constants import EQUIPMENT_MAX_HOLES, EQUIPMENT_SLOTS
 from ..combat_core import CombatCore
+from ..doc_sources import stable_markdown_paths
 from ..format_text import T
+from ..runtime_cache import register_runtime_cache
 from ..sql import db
 from ..world_skin import current_world_entries, skin_name
 
@@ -106,6 +108,12 @@ class EncyclopediaService:
     def __init__(self, database: Any) -> None:
         self.db = database
         self._entries: tuple[KnowledgeEntry, ...] = ()
+        register_runtime_cache("encyclopedia", self.clear)
+
+    def clear(self) -> None:
+        """清空百科知识快照；世界皮肤切换后下一次查询会重建。"""
+
+        self._entries = ()
 
     def load(self) -> tuple[KnowledgeEntry, ...]:
         """刷新百科知识缓存。"""
@@ -134,7 +142,7 @@ class EncyclopediaService:
             panel = T.panel()
             panel.section(f"修仙百科：{query}")
             panel.lines(shortcut)
-            return panel.render() + _answer_buttons(query, [])
+            return T.attach(panel.render(), _answer_buttons(query, []))
 
         matches = self._focused_matches(query, self._search_with_player_names(client_id, query))
         if not matches:
@@ -147,7 +155,7 @@ class EncyclopediaService:
         panel.section(f"修仙百科：{query}")
         entries = [entry for entry, _score in matches]
         panel.lines(self._smart_answer_lines(client_id, query, entries))
-        return panel.render() + _answer_buttons(query, entries)
+        return T.attach(panel.render(), _answer_buttons(query, entries))
 
     def _smart_answer_lines(self, client_id: str, query: str, entries: list[KnowledgeEntry]) -> list[str]:
         """把命中资料合成答案，并在需要时带上玩家上下文。"""
@@ -1120,7 +1128,7 @@ class EncyclopediaService:
 def _markdown_paths() -> list[Path]:
     """收集修仙组件内 Markdown 文件。"""
 
-    return sorted(XIUXIAN_DIR.rglob("*.md"), key=lambda item: item.relative_to(XIUXIAN_DIR).as_posix())
+    return stable_markdown_paths(XIUXIAN_DIR)
 
 
 def _doc_group(path: Path) -> str:

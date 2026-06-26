@@ -96,7 +96,7 @@ class HelpService(CoreService):
         panel.line("关键业务已经按方向拆分，先选方向，再进入具体按钮。")
         for key, (title, desc, _commands) in sections.items():
             panel.line(f"{title}：{desc} 发送：指南 {key}")
-        return panel.render() + T.buttons(*self._guide_section_buttons())
+        return T.attach(panel.render(), T.buttons(*self._guide_section_buttons()))
 
     def _guide_section(self, key: str) -> str:
         """返回单个方向的按钮页。"""
@@ -106,7 +106,9 @@ class HelpService(CoreService):
         panel.section(f"指南·{title}")
         panel.line(desc)
         panel.line("只放固定命令按钮；需要补参数的命令请看帮助网页或对应功能返回文本。")
-        return panel.render() + T.buttons(*commands, "指南")
+        if key == "战斗":
+            panel.line("切磋、决斗、抢劫和人物志都可以直接@对方；绑定用户组后会自动指向对方主角色。")
+        return T.attach(panel.render(), T.buttons(*commands, "指南"))
 
     @staticmethod
     def _guide_key(section: str) -> str:

@@ -240,7 +240,7 @@ class WorldMaterialService(CoreService):
         for text in generated_maps:
             panel.line(text)
         self.refresh_titles(client_id)
-        return panel.render() + T.buttons("背包", "自动出售", "探险")
+        return T.attach(panel.render(), T.buttons("背包", "自动出售", "探险"))
 
     def treasure_status(self, client_id: str, message: str = "") -> str:
         """查看当前位置或指定城池的藏宝图。"""
@@ -292,7 +292,7 @@ class WorldMaterialService(CoreService):
                 f"{row['city_name']}｜当前价 {money(row['current_price'])}｜"
                 f"出价 {row['bid_count']}/{TREASURE_BID_LIMIT}｜武器上限 {row['weapon_max_level']}"
             )
-        return panel.render() + T.buttons("探险列表", "自动出售")
+        return T.attach(panel.render(), T.buttons("探险列表", "自动出售"))
 
     def treasure_bid(self, client_id: str, message: str) -> str:
         """给当前位置城池的藏宝图出价。"""
@@ -357,12 +357,14 @@ class WorldMaterialService(CoreService):
                 fresh = conn.execute("SELECT * FROM treasure_maps WHERE map_id = ?", (row["map_id"],)).fetchone()
                 self._settle_auction_conn(conn, dict(fresh))
         if bid_count >= TREASURE_BID_LIMIT:
-            return T.success(
-                f"藏宝图第 {TREASURE_BID_LIMIT} 次出价落锤：{money(amount)}。你已拍下 {location_name} 藏宝图，发送：领取藏宝图。"
-            ) + T.buttons("领取藏宝图", "藏宝图")
-        return T.success(
-            f"出价成功：{location_name} 藏宝图当前价 {money(amount)}，出价 {bid_count}/{TREASURE_BID_LIMIT}。"
-        ) + T.buttons("藏宝图", "领取藏宝图")
+            return T.attach(
+                T.success(f"藏宝图第 {TREASURE_BID_LIMIT} 次出价落锤：{money(amount)}。你已拍下 {location_name} 藏宝图，发送：领取藏宝图。"),
+                T.buttons("领取藏宝图", "藏宝图"),
+            )
+        return T.attach(
+            T.success(f"出价成功：{location_name} 藏宝图当前价 {money(amount)}，出价 {bid_count}/{TREASURE_BID_LIMIT}。"),
+            T.buttons("藏宝图", "领取藏宝图"),
+        )
 
     def treasure_claim(self, client_id: str) -> str:
         """领取已成交、宗主待领或脚下可拾取藏宝图。"""
@@ -1380,15 +1382,15 @@ class WorldMaterialService(CoreService):
             min_price = int(row["current_price"]) + max(1000, int(int(row["current_price"]) * 0.05))
             panel.line(f"当前价：{money(row['current_price'])}｜出价 {row['bid_count']}/{TREASURE_BID_LIMIT}｜剩余约 {left} 分钟")
             panel.line(f"最低下一口：{money(min_price)}")
-            return panel.render() + T.buttons(f"藏宝图出价 {min_price}", "藏宝图")
+            return T.attach(panel.render(), T.buttons(f"藏宝图出价 {min_price}", "藏宝图"))
         if row["status"] == "可拾取":
             panel.line(f"落点：({row['x']},{row['y']})｜当前位置：({player['x']},{player['y']})")
             if int(player["x"]) == int(row["x"]) and int(player["y"]) == int(row["y"]):
-                return panel.render() + T.buttons("领取藏宝图")
-            return panel.render() + T.buttons(f"导航 {row['x']} {row['y']}", "藏宝图")
+                return T.attach(panel.render(), T.buttons("领取藏宝图"))
+            return T.attach(panel.render(), T.buttons(f"导航 {row['x']} {row['y']}", "藏宝图"))
         if row["status"] in {"已成交", "宗主待领"} and str(row["owner_client_id"]) == str(player["client_id"]):
             panel.line(f"这张图已经归你名下，领取后会兑现为城池特色{quality_label(QUALITY_EPIC)}武器。")
-            return panel.render() + T.buttons("领取藏宝图")
+            return T.attach(panel.render(), T.buttons("领取藏宝图"))
         return panel.render()
 
     def _medicine_consumption_pressure(self, conn: sqlite3.Connection) -> float:

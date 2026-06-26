@@ -815,13 +815,21 @@ class CoreService:
     def player_by_ref(self, ref: str) -> dict[str, Any] | None:
         """按 client_id 或展示名读取玩家。
 
-        WS 层已经把 CQ/at 转成 client_id；普通文本则传展示名。
-        所有“指定其他玩家”的业务都走这里，避免各组件各写一套。
+        WS 层会先把平台 CQ/at 转成原始入口 client_id。这里再走一次
+        用户组映射，把对方入口 ID 归一到主角色 ID；普通文本则继续按
+        玩家展示名兜底。所有“指定其他玩家”的业务都走这里，避免各组件
+        各写一套身份解析。
         """
 
         value = str(ref).strip()
         if not value:
             return None
+
+        resolved_id = _resolve_identity_player_id(value, self.db)
+        if resolved_id and resolved_id != value:
+            player = self.player(resolved_id)
+            if player:
+                return player
 
         player = self.player(value)
         if player:
@@ -832,13 +840,13 @@ class CoreService:
         )
 
     def player_id_by_ref(self, ref: str) -> str:
-        """按 client_id 或展示名读取玩家 id；找不到时返回空字符串。"""
+        """按入口 id、主角色 id 或展示名读取玩家 id；找不到时返回空字符串。"""
 
         player = self.player_by_ref(ref)
         return str(player["client_id"]) if player else ""
 
     def player_id_from_last_arg(self, message: str) -> str:
-        """取最后一个参数作为玩家引用，支持 client_id 和展示名。"""
+        """取最后一个参数作为玩家引用，支持 @入口、主角色 id 和展示名。"""
 
         parts = split_words(message)
         return self.player_id_by_ref(parts[-1]) if parts else ""
@@ -1710,7 +1718,7 @@ class CoreService:
                 "INSERT INTO game_logs (client_id, action, detail, created_at) VALUES (?, '创建用户', ?, ?)",
                 (client_id, result, ts()),
             )
-        return f"创建成功，道友 {result}。初始武器：{starter_name}。"
+        return T.success(f"创建成功，道友 {result}。初始武器：{starter_name}。")
 
     def rename_player(self, client_id: str, display_name: str) -> str:
         """修改展示名称。"""
@@ -1752,7 +1760,7 @@ class CoreService:
                 "INSERT INTO game_logs (client_id, action, detail, created_at) VALUES (?, '改名', ?, ?)",
                 (client_id, result, ts()),
             )
-        return f"改名成功，现在叫 {result}。<指南><探险><修仙帮助>"
+        return T.attach(f"改名成功，现在叫 {result}。", "<指南><探险><修仙帮助>")
 
     def log(self, client_id: str, action: str, detail: str = "") -> None:
         """写行为日志。"""
@@ -3214,9 +3222,17 @@ class CoreService:
         )
 
     def format_player_name(self, client_id: str) -> str:
-        """返回玩家展示名；对外回复不展示 client_id。"""
+        """返回玩家展示名；对外回复不展示 client_id。
+
+        短期战斗日志里可能还保存过原始入口 ID。展示时也尝试过用户组
+        映射，保证玩家绑定新入口后，旧入口 ID 不会在消息里变成未知人。
+        """
 
         player = self.player(client_id)
+        if not player:
+            resolved_id = _resolve_identity_player_id(client_id, self.db)
+            if resolved_id and resolved_id != str(client_id or "").strip():
+                player = self.player(resolved_id)
         if not player:
             return "未知道友"
         return str(player["display_name"])
@@ -3230,6 +3246,22 @@ class CoreService:
         current = exp - player_exp_for_level(player["level"])
         need = exp_need(player["level"])
         return f"{current}/{need}"
+
+
+def _resolve_identity_player_id(value: str, database: Any) -> str:
+    """把原始入口 ID 映射成用户组主角色 ID。
+
+    `common.py` 是数据库种子也会导入的公共层，不能在模块顶部导入
+    `identity.py`，否则 `sql.py -> common.py -> identity.py -> sql.py`
+    会形成启动期循环。这里使用局部导入，把身份解析留到真实业务调用时。
+    """
+
+    try:
+        from .identity import resolve_player_id
+
+        return resolve_player_id(value, database)
+    except Exception:
+        return str(value or "").strip()
 
 
 def format_effect(effect_text: Any) -> str:

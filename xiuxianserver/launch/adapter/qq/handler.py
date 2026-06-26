@@ -594,6 +594,7 @@ class QqEventHandler(BaseAdapter):
         return {
             "C2C_MESSAGE_CREATE": "私聊",
             "GROUP_AT_MESSAGE_CREATE": "群艾特",
+            "GROUP_MESSAGE_AT_CREATE": "群艾特",
             "GROUP_MESSAGE_CREATE": "群聊",
             "INTERACTION_CREATE": "按钮",
         }.get(event_type, event_type or "-")

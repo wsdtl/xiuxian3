@@ -91,7 +91,7 @@ class WorldSkinService(CoreService):
             f"事件 {counts['events']}。"
         )
         panel.line("完整性检查：ok")
-        return panel.render() + "<世界皮肤>"
+        return T.attach(panel.render(), "<世界皮肤>")
 
     @staticmethod
     def _validation_failed_text(package: Any, errors: list[str]) -> str:
@@ -104,7 +104,7 @@ class WorldSkinService(CoreService):
             panel.line(f"还有 {len(errors) - 12} 项未显示。")
         panel.hr()
         panel.line("切换已停止，数据库没有写入。")
-        return panel.render() + "<世界皮肤>"
+        return T.attach(panel.render(), "<世界皮肤>")
 
 
 service = WorldSkinService(db)

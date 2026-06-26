@@ -13,6 +13,7 @@ from urllib.parse import quote
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import HTMLResponse
 
+from ..doc_sources import stable_markdown_paths
 from ..world_skin import WorldSkinEntry, current_world_entries
 
 
@@ -226,7 +227,7 @@ def render_doc(doc: HelpDoc) -> str:
 def _markdown_paths() -> list[Path]:
     """递归收集修仙组件里的 Markdown 文档。"""
 
-    return sorted(XIUXIAN_DIR.rglob("*.md"), key=lambda item: item.relative_to(XIUXIAN_DIR).as_posix())
+    return stable_markdown_paths(XIUXIAN_DIR)
 
 
 def _command_sections_from_docs(docs: list[HelpDoc]) -> tuple[CommandSection, ...]:

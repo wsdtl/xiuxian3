@@ -100,7 +100,7 @@ class PlayerService(CoreService):
         panel.hr()
         panel.section("今日加成")
         panel.lines(self._daily_bonus_lines(client_id))
-        return panel.render() + T.buttons("休息", "结束休息", "地图")
+        return T.attach(panel.render(), T.buttons("休息", "结束休息", "地图"))
 
     def status(self, client_id: str) -> str:
         """查看玩家关键状态。"""
@@ -137,7 +137,7 @@ class PlayerService(CoreService):
         nemesis_text = self._nemesis_text(client_id)
         if nemesis_text:
             panel.line(f"死敌：{nemesis_text}")
-        return panel.render() + T.buttons("修仙信息", "休息", "地图")
+        return T.attach(panel.render(), T.buttons("修仙信息", "休息", "地图"))
 
     def _location_terrain(self, player: dict) -> str:
         """读取当前位置地貌；空地和玩家自建宗门坐标显示为荒野。"""

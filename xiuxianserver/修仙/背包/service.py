@@ -34,7 +34,7 @@ class BackpackService(CoreService):
         panel.section("物品")
         for row in rows:
             panel.line(f"{row['name']} x{row['quantity']}｜单重 {row['weight']}｜{row['category']}")
-        return panel.render() + "<自动出售><商场推荐>"
+        return T.attach(panel.render(), "<自动出售><商场推荐>")
 
     def use_item(self, client_id: str, item_message: str) -> str:
         """使用恢复类物品。

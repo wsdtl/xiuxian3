@@ -44,6 +44,23 @@ def test_markdown_link_hides_raw_web_url() -> None:
     )
 
 
+def test_panel_section_uses_light_semantic_icons() -> None:
+    """正文卡栏目自动补语义图标，业务文本不用到处手写装饰。"""
+
+    panel = T.panel()
+    panel.section("状态")
+    panel.section("武器详情")
+    panel.section("青岚剑")
+    panel.section("🌱 已带图标")
+
+    assert panel.render().splitlines() == [
+        "> **🌱 状态**",
+        "> **⚔️ 武器详情**",
+        "> **青岚剑**",
+        "> **🌱 已带图标**",
+    ]
+
+
 class FakeDB:
     """只给回复包装读取玩家头。"""
 

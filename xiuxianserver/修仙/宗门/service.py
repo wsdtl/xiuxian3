@@ -169,7 +169,7 @@ class SectService(CoreService):
                 buttons=("宗门", "地图"),
             )
 
-        return T.success(f"已加入宗门：{sect['name']}。") + T.buttons("宗门", "地图")
+        return T.attach(T.success(f"已加入宗门：{sect['name']}。"), T.buttons("宗门", "地图"))
 
     def quit(self, client_id: str) -> str:
         """退出当前宗门；宗主退出时自动移交或解散空宗门。"""
@@ -216,7 +216,7 @@ class SectService(CoreService):
                     "INSERT INTO game_logs (client_id, action, detail, created_at) VALUES (?, '退出宗门', ?, ?)",
                     (client_id, f"sect={sect_name}", ts()),
                 )
-                return T.success(f"已退出宗门：{sect_name}。") + T.buttons("宗门", "地图")
+                return T.attach(T.success(f"已退出宗门：{sect_name}。"), T.buttons("宗门", "地图"))
             if remaining:
                 new_master = str(remaining["client_id"])
                 conn.execute(
@@ -232,16 +232,17 @@ class SectService(CoreService):
                     "INSERT INTO game_logs (client_id, action, detail, created_at) VALUES (?, '退出宗门', ?, ?)",
                     (client_id, detail, ts()),
                 )
-                return T.success(
-                    f"已退出宗门：{sect_name}。新宗主为 {self.format_player_name(new_master)}。"
-                ) + T.buttons("宗门", "地图")
+                return T.attach(
+                    T.success(f"已退出宗门：{sect_name}。新宗主为 {self.format_player_name(new_master)}。"),
+                    T.buttons("宗门", "地图"),
+                )
 
             conn.execute("DELETE FROM sects WHERE sect_id = ?", (sect_id,))
             conn.execute(
                 "INSERT INTO game_logs (client_id, action, detail, created_at) VALUES (?, '解散宗门', ?, ?)",
                 (client_id, f"sect={sect_name}", ts()),
             )
-        return T.success(f"已退出并解散宗门：{sect_name}。") + T.buttons("宗门", "地图")
+        return T.attach(T.success(f"已退出并解散宗门：{sect_name}。"), T.buttons("宗门", "地图"))
 
     def war(self, client_id: str) -> str:
         """查看本期宗门大会影响力和奖励。"""
@@ -318,7 +319,7 @@ class SectService(CoreService):
         else:
             panel.section("奖励")
             panel.line("奖励生成后即可领取，通知栏会提示待领奖励。")
-        return panel.render() + T.buttons("领取宗门大会奖励", "宗门", "地图")
+        return T.attach(panel.render(), T.buttons("领取宗门大会奖励", "宗门", "地图"))
 
     def claim_war_reward(self, client_id: str) -> str:
         """领取本期宗门大会奖励。"""
@@ -343,7 +344,7 @@ class SectService(CoreService):
             if total <= 0:
                 return T.hint("宗门大会奖励数量异常。", "请稍后再试。<宗门大会>")
             self._claim_reward_rows_conn(conn, client_id, rows)
-        return T.success(f"已领取宗门大会奖励：{self._sect_war_reward_item_name()} x{total}。") + T.buttons("纳戒", "宗门大会")
+        return T.attach(T.success(f"已领取宗门大会奖励：{self._sect_war_reward_item_name()} x{total}。"), T.buttons("纳戒", "宗门大会"))
 
     def create(self, client_id: str, message: str) -> str:
         """建立宗门。"""
@@ -466,9 +467,10 @@ class SectService(CoreService):
                 buttons=("宗门", "地图"),
             )
 
-        return T.success(
-            f"宗门创建成功：{sect_name}。山门坐标：({x},{y})。"
-        ) + T.buttons("宗门", "地图")
+        return T.attach(
+            T.success(f"宗门创建成功：{sect_name}。山门坐标：({x},{y})。"),
+            T.buttons("宗门", "地图"),
+        )
 
     def record_robbery_influence_conn(
         self,
@@ -516,13 +518,16 @@ class SectService(CoreService):
         panel.line(f"成员变动：{self._member_lock_text()}")
         panel.line(f"创建时间：{sect['created_at']}")
         if joined:
-            return panel.render() + T.buttons("宗门成员", "宗门大会", "领取宗门大会奖励", "退出宗门", "宗门", "地图")
-        return panel.render() + T.buttons(
-            f"加入宗门 {sect['name']}",
-            f"宗门成员 {sect['name']}:成员名册",
-            "宗门大会",
-            "宗门",
-            "地图",
+            return T.attach(panel.render(), T.buttons("宗门成员", "宗门大会", "领取宗门大会奖励", "退出宗门", "宗门", "地图"))
+        return T.attach(
+            panel.render(),
+            T.buttons(
+                f"加入宗门 {sect['name']}",
+                f"宗门成员 {sect['name']}:成员名册",
+                "宗门大会",
+                "宗门",
+                "地图",
+            ),
         )
 
     def _sect_members_panel(self, sect: dict[str, object], joined: bool) -> str:
@@ -555,7 +560,7 @@ class SectService(CoreService):
             panel.line(f"还有 {hidden_count} 人未展示。")
 
         buttons = ("宗门", "宗门大会", "退出宗门", "地图") if joined else ("宗门", "宗门大会", "地图")
-        return panel.render() + T.buttons(*buttons)
+        return T.attach(panel.render(), T.buttons(*buttons))
 
     def _sect_by_name(self, name: str) -> dict[str, object] | None:
         """按宗门名读取。"""

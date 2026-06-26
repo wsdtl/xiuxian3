@@ -51,7 +51,7 @@ class WeaponService(WeaponCore):
         equipped = next((row for row in rows if int(row["equipped"])), None)
         if not equipped:
             return panel.render()
-        return panel.render() + f"<升级武器 {equipped['weapon_id']}:武器升级>"
+        return T.attach(panel.render(), f"<升级武器 {equipped['weapon_id']}:武器升级>")
 
     def detail(self, client_id: str, message: str) -> str:
         """查看单把武器详情。"""

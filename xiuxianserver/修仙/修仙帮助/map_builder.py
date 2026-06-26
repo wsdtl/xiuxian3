@@ -9,6 +9,8 @@ from ..constants import WORLD_COORD_MAX, WORLD_COORD_MIN
 from ..sql import db
 
 
+# 地图坐标范围是 -100..100。前端按 1 坐标 = 24px 渲染，
+# 用缩放和平移查看细节，避免相距十几个坐标的宗门在最大缩放下仍挤在一起。
 MAP_COORD_PIXELS = 24
 
 

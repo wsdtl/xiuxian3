@@ -183,7 +183,7 @@ class ExplorationService(CoreService):
                 panel.line(self._secret_realm_map_line(row, int(player["level"])))
         buttons = [f"导航 {row['name']}" for row in rows]
         buttons.extend(["地图", "商场推荐"])
-        return panel.render() + T.buttons(*buttons)
+        return T.attach(panel.render(), T.buttons(*buttons))
 
     @staticmethod
     def _city_state_inline_text(state_lines: list[str]) -> str:
@@ -292,7 +292,7 @@ class ExplorationService(CoreService):
             buttons.extend([f"导航 {self._default_location_name()}", "探险列表"])
         else:
             buttons.append("探险列表")
-        return panel.render() + T.buttons(*buttons)
+        return T.attach(panel.render(), T.buttons(*buttons))
 
     def _default_location_name(self) -> str:
         """读取主城当前展示名，避免世界皮肤切换后按钮还写死旧名。"""

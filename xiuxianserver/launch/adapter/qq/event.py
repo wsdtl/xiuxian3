@@ -11,6 +11,7 @@ from typing import Any, Dict
 
 FIRST_LEADING_MENTION_RE = re.compile(r"^\s*<@([^>]+)>")
 LEADING_MENTION_CHAIN_RE = re.compile(r"^(?:\s*<@[^>]+>\s*)+")
+MENTION_RE = re.compile(r"<@([^>]+)>")
 
 
 @dataclass(frozen=True)
@@ -57,6 +58,7 @@ def parse_message_event(payload: dict) -> QqMessageEvent | None:
     if event_type not in {
         "C2C_MESSAGE_CREATE",
         "GROUP_AT_MESSAGE_CREATE",
+        "GROUP_MESSAGE_AT_CREATE",
         "GROUP_MESSAGE_CREATE",
     }:
         return None
@@ -130,11 +132,12 @@ def normalize_content(
     event_type: str = "",
     mentions: Any = None,
 ) -> str:
-    """清理 QQ 消息正文，只去掉明确指向本机器人的开头 at。"""
+    """清理 QQ 消息正文，并把 QQ at 段转成业务层可识别的入口 ID。"""
 
     text = "" if value is None else str(value)
     if _should_strip_leading_mentions(text, event_type, mentions):
         text = LEADING_MENTION_CHAIN_RE.sub("", text, count=1)
+    text = _replace_mentions_with_ids(text, mentions)
     return re.sub(r"\s+", " ", text).strip()
 
 
@@ -169,7 +172,7 @@ def _should_strip_leading_mentions(text: str, event_type: str, mentions: Any) ->
 
     # 少数 QQ at 机器人事件可能没有 mentions 详情；这种事件本身就代表
     # “用户在叫机器人”，保留兼容处理。
-    return event_type == "GROUP_AT_MESSAGE_CREATE"
+    return event_type in {"GROUP_AT_MESSAGE_CREATE", "GROUP_MESSAGE_AT_CREATE"}
 
 
 def _you_mention_ids(mentions: Any) -> set[str]:
@@ -189,6 +192,60 @@ def _you_mention_ids(mentions: Any) -> set[str]:
             if value:
                 result.add(value)
     return result
+
+
+def _replace_mentions_with_ids(text: str, mentions: Any) -> str:
+    """把正文里的 <@...> 替换成前后带空格的入口 ID。
+
+    修仙业务层已经约定：需要指定玩家的命令接收普通文本参数，平台 at
+    需要先在驱动器层转换成原始入口 ID，再由用户组解析成主角色 ID。
+    """
+
+    mention_ids = _mention_id_map(mentions)
+
+    def replace(match: re.Match) -> str:
+        token = match.group(1).strip().lstrip("!")
+        value = mention_ids.get(token) or token
+        return f" {value} " if value else " "
+
+    return MENTION_RE.sub(replace, text)
+
+
+def _mention_id_map(mentions: Any) -> dict[str, str]:
+    """建立 QQ mention 占位 ID 到入口 ID 的映射。
+
+    QQ payload 里正文 `<@...>` 使用的 ID 和 mentions 详情字段可能不完全
+    同名。这里把 id、user_openid、member_openid 都登记为可匹配键，值优先
+    取 user_openid，保持和事件 client_id 的选择顺序一致。
+    """
+
+    if not isinstance(mentions, list):
+        return {}
+
+    result: dict[str, str] = {}
+    for item in mentions:
+        if not isinstance(item, dict):
+            continue
+
+        preferred = _preferred_mention_id(item)
+        if not preferred:
+            continue
+
+        for key in ("id", "user_openid", "member_openid"):
+            token = str(item.get(key) or "").strip().lstrip("!")
+            if token:
+                result[token] = preferred
+    return result
+
+
+def _preferred_mention_id(item: dict) -> str:
+    """读取 mention 对应的业务入口 ID，顺序和消息作者 client_id 保持一致。"""
+
+    for key in ("user_openid", "member_openid", "id"):
+        value = str(item.get(key) or "").strip().lstrip("!")
+        if value:
+            return value
+    return ""
 
 
 def _is_you_mention(value: Any) -> bool:

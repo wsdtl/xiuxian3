@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, TypeVar
 
 from .common import business_day, dt, dump_json, load_json, money, row_value
 from .constants import (
@@ -49,18 +49,19 @@ class SystemMessage:
     label: str = ""
 
 
+NoticeItem = Notification | SystemMessage
+NoticeT = TypeVar("NoticeT", bound=NoticeItem)
+
+
 def system_message_line(database: Any, limit: int = DEFAULT_SYSTEM_NOTICE_LIMIT, client_id: str | None = None) -> str:
     """生成系统消息队列文本；查询失败时静默，避免回复出口被通知拖垮。"""
 
     try:
         messages = collect_system_messages(database, client_id=client_id)
     except Exception:
+        # 回复出口不能被系统消息拖死；坏掉时少一行提示，比整条回复失败更可控。
         return ""
-    if not messages:
-        return ""
-    ordered = sorted(messages, key=lambda item: item.priority)
-    texts = [_notice_text(item) for item in ordered[: max(1, int(limit))]]
-    return f"{SYSTEM_NOTICE_PREFIX}{'｜'.join(texts)}"
+    return _queue_line(SYSTEM_NOTICE_PREFIX, messages, limit)
 
 
 def collect_system_messages(
@@ -86,12 +87,9 @@ def notification_line(client_id: str, database: Any, limit: int = DEFAULT_NOTICE
     try:
         notifications = collect_notifications(client_id, database)
     except Exception:
+        # 个人通知是锦上添花，主命令回复才是刚需；异常时静默降级。
         return ""
-    if not notifications:
-        return ""
-    ordered = sorted(notifications, key=lambda item: item.priority)
-    texts = [_notice_text(item) for item in ordered[: max(1, int(limit))]]
-    return f"{NOTICE_PREFIX}{'｜'.join(texts)}"
+    return _queue_line(NOTICE_PREFIX, notifications, limit)
 
 
 def collect_notifications(
@@ -551,6 +549,7 @@ def _close_expired_seasonal_boss_events(database: Any, current: datetime) -> Non
             (dump_json({"reason": "timeout"}), _ts(current)),
         )
     except Exception:
+        # 首领状态推进只是回复头的顺手维护；真正结算入口仍会再次校验。
         return
 
 
@@ -599,6 +598,20 @@ def _notice_text(item: Notification | SystemMessage) -> str:
     return label
 
 
+def _queue_line(prefix: str, items: list[NoticeItem], limit: int) -> str:
+    """把通知队列压成回复头的一行。
+
+    队列里保留完整待办对象，展示时只取前几条；前面的事项处理掉以后，后面
+    会自然补上，不需要额外公告命令，也不抢底部按钮位置。
+    """
+
+    if not items:
+        return ""
+    ordered = sorted(items, key=lambda item: item.priority)
+    texts = [_notice_text(item) for item in ordered[: max(1, int(limit))]]
+    return f"{prefix}{'｜'.join(texts)}"
+
+
 def _effective_exploration_ready_at(row: Any) -> datetime | None:
     ready_at = dt(str(row_value(row, "ready_at", "") or ""))
     started_at = dt(str(row_value(row, "started_at", "") or ""))
@@ -628,20 +641,19 @@ def _exploration_duration_seconds(result: Any) -> int:
 
 
 def _dedupe_notifications(notifications: list[Notification]) -> list[Notification]:
-    result: list[Notification] = []
-    seen: set[str] = set()
-    for item in sorted(notifications, key=lambda value: value.priority):
-        if item.key in seen:
-            continue
-        seen.add(item.key)
-        result.append(item)
-    return result
+    return _dedupe_by_key(notifications)
 
 
 def _dedupe_system_messages(messages: list[SystemMessage]) -> list[SystemMessage]:
-    result: list[SystemMessage] = []
+    return _dedupe_by_key(messages)
+
+
+def _dedupe_by_key(items: list[NoticeT]) -> list[NoticeT]:
+    """按 key 保留优先级最高的同类通知。"""
+
+    result: list[NoticeT] = []
     seen: set[str] = set()
-    for item in sorted(messages, key=lambda value: value.priority):
+    for item in sorted(items, key=lambda value: value.priority):
         if item.key in seen:
             continue
         seen.add(item.key)
