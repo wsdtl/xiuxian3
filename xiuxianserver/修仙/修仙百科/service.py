@@ -1905,7 +1905,7 @@ def _world_skin_summary(body: str) -> str:
 def _world_skin_next_step(entry: KnowledgeEntry) -> str:
     """按当前世界资料类型给下一步。"""
 
-    if entry.kind in {"商路城池", "探险地点", "NPC地点"}:
+    if entry.kind in {"商路城池", "探险地点", "系统保留地点"}:
         return f"下一步：发“地图”看当前位置，或按地点提示使用导航/探险相关命令。"
     if entry.kind in {"世界物品", "纳戒物品"}:
         return "下一步：发“背包”或“纳戒”看库存；想知道具体用途可以问“修仙百科 物品名怎么用”。"

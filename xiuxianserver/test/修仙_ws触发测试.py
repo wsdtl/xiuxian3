@@ -166,7 +166,7 @@ async def main_async() -> None:
             await _dispatch(manager, "player_ws", "宗门")
             _must_reply(manager, "player_ws", "你还没有宗门")
             await _dispatch(manager, "player_ws", "建立宗门 0 0 青云宗")
-            _must_reply(manager, "player_ws", "已有 NPC 地点")
+            _must_reply(manager, "player_ws", "已有系统保留地点")
             await _dispatch(manager, "player_ws", "建立宗门 -49 -49 青云宗")
             _must_reply(manager, "player_ws", "宗门创建成功")
             _must_reply(manager, "player_ws", "山门坐标：(-49,-49)")
@@ -856,9 +856,10 @@ def _must_image_reply(manager: FakeManager, client_id: str) -> None:
     assert message.get("type") == "image", message
     assert not message.get("message", "").startswith("data:image/"), "图片回复不能带 data URI 头"
     image_bytes = b64decode(message.get("message", ""))
+    is_jpeg = image_bytes.startswith(b"\xff\xd8\xff")
     is_png = image_bytes.startswith(b"\x89PNG")
     is_webp = image_bytes.startswith(b"RIFF") and b"WEBP" in image_bytes[:16]
-    assert is_png or is_webp, "图片回复不是 PNG/WebP base64"
+    assert is_jpeg or is_png or is_webp, "图片回复不是 JPEG/PNG/WebP base64"
 
 
 def _must_help_markdown_reply(manager: FakeManager, client_id: str) -> None:

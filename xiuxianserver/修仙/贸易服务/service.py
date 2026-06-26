@@ -665,7 +665,7 @@ class TradeService(WeaponCore):
         if len(parts) == 1:
             location = self._navigation_location(parts[0])
             if not location:
-                return T.hint("没有找到可导航地点。", "普通城池看探险列表；特殊收购和回收点由出售/自动出售自动前往。<探险列表><自动出售>")
+                return T.hint("没有找到可导航地点。", "普通城池看探险列表；特殊收购点和回收建筑由出售/自动出售自动前往。<探险列表><自动出售>")
             name = str(location["name"])
             x = int(location["x"])
             y = int(location["y"])
@@ -1036,9 +1036,9 @@ class TradeService(WeaponCore):
             self._write_game_log_conn(conn, client_id, action, f"location={name}, x={x}, y={y}")
 
     def recycle_location_by_type(self, recycle_type: str) -> dict | None:
-        """读取某类纳戒资产的回收点。
+        """读取某类纳戒资产的回收建筑。
 
-        回收点是系统定义建筑，不随玩家出售动作变化；统一走定义缓存，
+        回收建筑是系统定义地点，不随玩家出售动作变化；统一走定义缓存，
         让出售全部、自动出售和单件回收共用同一份地点资料。
         """
 
@@ -1326,7 +1326,7 @@ class TradeService(WeaponCore):
 
     @staticmethod
     def _location_id_for_point_conn(conn, name: str, x: int, y: int) -> str:
-        """按坐标优先读取 NPC 稳定 ID；展示名只作为玩家输入兜底。"""
+        """按坐标优先读取系统保留地点稳定 ID；展示名只作为玩家输入兜底。"""
 
         row = conn.execute(
             "SELECT location_id FROM world_locations WHERE x = ? AND y = ?",
@@ -1340,12 +1340,12 @@ class TradeService(WeaponCore):
         return str(row["location_id"] or "") if row else ""
 
     def _all_navigation_locations(self) -> list[dict]:
-        """读取全部 NPC 地点，供坐标导航使用。"""
+        """读取全部系统保留地点，供坐标导航使用。"""
 
         return all_world_locations(self.db)
 
     def _known_location_at(self, x: int, y: int) -> dict | None:
-        """读取精确坐标上的 NPC 地点。"""
+        """读取精确坐标上的系统保留地点。"""
 
         return world_location_by_point(self.db, x, y)
 

@@ -11,7 +11,7 @@ xiuxianplugin/    NoneBot 机器人转发插件
 
 项目和框架维护边界见 `xiuxianserver/开发约束.md`；修仙组件开发约束见 `xiuxianserver/修仙/开发约束.md`。服务端玩法、命令和回复规则以代码为准，组件说明 Markdown 只记录业务边界和扩展约束。
 
-![项目Logo](help.png)
+![项目Logo](help.jpg)
 
 ## 一键安装（推荐）
 

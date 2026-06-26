@@ -6,7 +6,7 @@
 
 - 修仙帮助、修仙百科、后台接口、用户组、玩家、背包、纳戒、祈愿、保险箱、修仙物品、银行、二手市场、贸易服务、宗门、探险、武器、装备、铭刻、对战、异界虫洞、首领、修仙界历史、世界皮肤、数据库备份都是中文二级组件。
 - HTTP 路由由 `修仙帮助`、`用户组`、`后台接口` 等显式暴露 router 的组件承接；`修仙帮助` 提供 Markdown 文档站，`用户组` 提供入口绑定后台页，`后台接口` 是 web 后台 API 的统一承接点。
-- 数据库使用 sqlite3，schema 版本为 `SCHEMA_VERSION = 2026062701`；系统 NPC 点、跑商城池、探险地点、特殊收购点、回收点、城池状态、战备状态和交易动态状态都以稳定 ID 承接，中文名只作为当前世界皮肤的展示名；`user_groups` 和 `user_identities` 承接多入口身份映射；`wish_pools`、`wish_prizes`、`wish_draw_records` 和 `wish_user_vouchers` 承接祈愿奖池、记录和凭证；`player_weapons` 保存累计经验，但不保存攻击、自带技能或附魔槽位这类可实时派生字段；`sects` 保存宗门山门坐标、创建者和宗主，`sect_members` 保存宗门成员归属，`sect_stats` 保存宗门等级和三底蕴，宗门大会数据按周期累计到宗门影响力、个人贡献和奖励表。
+- 数据库使用 sqlite3，schema 版本为 `SCHEMA_VERSION = 2026062701`；系统保留地点、跑商城池、探险地点、特殊收购点、回收建筑、城池状态、战备状态和交易动态状态都以稳定 ID 承接，中文名只作为当前世界皮肤的展示名；`user_groups` 和 `user_identities` 承接多入口身份映射；`wish_pools`、`wish_prizes`、`wish_draw_records` 和 `wish_user_vouchers` 承接祈愿奖池、记录和凭证；`player_weapons` 保存累计经验，但不保存攻击、自带技能或附魔槽位这类可实时派生字段；`sects` 保存宗门山门坐标、创建者和宗主，`sect_members` 保存宗门成员归属，`sect_stats` 保存宗门等级和三底蕴，宗门大会数据按周期累计到宗门影响力、个人贡献和奖励表。
 - 行为沉淀使用长期表：`game_logs` 记关键行为流水，`player_lifetime_stats` 接清理前的累计统计，`player_journals` 记玩家日记摘要，`player_titles` 记动态称号，`daily_fortunes` 记每日气运，`weapon_legends` 记武器传奇。
 - 每个二级包保留 `说明.md`，作为单个组件的使用和维护约束；帮助站会读取这些 Markdown。
 - 常用检查覆盖冒烟测试、WS 触发测试、命令压力测试和架构业务自查。
@@ -265,7 +265,7 @@ wish_user_vouchers          玩家祈愿凭证库存
 second_hand_listings        二手市场上架
 second_hand_records         二手市场成交记录
 
-world_locations             NPC 地点，也就是系统自己使用的命名占用点
+world_locations             系统保留地点，也就是系统自己使用的命名占用点
 sects                       宗门山门、宗主和创建信息
 sect_members                宗门成员和身份
 sect_stats                  宗门等级、经验和影响力/供养/山门建设三底蕴
@@ -282,7 +282,7 @@ trade_records               跑商交易记录
 trade_daily_rewards         每日跑商奖励
 trade_buy_locks                跑商最近买入价和原地转售锁
 special_buyers              特殊收购点
-recycle_locations           回收地点
+recycle_locations           回收建筑
 city_world_states           11 个承接城池的药路、民生、建设、古物状态
 world_material_records      世界物资回收流水
 treasure_maps               藏宝图拍卖、可拾取、成交和领取状态
@@ -439,8 +439,8 @@ weapon_legends              武器传奇
 ```
 
 `导航 x y` 会精确写入玩家当前位置；坐标命中已知地点才使用该地点名，否则生成荒野坐标名，避免任意坐标被吸附到最近商场。
-修仙世界当前按矩形整数坐标设计，左下角为 `(-100,-100)`，右上角为 `(100,100)`，边界点可用；数据库 `world_locations` 只保存 NPC 地点，也就是系统自己使用的命名占用点，荒野空地不入库，宗门、洞府、地皮和藏宝图按坐标稀疏占用。
-只有 11 个普通跑商/探险重合点承接世界状态；特殊收购点、系统回收点、太虚秘境、虫洞、宗门和荒地不承接普通世界物资回收。
+修仙世界当前按矩形整数坐标设计，左下角为 `(-100,-100)`，右上角为 `(100,100)`，边界点可用；数据库 `world_locations` 只保存系统保留地点，也就是系统自己使用的命名占用点，荒野空地不入库，宗门、洞府、地皮和藏宝图按坐标稀疏占用。
+只有 11 个普通跑商/探险重合点承接世界状态；特殊收购点、回收建筑、太虚秘境、虫洞、宗门和荒地不承接普通世界物资回收。
 藏宝图是古物蓄能后的手动领取链路：拍卖中、可拾取、宗主待领、已成交未领取都会占用所属城池的出图位，领取后才允许该城池生成下一张。
 
 宗门：

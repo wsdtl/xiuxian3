@@ -565,7 +565,7 @@ def _world_groups(entries: tuple[WorldSkinEntry, ...]) -> tuple[tuple[str, tuple
     preferred = (
         "商路城池",
         "探险地点",
-        "NPC地点",
+        "系统保留地点",
         "世界物品",
         "纳戒物品",
         "武器",

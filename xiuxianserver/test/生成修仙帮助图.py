@@ -8,7 +8,7 @@ from typing import Iterable
 from PIL import Image, ImageDraw, ImageFont
 
 ROOT = Path(__file__).resolve().parents[1]
-OUTPUT = ROOT / "修仙" / "修仙帮助" / "help.png"
+OUTPUT = ROOT / "修仙" / "修仙帮助" / "help.jpg"
 
 FONT_REGULAR_PATHS = (
     Path(r"C:\Windows\Fonts\Noto Sans SC (TrueType).otf"),
@@ -23,100 +23,57 @@ FONT_BOLD_PATHS = (
 
 SECTIONS = [
     {
-        "title": "帮助",
+        "title": "帮助・指南",
         "color": "#FFE9A8",
         "lines": [
             "帮助",
             "修仙帮助",
             "指南",
             "指南 成长/行囊/战斗/交易/世界",
+            "地图",
         ],
     },
     {
-        "title": "玩家",
+        "title": "修行成长",
         "color": "#FFD987",
         "lines": [
             "创建用户 名称",
             "改名 新名称",
             "修仙信息",
+            "状态",
             "修仙日记",
             "自动用药 / 自动用药 开启 / 自动用药 关闭",
             "签到",
             "新手礼包",
             "休息",
             "结束休息 / 休息结束",
+            "银行",
+            "银行结息",
+            "升级银行",
+            "存入货币 数量",
+            "取出货币 数量",
+            "用户组 / 绑定用户组 绑定码",
         ],
     },
     {
-        "title": "背包・纳戒・修仙物品",
+        "title": "行囊・祈愿",
         "color": "#AFEBC0",
         "lines": [
             "背包",
-            "使用 恢复类物品名 数量",
+            "使用 物品名 数量",
             "纳戒",
             "保险箱 / 查看保险箱",
             "存入保险箱 物品名 数量",
             "取出保险箱 物品名 数量",
             "体质重塑",
             "武器升限 / 武器升限 武器ID",
-            "开孔 装备位",
             "查看修仙物品 物品名",
+            "祈愿 / 十连祈愿",
+            "祈愿奖池 / 我的凭证 / 祈愿记录",
         ],
     },
     {
-        "title": "银行",
-        "color": "#B5DDF8",
-        "lines": [
-            "银行",
-            "银行结息",
-            "升级银行",
-            "存入货币 数量",
-            "取出货币 数量",
-        ],
-    },
-    {
-        "title": "探险",
-        "color": "#CDBBFA",
-        "lines": [
-            "位置",
-            "探险列表",
-            "探险",
-            "探险 地点名",
-            "探险状态",
-            "结束探险",
-            "探险记录",
-        ],
-    },
-    {
-        "title": "商场・出售・导航",
-        "color": "#FFF09D",
-        "lines": [
-            "商场行情 商品名",
-            "商场购买 商品名 数量",
-            "商场出售 商品名 数量",
-            "商场推荐",
-            "跑商记录",
-            "跑商限制",
-            "跑商奖励",
-            "出售 物品名 数量",
-            "自动出售",
-            "出售全部 武器/宝石/技能书",
-            "导航 地点名或 x y",
-        ],
-    },
-    {
-        "title": "二手市场",
-        "color": "#F6B8D5",
-        "lines": [
-            "二手市场",
-            "二手市场上架 名称 数量 总价",
-            "二手市场上架 武器#ID 总价",
-            "二手市场下架",
-            "二手市场购买 卖家名称 / 二手市场购买@卖家",
-        ],
-    },
-    {
-        "title": "武器",
+        "title": "武器・装备・铭刻",
         "color": "#BBA5F2",
         "lines": [
             "武器",
@@ -125,27 +82,14 @@ SECTIONS = [
             "切换武器 武器ID",
             "升级武器 / 升级武器 武器ID",
             "附魔武器 武器ID 技能书名",
-            "出售全部 武器 / 出售全部 技能书",
-        ],
-    },
-    {
-        "title": "装备・宝石",
-        "color": "#FFC49E",
-        "lines": [
             "装备",
             "装备升级 装备位",
             "孔位 装备位",
+            "开孔 装备位",
             "镶嵌 装备位 孔位 宝石名",
             "拆卸 装备位 孔位",
             "宝石升级 装备位 孔位",
-            "出售 宝石名 等级 数量 / 出售全部 宝石",
             "宝石",
-        ],
-    },
-    {
-        "title": "铭刻",
-        "color": "#E7B1D4",
-        "lines": [
             "铭刻",
             "铭刻之羽",
             "铭刻装备 装备位 新名",
@@ -155,7 +99,39 @@ SECTIONS = [
         ],
     },
     {
-        "title": "对战",
+        "title": "探险・休整",
+        "color": "#CDBBFA",
+        "lines": [
+            "位置",
+            "地图",
+            "探险列表",
+            "探险 / 探险 地点名",
+            "探险状态",
+            "结束探险 / 探险结束",
+            "探险记录",
+            "战斗日志 / 战斗日志 开启 / 战斗日志 关闭",
+            "休息",
+            "结束休息",
+        ],
+    },
+    {
+        "title": "首领・虫洞",
+        "color": "#B9E5EA",
+        "lines": [
+            "首领",
+            "首领状态",
+            "挑战首领",
+            "首领排行",
+            "首领奖励",
+            "虫洞",
+            "虫洞状态",
+            "挑战虫洞",
+            "虫洞排行",
+            "虫洞奖励",
+        ],
+    },
+    {
+        "title": "玩家对战",
         "color": "#BCE7D0",
         "lines": [
             "切磋 对方名称 / 切磋@对方",
@@ -169,29 +145,42 @@ SECTIONS = [
         ],
     },
     {
-        "title": "异界虫洞",
-        "color": "#B9E5EA",
+        "title": "交易流通",
+        "color": "#FFF09D",
         "lines": [
-            "虫洞",
-            "虫洞状态",
-            "挑战虫洞",
-            "虫洞排行",
-            "虫洞奖励",
+            "商场推荐",
+            "商场行情 商品名",
+            "商场购买 商品名 数量",
+            "商场出售 商品名 数量",
+            "跑商记录 / 跑商限制 / 跑商奖励",
+            "出售 物品名 数量",
+            "自动出售",
+            "出售全部 武器/宝石/技能书",
+            "导航 地点名或 x y",
+            "藏宝图 / 藏宝图出价 价格 / 领取藏宝图",
+            "二手市场",
+            "二手市场上架 名称 数量 总价",
+            "二手市场购买 卖家名称 / 二手市场购买@卖家",
         ],
     },
     {
-        "title": "首领",
+        "title": "宗门世界",
         "color": "#F7DFA1",
         "lines": [
-            "首领",
-            "首领状态",
-            "挑战首领",
-            "首领排行",
-            "首领奖励",
+            "地图",
+            "宗门",
+            "宗门成员",
+            "建立宗门 x y 宗门名",
+            "加入宗门 宗门名",
+            "退出宗门",
+            "宗门大会",
+            "领取宗门大会奖励",
+            "世界皮肤",
+            "世界皮肤切换 包名或显示名",
         ],
     },
     {
-        "title": "修仙界历史",
+        "title": "历史・百科",
         "color": "#CBEABF",
         "lines": [
             "风云榜",
@@ -200,6 +189,8 @@ SECTIONS = [
             "人物史榜 / 宗门史榜 / 城池史榜",
             "战斗名局 / 商路奇闻 / 异界虫洞录",
             "人物志 玩家名称 / 人物志@对方",
+            "修仙百科 关键词",
+            "修仙百科 武器 / 修仙百科 跑商",
         ],
     },
 ]
@@ -309,17 +300,17 @@ def draw_card(
 def main() -> None:
     """生成并压缩帮助图。"""
 
-    width = 1800
-    margin = 52
-    gap = 28
+    width = 1500
+    margin = 44
+    gap = 24
     columns = 3
     card_width = (width - margin * 2 - gap * (columns - 1)) // columns
 
-    title_font = load_font(FONT_BOLD_PATHS, 52)
-    subtitle_font = load_font(FONT_REGULAR_PATHS, 24)
-    card_title_font = load_font(FONT_BOLD_PATHS, 30)
-    body_font = load_font(FONT_REGULAR_PATHS, 21)
-    footer_font = load_font(FONT_REGULAR_PATHS, 22)
+    title_font = load_font(FONT_BOLD_PATHS, 46)
+    subtitle_font = load_font(FONT_REGULAR_PATHS, 22)
+    card_title_font = load_font(FONT_BOLD_PATHS, 27)
+    body_font = load_font(FONT_REGULAR_PATHS, 18)
+    footer_font = load_font(FONT_REGULAR_PATHS, 20)
 
     measure_image = Image.new("RGB", (width, 100), "#FFF8EE")
     measure_draw = ImageDraw.Draw(measure_image)
@@ -346,7 +337,7 @@ def main() -> None:
     draw.ellipse((width - 270, height - 230, width + 60, height + 80), fill="#FFE89D")
 
     title = "修仙世界指令图"
-    subtitle = "按当前 WS 实际注册命令整理；名称唯一，涉及对方可写名称或直接@"
+    subtitle = "按当前实际注册命令整理；带数量、名称、地点、ID 的命令需要补参数"
     title_x = int((width - text_width(draw, title, title_font)) / 2)
     subtitle_x = int((width - text_width(draw, subtitle, subtitle_font)) / 2)
     draw.text((title_x, 48), title, font=title_font, fill="#5A3828")
@@ -362,8 +353,7 @@ def main() -> None:
     draw.text((footer_x, footer_y + 10), footer, font=footer_font, fill="#7A6252")
 
     OUTPUT.parent.mkdir(parents=True, exist_ok=True)
-    palette_image = image.quantize(colors=128, method=Image.Quantize.MEDIANCUT)
-    palette_image.save(OUTPUT, optimize=True)
+    image.save(OUTPUT, format="JPEG", quality=62, optimize=True, progressive=True, subsampling=2)
     print(f"saved={OUTPUT}")
     print(f"size={OUTPUT.stat().st_size}")
     print(f"image={image.width}x{image.height}")

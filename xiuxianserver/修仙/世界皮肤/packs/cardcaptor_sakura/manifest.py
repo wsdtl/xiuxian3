@@ -6,8 +6,8 @@ PACKAGE = {
     "schema_version": 2026062701,
     "skin_id": "cardcaptor_sakura",
     "display_name": "百变小樱",
-    "version": "2026.06.27-wish.1",
+    "version": "2026.06.27-depth.1",
     "author": "xiuxianserver",
-    "desc": "百变小樱正式皮肤，覆盖库洛牌、小樱牌、守护者和魔法等级风格。",
+    "desc": "百变小樱正式皮肤，覆盖友枝町、库洛牌、小樱牌、透明牌、守护者和从收牌到守护世界的成长线。",
     "files": ["names.py"],
 }

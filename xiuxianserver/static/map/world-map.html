@@ -318,7 +318,7 @@
       <div class="world-stats" id="worldStats">
         <div class="stat"><b id="statNamedPoints">-</b><span>已使用地标</span></div>
         <div class="stat"><b id="statCities">-</b><span>普通城池</span></div>
-        <div class="stat"><b id="statSpecialPoints">-</b><span>特殊点位</span></div>
+        <div class="stat"><b id="statSpecialPoints">-</b><span>特殊地标</span></div>
         <div class="stat"><b id="statSects">-</b><span>宗门</span></div>
         <div class="stat"><b id="statTopCity">-</b><span>最高城池</span></div>
         <div class="stat"><b id="statEvents">-</b><span>活跃事件</span></div>
@@ -330,7 +330,7 @@
           <button class="filter active" data-layer="buyer">战利品</button>
           <button class="filter active" data-layer="recycle">纳戒回收</button>
           <button class="filter active" data-layer="sect">宗门</button>
-          <button class="filter active" data-layer="wormhole">事件</button>
+          <button class="filter active" data-layer="event">事件</button>
         </div>
         <div class="zoom" aria-label="缩放">
           <button id="zoomOut" title="缩小" aria-label="缩小">−</button>
@@ -389,7 +389,7 @@
         { type: "sect", id: "sect_4", name: "合欢宗", x: 5, y: 5 },
         { type: "sect", id: "sect_5", name: "逍遥门", x: 12, y: 21 }
       ],
-      wormholes: []
+      events: []
     };
 
     const ROUTES = [
@@ -465,7 +465,7 @@
       buyer: "#a9612a",
       recycle: "#2f7892",
       sect: "#9d416e",
-      wormhole: "#bd334d",
+      event: "#bd334d",
       route: "#8d5f29",
       water: "#317d98",
       forest: "#2e7650",
@@ -482,7 +482,7 @@
       buyer: { label: "战利品收购点", color: COLORS.buyer, shape: "seal", radius: 7 },
       recycle: { label: "纳戒回收建筑", color: COLORS.recycle, shape: "tower", radius: 7 },
       sect: { label: "宗门山门", color: COLORS.sect, shape: "sect", radius: 6 },
-      wormhole: { label: "活跃事件", color: COLORS.wormhole, shape: "ring", radius: 12 },
+      event: { label: "活跃事件", color: COLORS.event, shape: "ring", radius: 12 },
       player: { label: "当前位置", color: "#1f5fbf", shape: "player", radius: 8 }
     };
 
@@ -540,7 +540,7 @@
       drag: null,
       pointers: new Map(),
       pinch: null,
-      activeLayers: new Set(["city", "realm", "buyer", "recycle", "sect", "wormhole", "player"]),
+      activeLayers: new Set(["city", "realm", "buyer", "recycle", "sect", "event", "player"]),
       animationStarted: false
     };
 
@@ -568,7 +568,7 @@
         buyers: Array.isArray(value.buyers) ? value.buyers : [],
         recycles: Array.isArray(value.recycles) ? value.recycles : [],
         sects: Array.isArray(value.sects) ? value.sects : [],
-        wormholes: Array.isArray(value.wormholes) ? value.wormholes : [],
+        events: Array.isArray(value.events) ? value.events : [],
         player: value.player && typeof value.player === "object" ? value.player : null
       };
     }
@@ -592,7 +592,7 @@
         ...DATA.buyers,
         ...DATA.recycles,
         ...DATA.sects,
-        ...DATA.wormholes,
+        ...DATA.events,
         ...(DATA.player ? [DATA.player] : [])
       ];
       pointById = new Map(allPoints.map(point => [point.id, point]));
@@ -1517,7 +1517,7 @@
       const point = state.selected;
       if (!point) {
         const specialPointCount = DATA.realms.length + DATA.buyers.length + DATA.recycles.length;
-        const usedLandmarkCount = DATA.cities.length + specialPointCount + DATA.sects.length + DATA.wormholes.length;
+        const usedLandmarkCount = DATA.cities.length + specialPointCount + DATA.sects.length + DATA.events.length;
         infoPanel.innerHTML = `
           <h2>世界快照</h2>
           <div class="kind">公开地理概览</div>
@@ -1528,7 +1528,7 @@
             <div class="line"><b>战利品收购</b><span>${DATA.buyers.length}</span></div>
             <div class="line"><b>纳戒回收</b><span>${DATA.recycles.length}</span></div>
             <div class="line"><b>宗门山门</b><span>${DATA.sects.length}</span></div>
-            <div class="line"><b>活跃虫洞</b><span>${DATA.wormholes.length}</span></div>
+            <div class="line"><b>活跃事件</b><span>${DATA.events.length}</span></div>
           </div>
         `;
         return;
@@ -1559,7 +1559,8 @@
       } else if (point.type === "buyer") {
         if (point.terrain) lines.push(["地貌", point.terrain]);
         if (point.desc) lines.push(["说明", point.desc]);
-      } else if (point.type === "wormhole") {
+      } else if (point.type === "event") {
+        if (point.eventKind) lines.push(["事件类型", point.eventKind]);
         if (point.desc) lines.push(["说明", point.desc]);
         if (point.closesAt) lines.push(["结束", point.closesAt]);
       } else if (point.desc) {
@@ -1604,7 +1605,7 @@
 
     function renderStats() {
       const specialPointCount = DATA.realms.length + DATA.buyers.length + DATA.recycles.length;
-      const usedLandmarkCount = DATA.cities.length + specialPointCount + DATA.sects.length + DATA.wormholes.length;
+      const usedLandmarkCount = DATA.cities.length + specialPointCount + DATA.sects.length + DATA.events.length;
       const topCity = DATA.cities.reduce((best, city) => {
         if (!best) return city;
         if (city.level !== best.level) return city.level > best.level ? city : best;
@@ -1619,7 +1620,7 @@
       setText("statSpecialPoints", specialPointCount);
       setText("statSects", DATA.sects.length);
       setText("statTopCity", topCity ? `${topCity.name} Lv.${topCity.level}` : "-");
-      setText("statEvents", DATA.wormholes.length);
+      setText("statEvents", DATA.events.length);
     }
 
     function line(x1, y1, x2, y2) {

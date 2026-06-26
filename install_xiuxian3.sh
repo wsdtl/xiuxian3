@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # xiuxian3 一体化安装（Linux / Debian / Ubuntu 等，非 Termux）
 # 项目：https://github.com/wsdtl/xiuxian3
-# 架构：FastAPI 修仙服务端 (xiuxianserver) + NoneBot 桥接插件 (xiuxianplugin)
+# 架构：FastAPI 修仙服务端 (xiuxianserver) + 内置适配器，可选 NoneBot 桥接插件 (xiuxianplugin)
 
 set -u
 
@@ -15,8 +15,10 @@ NC='\033[0m'
 
 GITHUB_REPO="https://github.com/wsdtl/xiuxian3.git"
 DEFAULT_ROOT_NAME="xiuxian3"
-DEFAULT_SERVER_PORT="1234"
+DEFAULT_SERVER_PORT="8443"
 DEFAULT_NB_PORT="8080"
+DEFAULT_ADAPTERS="qq,ws"
+DEFAULT_QQ_EVENT_PATH="/qq/events"
 
 ui_print() {
     local color="$1"
@@ -55,7 +57,24 @@ read_or() {
     printf -v "$var_name" '%s' "$input"
 }
 
-ensure_dir() { mkdir -p "$1"; }
+ensure_dir() { mkdir -p "$@"; }
+
+make_adapter_list() {
+    local raw="${1// /}" item sep="" out="["
+    local -a items=()
+    IFS=',' read -r -a items <<< "$raw"
+    for item in "${items[@]}"; do
+        [[ -n "$item" ]] || continue
+        out="${out}${sep}\"${item}\""
+        sep=","
+    done
+    if [[ "$out" == "[" ]]; then
+        out="[\"qq\",\"ws\"]"
+    else
+        out="${out}]"
+    fi
+    printf '%s' "$out"
+}
 
 detect_termux() {
     if [[ -d "${PREFIX:-}/bin" && -x "${PREFIX:-}/bin/pkg" && "$(uname -o 2>/dev/null)" == "Android" ]]; then
@@ -69,8 +88,8 @@ usage() {
 用法: $0 [install|reinstall|update|update-deps] [安装根目录名或绝对路径]
 
 默认安装到: \$HOME/$DEFAULT_ROOT_NAME
-  server/  — FastAPI 修仙服务端
-  bot/     — NoneBot2 + xiuxianplugin
+  server/  — FastAPI 修仙服务端，内置 QQ webhook / WebSocket 适配器
+  bot/     — NoneBot2 + xiuxianplugin，可选 OneBot 桥接
 
 示例:
   $0 install
@@ -173,6 +192,13 @@ sync_tree() {
 
 write_server_env() {
     local port="$1"
+    local project_domain="${PROJECT_DOMAIN:-}"
+    local ssl_certfile="${SERVER_SSL_CERTFILE:-}"
+    local ssl_keyfile="${SERVER_SSL_KEYFILE:-}"
+    local adapters_list="${ADAPTERS_LIST:-[\"qq\",\"ws\"]}"
+    local qq_event_path="${QQ_EVENT_PATH:-$DEFAULT_QQ_EVENT_PATH}"
+    local qq_app_id="${QQ_BOT_APP_ID:-}"
+    local qq_secret="${QQ_BOT_SECRET:-}"
     if [[ -f "$SERVER_DIR/.env" && "$ACTION" == "update" ]]; then
         ui_print yellow "保留已有 $SERVER_DIR/.env"
         return 0
@@ -181,13 +207,22 @@ write_server_env() {
 PROJECT_NAME=xiuxian
 PROJECT_DEBUG=False
 PROJECT_TIMEZONE=Asia/Shanghai
-PROJECT_DOMAIN=
+PROJECT_DOMAIN=$project_domain
 
 SERVER_HOST=0.0.0.0
 SERVER_PORT=$port
+SERVER_RELOAD=False
+SERVER_SSL_CERTFILE=$ssl_certfile
+SERVER_SSL_KEYFILE=$ssl_keyfile
 
 LOG_LEVEL=INFO
 LOG_COLOR=auto
+
+ADAPTERS=$adapters_list
+
+QQ_EVENT_PATH=$qq_event_path
+QQ_BOT_APP_ID=$qq_app_id
+QQ_BOT_SECRET=$qq_secret
 
 ROUTER_MODULE_GROUPS=["auto"]
 ROUTER_MODULES=[]
@@ -196,6 +231,35 @@ ROUTER_GROUPS=["修仙"]
 ROUTER_CHILD_FOLDERS=[]
 EOF
     show_status "生成服务端 .env" "success"
+}
+
+append_env_if_missing() {
+    local key="$1" value="$2"
+    grep -qE "^${key}=" "$SERVER_DIR/.env" 2>/dev/null || printf '%s=%s\n' "$key" "$value" >> "$SERVER_DIR/.env"
+}
+
+ensure_server_env_defaults() {
+    [[ -f "$SERVER_DIR/.env" ]] || return 0
+    append_env_if_missing "PROJECT_DOMAIN" ""
+    append_env_if_missing "SERVER_RELOAD" "False"
+    append_env_if_missing "SERVER_SSL_CERTFILE" ""
+    append_env_if_missing "SERVER_SSL_KEYFILE" ""
+    append_env_if_missing "ADAPTERS" "[\"qq\",\"ws\"]"
+    append_env_if_missing "QQ_EVENT_PATH" "$DEFAULT_QQ_EVENT_PATH"
+    append_env_if_missing "QQ_BOT_APP_ID" ""
+    append_env_if_missing "QQ_BOT_SECRET" ""
+}
+
+read_server_settings() {
+    read_or SERVER_PORT "修仙服务端端口 SERVER_PORT" "$DEFAULT_SERVER_PORT"
+    read_or PROJECT_DOMAIN "公开域名 PROJECT_DOMAIN，可留空或带 https:// 与端口" ""
+    read_or SERVER_SSL_CERTFILE "HTTPS 证书路径 SERVER_SSL_CERTFILE，可留空" ""
+    read_or SERVER_SSL_KEYFILE "HTTPS 私钥路径 SERVER_SSL_KEYFILE，可留空" ""
+    read_or ADAPTERS_RAW "启用适配器 ADAPTERS，逗号分隔" "$DEFAULT_ADAPTERS"
+    ADAPTERS_LIST="$(make_adapter_list "$ADAPTERS_RAW")"
+    read_or QQ_EVENT_PATH "QQ webhook 路径 QQ_EVENT_PATH" "$DEFAULT_QQ_EVENT_PATH"
+    read_or QQ_BOT_APP_ID "QQ 机器人 AppID，可留空" ""
+    read_or QQ_BOT_SECRET "QQ 机器人 Secret，可留空" ""
 }
 
 patch_plugin_ws_url() {
@@ -378,18 +442,34 @@ EOF
 }
 
 final_message() {
-    local sp nb
+    local sp nb event_path project_domain ssl_cert ssl_key scheme host callback
     sp=$(grep -E '^SERVER_PORT=' "$SERVER_DIR/.env" 2>/dev/null | cut -d= -f2)
     nb=$(grep -E '^PORT *= *' "$BOT_DIR/.env.dev" 2>/dev/null | sed -E 's/.*= *//')
+    event_path=$(grep -E '^QQ_EVENT_PATH=' "$SERVER_DIR/.env" 2>/dev/null | cut -d= -f2)
+    project_domain=$(grep -E '^PROJECT_DOMAIN=' "$SERVER_DIR/.env" 2>/dev/null | cut -d= -f2-)
+    ssl_cert=$(grep -E '^SERVER_SSL_CERTFILE=' "$SERVER_DIR/.env" 2>/dev/null | cut -d= -f2-)
+    ssl_key=$(grep -E '^SERVER_SSL_KEYFILE=' "$SERVER_DIR/.env" 2>/dev/null | cut -d= -f2-)
     [[ -z "$sp" ]] && sp="$DEFAULT_SERVER_PORT"
     [[ -z "$nb" ]] && nb="$DEFAULT_NB_PORT"
+    [[ -z "$event_path" ]] && event_path="$DEFAULT_QQ_EVENT_PATH"
+    scheme="http"
+    [[ -n "$ssl_cert" && -n "$ssl_key" ]] && scheme="https"
+    host="${project_domain:-127.0.0.1}"
+    if [[ "$host" == http://* || "$host" == https://* ]]; then
+        callback="${host%/}${event_path}"
+    elif [[ "$host" == *:* ]]; then
+        callback="${scheme}://${host}${event_path}"
+    else
+        callback="${scheme}://${host}:${sp}${event_path}"
+    fi
     ui_print green "========================================"
     ui_print green "✓ ${ACTION} 完成"
     ui_print white "安装根目录: $ROOT"
     ui_print white "修仙服务端: http://127.0.0.1:${sp}"
+    ui_print white "QQ webhook: ${callback}"
     ui_print white "修仙 WebSocket: ws://127.0.0.1:${sp}/ws/bot/{client_id}"
     ui_print white "NoneBot OneBot11: ws://127.0.0.1:${nb}/onebot/v11/ws"
-    ui_print cyan "启动顺序: ${PROJECT_NAME} start-server → ${PROJECT_NAME} start-bot（或 ${PROJECT_NAME} start）"
+    ui_print cyan "QQ webhook 只需 ${PROJECT_NAME} start-server；OneBot 桥接再启动 ${PROJECT_NAME} start-bot"
     ui_print green "========================================"
 }
 
@@ -426,10 +506,14 @@ main() {
     install_apt_packages || exit 127
     ensure_dir "$ROOT"
     clone_or_update_repo || exit 127
+    if [[ "$ACTION" == "update" && -f "$SERVER_DIR/.env" ]]; then
+        cp "$SERVER_DIR/.env" "$ROOT/.env.keep"
+    fi
     sync_tree || exit 127
+    [[ -f "$ROOT/.env.keep" ]] && mv "$ROOT/.env.keep" "$SERVER_DIR/.env"
 
     if [[ "$ACTION" == "install" ]]; then
-        read_or SERVER_PORT "修仙服务端端口 SERVER_PORT" "$DEFAULT_SERVER_PORT"
+        read_server_settings
         read_or SUPERUSERS "主人 QQ（逗号分隔）" "123456"
         read_or NICKNAME "机器人昵称（逗号分隔）" "修仙助手"
         read_or NB_PORT "NoneBot 端口" "$DEFAULT_NB_PORT"
@@ -443,6 +527,7 @@ main() {
     fi
 
     write_server_env "$SERVER_PORT"
+    ensure_server_env_defaults
     patch_plugin_ws_url "$SERVER_PORT" || exit 127
 
     create_venv || exit 127

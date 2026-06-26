@@ -6,8 +6,9 @@ title xiuxian3 安装 (Windows)
 set "LINE========================================="
 set "GITHUB_REPO=https://github.com/wsdtl/xiuxian3.git"
 set "DEFAULT_NAME=xiuxian3"
-set "DEFAULT_SPORT=1234"
+set "DEFAULT_SPORT=8443"
 set "DEFAULT_NPORT=8080"
+set "DEFAULT_QQ_EVENT_PATH=/qq/events"
 
 if not defined DIR (
     set "DIR=%USERPROFILE%\%DEFAULT_NAME%"
@@ -16,7 +17,7 @@ if not defined DIR (
 :menu
 cls
 echo %LINE%
-echo xiuxian3 — FastAPI 服务端 + NoneBot 插件
+echo xiuxian3 — FastAPI 服务端 + 内置适配器，可选 NoneBot 桥接
 echo 仓库: https://github.com/wsdtl/xiuxian3
 echo 安装目录: %DIR%
 echo %LINE%
@@ -42,8 +43,8 @@ goto menu
 :run_hint
 echo.
 echo 请先在一个终端运行: %DIR%\run_server.bat
-echo 再在另一个终端运行: %DIR%\run_bot.bat
-echo 或使用 install 后生成的 start_all.bat（会开两个窗口）
+echo QQ webhook 只需要服务端；使用 OneBot 桥接时再运行: %DIR%\run_bot.bat
+echo start_all.bat 会开两个窗口同时启动服务端和机器人桥接
 pause
 goto menu
 
@@ -91,13 +92,14 @@ if errorlevel 1 (
 )
 
 echo [3/6] 复制 server 与插件...
+if /i "%ACTION%"=="update" if exist "%DIR%\server\.env" copy /Y "%DIR%\server\.env" "%DIR%\.env.keep" >nul
 xcopy /E /Y /I "%SRC%\xiuxianserver\*" "%DIR%\server\" >nul
+if exist "%DIR%\.env.keep" move /Y "%DIR%\.env.keep" "%DIR%\server\.env" >nul
 if exist "%DIR%\bot\src\plugins\xiuxianplugin" rmdir /s /q "%DIR%\bot\src\plugins\xiuxianplugin"
 xcopy /E /Y /I "%SRC%\xiuxianplugin" "%DIR%\bot\src\plugins\xiuxianplugin\" >nul
 
 if /i "%ACTION%"=="install" (
-    set /p SERVER_PORT=修仙服务端端口 [!DEFAULT_SPORT!]:
-    if "!SERVER_PORT!"=="" set "SERVER_PORT=%DEFAULT_SPORT%"
+    call :read_server_settings
     set /p SUPERUSERS=主人QQ [!123456!]:
     if "!SUPERUSERS!"=="" set "SUPERUSERS=123456"
     set /p NICKNAME=机器人昵称 [!修仙助手!]:
@@ -110,8 +112,12 @@ if /i "%ACTION%"=="install" (
 ) else (
     for /f "tokens=2 delims==" %%a in ('findstr /B "SERVER_PORT=" "%DIR%\server\.env" 2^>nul') do set "SERVER_PORT=%%a"
     if not defined SERVER_PORT set "SERVER_PORT=%DEFAULT_SPORT%"
+    for /f "tokens=2 delims==" %%a in ('findstr /R /C:"^PORT *= *" "%DIR%\bot\.env.dev" 2^>nul') do set "NB_PORT=%%a"
+    set "NB_PORT=!NB_PORT: =!"
+    if not defined NB_PORT set "NB_PORT=%DEFAULT_NPORT%"
 )
 
+call :ensure_server_env_defaults
 call :patch_api
 call :create_venv
 call :pip_install
@@ -120,23 +126,55 @@ call :write_bat_launchers
 echo.
 echo 安装/更新完成: %DIR%
 echo 服务端: http://127.0.0.1:!SERVER_PORT!
+echo QQ webhook: 请按 server\.env 中 PROJECT_DOMAIN、SERVER_SSL_* 与 QQ_EVENT_PATH 组合配置
 echo OneBot: ws://127.0.0.1:!NB_PORT!/onebot/v11/ws
-echo 双击 start_all.bat 或分别运行 run_server.bat / run_bot.bat
+echo QQ webhook 只需 run_server.bat；OneBot 桥接再运行 run_bot.bat
 pause
 goto menu
+
+:read_server_settings
+set "SERVER_PORT="
+set "PROJECT_DOMAIN="
+set "SERVER_SSL_CERTFILE="
+set "SERVER_SSL_KEYFILE="
+set "ADAPTERS_LIST="
+set "QQ_EVENT_PATH="
+set "QQ_BOT_APP_ID="
+set "QQ_BOT_SECRET="
+set /p SERVER_PORT=修仙服务端端口 SERVER_PORT [!DEFAULT_SPORT!]:
+if "!SERVER_PORT!"=="" set "SERVER_PORT=%DEFAULT_SPORT%"
+set /p PROJECT_DOMAIN=公开域名 PROJECT_DOMAIN，可留空或带 https:// 与端口 []:
+set /p SERVER_SSL_CERTFILE=HTTPS 证书路径 SERVER_SSL_CERTFILE，可留空 []:
+set /p SERVER_SSL_KEYFILE=HTTPS 私钥路径 SERVER_SSL_KEYFILE，可留空 []:
+set /p ADAPTERS_LIST=启用适配器 ADAPTERS，列表写法，默认 ["qq","ws"] []:
+if not defined ADAPTERS_LIST set ADAPTERS_LIST=["qq","ws"]
+set /p QQ_EVENT_PATH=QQ webhook 路径 QQ_EVENT_PATH [!DEFAULT_QQ_EVENT_PATH!]:
+if "!QQ_EVENT_PATH!"=="" set "QQ_EVENT_PATH=%DEFAULT_QQ_EVENT_PATH%"
+set /p QQ_BOT_APP_ID=QQ 机器人 AppID，可留空 []:
+set /p QQ_BOT_SECRET=QQ 机器人 Secret，可留空 []:
+exit /b 0
 
 :write_server_env
 (
 echo PROJECT_NAME=xiuxian
 echo PROJECT_DEBUG=False
 echo PROJECT_TIMEZONE=Asia/Shanghai
-echo PROJECT_DOMAIN=
+echo PROJECT_DOMAIN=!PROJECT_DOMAIN!
 echo.
 echo SERVER_HOST=0.0.0.0
 echo SERVER_PORT=!SERVER_PORT!
+echo SERVER_RELOAD=False
+echo SERVER_SSL_CERTFILE=!SERVER_SSL_CERTFILE!
+echo SERVER_SSL_KEYFILE=!SERVER_SSL_KEYFILE!
 echo.
 echo LOG_LEVEL=INFO
 echo LOG_COLOR=auto
+echo.
+echo ADAPTERS=!ADAPTERS_LIST!
+echo.
+echo QQ_EVENT_PATH=!QQ_EVENT_PATH!
+echo QQ_BOT_APP_ID=!QQ_BOT_APP_ID!
+echo QQ_BOT_SECRET=!QQ_BOT_SECRET!
 echo.
 echo ROUTER_MODULE_GROUPS=["auto"]
 echo ROUTER_MODULES=[]
@@ -144,6 +182,18 @@ echo ROUTER_FOLDERS=[]
 echo ROUTER_GROUPS=["修仙"]
 echo ROUTER_CHILD_FOLDERS=[]
 ) > "%DIR%\server\.env"
+exit /b 0
+
+:ensure_server_env_defaults
+if not exist "%DIR%\server\.env" exit /b 0
+findstr /B "PROJECT_DOMAIN=" "%DIR%\server\.env" >nul 2>nul || >> "%DIR%\server\.env" echo PROJECT_DOMAIN=
+findstr /B "SERVER_RELOAD=" "%DIR%\server\.env" >nul 2>nul || >> "%DIR%\server\.env" echo SERVER_RELOAD=False
+findstr /B "SERVER_SSL_CERTFILE=" "%DIR%\server\.env" >nul 2>nul || >> "%DIR%\server\.env" echo SERVER_SSL_CERTFILE=
+findstr /B "SERVER_SSL_KEYFILE=" "%DIR%\server\.env" >nul 2>nul || >> "%DIR%\server\.env" echo SERVER_SSL_KEYFILE=
+findstr /B "ADAPTERS=" "%DIR%\server\.env" >nul 2>nul || >> "%DIR%\server\.env" echo ADAPTERS=["qq","ws"]
+findstr /B "QQ_EVENT_PATH=" "%DIR%\server\.env" >nul 2>nul || >> "%DIR%\server\.env" echo QQ_EVENT_PATH=/qq/events
+findstr /B "QQ_BOT_APP_ID=" "%DIR%\server\.env" >nul 2>nul || >> "%DIR%\server\.env" echo QQ_BOT_APP_ID=
+findstr /B "QQ_BOT_SECRET=" "%DIR%\server\.env" >nul 2>nul || >> "%DIR%\server\.env" echo QQ_BOT_SECRET=
 exit /b 0
 
 :write_bot_env

@@ -18,6 +18,7 @@ def build_map_data(database: Any = db, player_id: str = "") -> dict[str, Any]:
     """组装公开地图需要的动态数据。"""
 
     player = _player(database, player_id)
+    active_events = [*_wormhole_events(database), *_treasure_events(database)]
     return {
         "updatedAt": now().strftime("%Y-%m-%d %H:%M:%S"),
         "bounds": {
@@ -30,7 +31,7 @@ def build_map_data(database: Any = db, player_id: str = "") -> dict[str, Any]:
         "buyers": _buyers(database),
         "recycles": _recycles(database),
         "sects": _sects(database),
-        "wormholes": [*_wormholes(database), *_treasure_events(database)],
+        "events": active_events,
         "player": player,
     }
 
@@ -174,7 +175,7 @@ def _sects(database: Any) -> list[dict[str, Any]]:
     ]
 
 
-def _wormholes(database: Any) -> list[dict[str, Any]]:
+def _wormhole_events(database: Any) -> list[dict[str, Any]]:
     rows = database.fetch_all(
         """
         SELECT wormhole_id, boss_name, boss_kind, location_name, x, y, hp, max_hp, difficulty, closes_at
@@ -185,9 +186,10 @@ def _wormholes(database: Any) -> list[dict[str, Any]]:
     )
     return [
         {
-            "type": "wormhole",
+            "type": "event",
             "id": f"wormhole_{int(row['wormhole_id'])}",
             "name": f"虫洞·{row['boss_name']}",
+            "eventKind": "异界虫洞",
             "x": int(row["x"]),
             "y": int(row["y"]),
             "desc": f"{row['location_name']}｜{row['boss_kind']}｜血气 {int(row['hp'])}/{int(row['max_hp'])}｜难度 {float(row['difficulty']):.2f}",
@@ -216,9 +218,10 @@ def _treasure_events(database: Any) -> list[dict[str, Any]]:
             y = point.get("y", 0)
         result.append(
             {
-                "type": "wormhole",
+                "type": "event",
                 "id": f"treasure_{int(row['map_id'])}",
                 "name": f"藏宝图·{row['city_name']}",
+                "eventKind": "藏宝图",
                 "x": int(x),
                 "y": int(y),
                 "desc": f"{row['status']}｜{row['weapon_name']} 上限{int(row['weapon_max_level'] or 0)}｜当前价 {int(row['current_price'] or 0)}｜出价 {int(row['bid_count'] or 0)}",

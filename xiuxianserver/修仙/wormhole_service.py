@@ -1061,7 +1061,7 @@ class WormholeService(CoreService):
         return max(0.0, min(1.0, int(damage) / max_hp))
 
     def _location_point(self, name: str, location_id: str = "") -> dict[str, Any]:
-        """把 NPC 地点稳定 ID 或展示名转成坐标。"""
+        """把系统保留地点稳定 ID 或展示名转成坐标。"""
 
         stable_id = str(location_id or "").strip()
         if stable_id:

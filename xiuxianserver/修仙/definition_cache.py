@@ -95,25 +95,25 @@ def all_weapon_skill_defs(database: Any) -> list[dict[str, Any]]:
 
 
 def world_location_by_id(database: Any, location_id: str) -> dict[str, Any] | None:
-    """按稳定 ID 读取 NPC 地点。"""
+    """按稳定 ID 读取系统保留地点。"""
 
     return _cache(database).world_location_by_id(str(location_id or "").strip())
 
 
 def world_location_by_name(database: Any, name: str) -> dict[str, Any] | None:
-    """按当前展示名读取 NPC 地点。"""
+    """按当前展示名读取系统保留地点。"""
 
     return _cache(database).world_location_by_name(str(name or "").strip())
 
 
 def world_location_by_point(database: Any, x: int, y: int) -> dict[str, Any] | None:
-    """按坐标读取 NPC 地点。"""
+    """按坐标读取系统保留地点。"""
 
     return _cache(database).world_location_by_point(int(x), int(y))
 
 
 def all_world_locations(database: Any) -> list[dict[str, Any]]:
-    """读取全部 NPC 地点定义。"""
+    """读取全部系统保留地点定义。"""
 
     return _copy_rows(_cache(database).world_locations())
 

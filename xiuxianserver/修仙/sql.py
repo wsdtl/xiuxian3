@@ -550,13 +550,13 @@ EXPLORATION_LOCATIONS = (
 
 SECRET_REALM_IDS_BY_NAME = {"太虚秘境": "realm_taixu"}
 SECRET_REALM_NAMES_BY_ID = {value: key for key, value in SECRET_REALM_IDS_BY_NAME.items()}
-NPC_LOCATION_IDS_BY_NAME = {
+SYSTEM_LOCATION_IDS_BY_NAME = {
     **TRADE_LOCATION_IDS_BY_NAME,
     **SECRET_REALM_IDS_BY_NAME,
     **SPECIAL_BUYER_IDS_BY_NAME,
     **RECYCLE_LOCATION_IDS_BY_NAME,
 }
-NPC_LOCATION_NAMES_BY_ID = {
+SYSTEM_LOCATION_NAMES_BY_ID = {
     **TRADE_LOCATION_NAMES_BY_ID,
     **SECRET_REALM_NAMES_BY_ID,
     **SPECIAL_BUYER_NAMES_BY_ID,
@@ -565,15 +565,15 @@ NPC_LOCATION_NAMES_BY_ID = {
 
 
 def location_id_for_name(name: object) -> str:
-    """读取 NPC 地点稳定 id；荒地和宗门返回空串。"""
+    """读取系统保留地点稳定 id；荒地和宗门返回空串。"""
 
-    return NPC_LOCATION_IDS_BY_NAME.get(str(name or "").strip(), "")
+    return SYSTEM_LOCATION_IDS_BY_NAME.get(str(name or "").strip(), "")
 
 
 def location_name_for_id(location_id: object) -> str:
-    """读取 NPC 地点当前显示名。"""
+    """读取系统保留地点当前显示名。"""
 
-    return NPC_LOCATION_NAMES_BY_ID.get(str(location_id or "").strip(), "")
+    return SYSTEM_LOCATION_NAMES_BY_ID.get(str(location_id or "").strip(), "")
 
 
 WORLD_TERRAINS = {
@@ -2001,7 +2001,7 @@ class XiuxianDB:
         self.conn.commit()
 
     def _seed_world_locations(self) -> None:
-        """写入 NPC 地点；空地不入库，宗门、洞府和藏宝图按坐标稀疏占用。"""
+        """写入系统保留地点；空地不入库，宗门、洞府和藏宝图按坐标稀疏占用。"""
 
         assert self.conn is not None
         points: dict[tuple[int, int], dict[str, Any]] = {}
@@ -2045,7 +2045,7 @@ class XiuxianDB:
         for name, x, y, _recommended, _min_level, _max_level, desc in EXPLORATION_LOCATIONS:
             add_point(location_id_for_name(name), name, x, y, "探险点", "explore", desc, reserved=1)
         for buyer_name, _item_ids, _price_factor, x, y in SPECIAL_BUYERS:
-            add_point(location_id_for_name(buyer_name), buyer_name, x, y, "NPC建筑", "special_buyer", reserved=1)
+            add_point(location_id_for_name(buyer_name), buyer_name, x, y, "特殊收购点", "special_buyer", reserved=1)
         for recycle_type, name, _price_factor, x, y, desc in RECYCLE_LOCATIONS:
             add_point(location_id_for_name(name), name, x, y, "回收建筑", f"recycle:{recycle_type}", desc, reserved=1)
 
@@ -2515,12 +2515,12 @@ class XiuxianDB:
         assert self.conn is not None
 
         def sync(table: str, name_column: str, id_column: str = "location_id") -> None:
-            for current_name, location_id in NPC_LOCATION_IDS_BY_NAME.items():
+            for current_name, location_id in SYSTEM_LOCATION_IDS_BY_NAME.items():
                 self.conn.execute(
                     f"UPDATE {table} SET {id_column} = ? WHERE {id_column} = '' AND {name_column} = ?",
                     (location_id, current_name),
                 )
-            for location_id, current_name in NPC_LOCATION_NAMES_BY_ID.items():
+            for location_id, current_name in SYSTEM_LOCATION_NAMES_BY_ID.items():
                 self.conn.execute(
                     f"UPDATE {table} SET {name_column} = ? WHERE {id_column} = ?",
                     (current_name, location_id),
@@ -2806,7 +2806,7 @@ class XiuxianDB:
         for _recycle_type, name, _factor, x, y, _desc in RECYCLE_LOCATIONS:
             check_point(name, x, y, "回收")
 
-        npc_ids = {
+        system_location_ids = {
             row["location_id"]
             for row in self.conn.execute("SELECT location_id FROM world_locations").fetchall()
         }
@@ -2819,8 +2819,8 @@ class XiuxianDB:
             ("war_prep_states", "location_id"),
         ):
             for row in self.conn.execute(f"SELECT DISTINCT {id_column} AS location_id FROM {table}").fetchall():
-                if row["location_id"] not in npc_ids:
-                    missing.append(f"{table} 指向不存在的 NPC 地点：{row['location_id']}")
+                if row["location_id"] not in system_location_ids:
+                    missing.append(f"{table} 指向不存在的系统保留地点：{row['location_id']}")
 
         gem_rows = self.conn.execute(
             "SELECT name, effect FROM ring_item_defs WHERE category_key = 'gem'"

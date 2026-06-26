@@ -665,7 +665,7 @@ def _check_sect(services: dict[str, object]) -> None:
     sect._is_member_locked = lambda value=None: False  # type: ignore[method-assign]
 
     _must_contain(sect.overview("u1"), "你还没有宗门")
-    _must_contain(sect.create("u1", "0 0 青云宗"), "已有 NPC 地点")
+    _must_contain(sect.create("u1", "0 0 青云宗"), "已有系统保留地点")
     create_text = sect.create("u1", "-49 -49 青云宗")
     _must_contain(create_text, "宗门创建成功")
     _must_contain(create_text, "山门坐标：(-49,-49)")

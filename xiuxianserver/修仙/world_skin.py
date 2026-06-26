@@ -255,7 +255,7 @@ def _validate_skin_section_shape(errors: list[str], sections: dict[str, dict[str
     _require_count(errors, "普通城池", sections["cities"], 11)
     _require_count(errors, "太虚秘境", sections["realm"], 1)
     _require_count(errors, "特殊收购点", sections["buyers"], 6)
-    _require_count(errors, "回收点", sections["recycles"], 3)
+    _require_count(errors, "回收建筑", sections["recycles"], 3)
     _require_keys(errors, "世界物资大类", sections["world_items"], {"medicine", "life", "build", "relic", "loot"})
     _require_keys(errors, "纳戒分组", sections["ring"], {"recovery", "gems", "special"})
     _require_keys(errors, "武器分组", sections["weapons"], {"skill_books", "types"})
@@ -310,7 +310,7 @@ def _validate_named_place_entries(errors: list[str], sections: dict[str, dict[st
     for label, group in (
         ("太虚秘境", sections["realm"]),
         ("特殊收购点", sections["buyers"]),
-        ("回收点", sections["recycles"]),
+        ("回收建筑", sections["recycles"]),
     ):
         for stable_id, row in group.items():
             if not isinstance(row, dict):
@@ -699,7 +699,7 @@ def _validate_database_coverage(package: WorldSkinPackage, database: Any, errors
             errors.append(f"特殊收购点未进包：{location_id}")
     for location_id in _column_values(database, "recycle_locations", "location_id"):
         if location_id not in recycle_ids:
-            errors.append(f"回收点未进包：{location_id}")
+            errors.append(f"回收建筑未进包：{location_id}")
 
     trade_goods = _city_trade_goods(names)
     for item_id in _column_values(database, "item_defs", "item_id", "tradeable = 1"):
@@ -1007,7 +1007,7 @@ def _location_entries(database: Any) -> list[WorldSkinEntry]:
     )
     return [
         _entry(
-            "NPC地点",
+            "系统保留地点",
             row.get("category"),
             row.get("location_id"),
             row.get("name"),
@@ -1110,7 +1110,7 @@ def _recycle_location_entries(database: Any) -> list[WorldSkinEntry]:
     )
     return [
         _entry(
-            "回收点",
+            "回收建筑",
             row.get("recycle_type"),
             row.get("location_id"),
             row.get("name"),
