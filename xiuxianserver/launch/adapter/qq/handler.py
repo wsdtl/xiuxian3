@@ -8,6 +8,7 @@
 import asyncio
 import re
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from time import monotonic
 from typing import Any, Callable, Dict, List, Optional, Pattern, Set, Tuple, Union
@@ -64,31 +65,46 @@ class QqEventHandler(BaseAdapter):
     业务层仍然只看到统一的 client_id、message、manager 和 Depends 参数。
     """
 
-    MAX_CONCURRENT_EVENTS = 100
+    EVENT_WORKERS = 32
     MAX_WAITING_EVENTS = 1000
     USER_MAX_WAITING_EVENTS = 5
     EVENT_TASK_TIMEOUT = 9.0
     EVENT_ID_TTL_SECONDS = 120.0
+    MAX_SEEN_EVENT_IDS = 3000
+    INTERACTION_ACK_WORKERS = 4
+    MAX_WAITING_INTERACTIONS = 1000
+    SHUTDOWN_DRAIN_SECONDS = 3.0
 
-    # 命令索引。注册阶段只收集规则，run() 阶段统一排序和整理调试信息。
+    # 命令索引。注册阶段只收集规则，run() 阶段统一排序。
+    # exact_rules 处理普通命令；regex_rules 按正则固定前缀做候选过滤；
+    # regex_fallback 保存没有固定前缀的正则，数量应尽量少。
     exact_rules: Dict[str, List[QqCommandRule]] = {}
-    exact_commands: Set[str] = set()
     regex_rules: Dict[str, List[QqCommandRule]] = {}
     regex_fallback: List[QqCommandRule] = []
-    regex_patterns: List[str] = []
     regex_prefix_lengths: Set[int] = set()
     _register_order = 0
 
-    # webhook 回调必须快速返回，因此事件处理都进入后台任务。
-    # 这里的队列限制用于防止单用户或全局消息堆积把服务拖垮。
-    _event_semaphore = asyncio.Semaphore(MAX_CONCURRENT_EVENTS)
+    # webhook 必须快速 ACK，不能在 HTTP 请求协程里跑业务。
+    # 这里使用固定 worker + 有界队列，避免高峰时无限创建 task 或堆内存。
+    _event_queue: asyncio.Queue[QqMessageEvent] | None = None
+    _event_worker_tasks: Set[asyncio.Task] = set()
     _waiting_events = 0
     _waiting_guard = asyncio.Lock()
-    _background_tasks: Set[asyncio.Task] = set()
-    _interaction_ack_tasks: Set[asyncio.Task] = set()
+
+    # QQ 按钮点击需要主动 ACK，否则客户端会显示“第三方请求失败”一类提示。
+    # ACK 也走固定 worker，避免大量按钮点击时创建临时协程。
+    _interaction_ack_queue: asyncio.Queue[str] | None = None
+    _interaction_ack_worker_tasks: Set[asyncio.Task] = set()
+    _interaction_ack_executor: ThreadPoolExecutor | None = None
+
+    # 同一个入口身份按顺序处理，避免“同一玩家连续命令”出现状态交叉。
+    # USER_MAX_WAITING_EVENTS 防止单人刷屏占满全局队列。
     _user_event_locks: Dict[str, asyncio.Lock] = {}
     _user_event_counts: Dict[str, int] = {}
     _user_event_guard = asyncio.Lock()
+
+    # QQ 有可能重试投递同一事件。这里做短时间去重，并用硬上限防止
+    # 异常流量下 seen 缓存无限增长。
     _seen_event_ids: Dict[str, float] = {}
     _seen_event_order: deque[Tuple[float, str]] = deque()
     _seen_event_guard = asyncio.Lock()
@@ -109,12 +125,15 @@ class QqEventHandler(BaseAdapter):
             )
 
         QqEventHandler._build_command_index()
+        await manager.start()
+        await QqEventHandler._start_queues()
         logger.opt(colors=True).success(
             C.join(
                 C.ok("QQ webhook 已就绪"),
                 C.kv("path", config.get("QQ_EVENT_PATH", "/qq/events") or "/qq/events"),
                 C.kv("exact", len(QqEventHandler.exact_rules)),
-                C.kv("regex", len(QqEventHandler.regex_patterns)),
+                C.kv("regex", QqEventHandler._regex_rule_count()),
+                C.kv("workers", QqEventHandler.EVENT_WORKERS),
             )
         )
 
@@ -122,19 +141,157 @@ class QqEventHandler(BaseAdapter):
     async def shutdown() -> None:
         """停止 QQ 后台事件任务，并清理事件去重缓存。"""
 
-        tasks = list(QqEventHandler._background_tasks | QqEventHandler._interaction_ack_tasks)
-        for task in tasks:
-            task.cancel()
-
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
-
-        QqEventHandler._background_tasks.clear()
-        QqEventHandler._interaction_ack_tasks.clear()
+        await QqEventHandler._shutdown_queues()
+        await manager.shutdown()
 
         async with QqEventHandler._seen_event_guard:
             QqEventHandler._seen_event_ids.clear()
             QqEventHandler._seen_event_order.clear()
+        async with QqEventHandler._user_event_guard:
+            QqEventHandler._user_event_locks.clear()
+            QqEventHandler._user_event_counts.clear()
+
+    @staticmethod
+    async def _start_queues() -> None:
+        """启动固定数量的事件 worker 和按钮 ACK worker。
+
+        run() 在 FastAPI lifespan 中调用，理论上只会执行一次；这里仍做幂等
+        判断，避免测试或热重载场景重复启动 worker。
+        """
+
+        if not QqEventHandler._event_worker_tasks:
+            QqEventHandler._event_queue = asyncio.Queue(maxsize=QqEventHandler.MAX_WAITING_EVENTS)
+            for index in range(QqEventHandler.EVENT_WORKERS):
+                task = asyncio.create_task(
+                    QqEventHandler._event_worker(index),
+                    name=f"qq-event-worker-{index}",
+                )
+                QqEventHandler._event_worker_tasks.add(task)
+                task.add_done_callback(QqEventHandler._event_worker_tasks.discard)
+
+        if not QqEventHandler._interaction_ack_worker_tasks:
+            QqEventHandler._interaction_ack_executor = ThreadPoolExecutor(
+                max_workers=QqEventHandler.INTERACTION_ACK_WORKERS,
+                thread_name_prefix="qq-ack",
+            )
+            QqEventHandler._interaction_ack_queue = asyncio.Queue(
+                maxsize=QqEventHandler.MAX_WAITING_INTERACTIONS,
+            )
+            for index in range(QqEventHandler.INTERACTION_ACK_WORKERS):
+                task = asyncio.create_task(
+                    QqEventHandler._interaction_ack_worker(index),
+                    name=f"qq-interaction-ack-worker-{index}",
+                )
+                QqEventHandler._interaction_ack_worker_tasks.add(task)
+                task.add_done_callback(QqEventHandler._interaction_ack_worker_tasks.discard)
+
+    @staticmethod
+    async def _shutdown_queues() -> None:
+        """等待队列短暂清空，然后取消固定 worker。
+
+        顺序很重要：先 drain，再 cancel。否则 worker 被取消后队列永远不会
+        task_done，queue.join() 会卡住。
+        """
+
+        await QqEventHandler._drain_event_queue()
+        await QqEventHandler._drain_interaction_ack_queue()
+        await QqEventHandler._cancel_worker_tasks(QqEventHandler._event_worker_tasks)
+        await QqEventHandler._cancel_worker_tasks(QqEventHandler._interaction_ack_worker_tasks)
+        QqEventHandler._event_queue = None
+        QqEventHandler._interaction_ack_queue = None
+        QqEventHandler._shutdown_interaction_ack_executor()
+
+    @staticmethod
+    def _shutdown_interaction_ack_executor() -> None:
+        """关闭按钮 ACK 专用线程池，避免默认线程池残留 OpenAPI 任务。"""
+
+        executor = QqEventHandler._interaction_ack_executor
+        QqEventHandler._interaction_ack_executor = None
+        if executor is None:
+            return
+        executor.shutdown(wait=True, cancel_futures=True)
+
+    @staticmethod
+    async def _drain_event_queue() -> None:
+        """关闭前尽量处理完已接收的消息事件。"""
+
+        queue = QqEventHandler._event_queue
+        if queue is None:
+            return
+
+        try:
+            await asyncio.wait_for(queue.join(), timeout=QqEventHandler.SHUTDOWN_DRAIN_SECONDS)
+        except asyncio.TimeoutError:
+            dropped = await QqEventHandler._drop_waiting_events(queue)
+            logger.opt(colors=True).warning(
+                C.join(
+                    C.warn("QQ 事件队列关闭等待超时"),
+                    C.kv("dropped", dropped),
+                    C.kv("waiting", queue.qsize()),
+                )
+            )
+
+    @staticmethod
+    async def _drain_interaction_ack_queue() -> None:
+        """关闭前尽量确认已经收到的按钮回调。"""
+
+        queue = QqEventHandler._interaction_ack_queue
+        if queue is None:
+            return
+
+        try:
+            await asyncio.wait_for(queue.join(), timeout=QqEventHandler.SHUTDOWN_DRAIN_SECONDS)
+        except asyncio.TimeoutError:
+            dropped = QqEventHandler._drop_waiting_interactions(queue)
+            logger.opt(colors=True).warning(
+                C.join(
+                    C.warn("QQ 按钮 ACK 队列关闭等待超时"),
+                    C.kv("dropped", dropped),
+                    C.kv("waiting", queue.qsize()),
+                )
+            )
+
+    @staticmethod
+    async def _drop_waiting_events(queue: asyncio.Queue[QqMessageEvent]) -> int:
+        """丢弃还没被 worker 取走的事件，并释放排队名额。"""
+
+        dropped = 0
+        while True:
+            try:
+                event = queue.get_nowait()
+            except asyncio.QueueEmpty:
+                return dropped
+
+            await QqEventHandler._release_waiting_event()
+            await QqEventHandler._release_user_event(event.client_id)
+            queue.task_done()
+            dropped += 1
+
+    @staticmethod
+    def _drop_waiting_interactions(queue: asyncio.Queue[str]) -> int:
+        """丢弃还没被 worker 取走的按钮 ACK。"""
+
+        dropped = 0
+        while True:
+            try:
+                queue.get_nowait()
+            except asyncio.QueueEmpty:
+                return dropped
+
+            queue.task_done()
+            dropped += 1
+
+    @staticmethod
+    async def _cancel_worker_tasks(tasks: Set[asyncio.Task]) -> None:
+        """取消并回收一组固定 worker。"""
+
+        running = list(tasks)
+        for task in running:
+            task.cancel()
+
+        if running:
+            await asyncio.gather(*running, return_exceptions=True)
+        tasks.clear()
 
     @staticmethod
     async def dispatch(*args, **kwargs) -> dict:
@@ -230,7 +387,11 @@ class QqEventHandler(BaseAdapter):
 
     @staticmethod
     async def _enqueue_event(event: QqMessageEvent) -> None:
-        """把已解析的 QQ 消息事件放入后台任务队列。"""
+        """把已解析的 QQ 消息事件放入后台任务队列。
+
+        入队前依次做：事件去重、单用户排队限流、全局排队限流。
+        每一个成功占用的名额，都必须在失败分支或 worker finally 中释放。
+        """
 
         if not await QqEventHandler._remember_event_once(event):
             logger.opt(colors=True).warning(
@@ -251,6 +412,17 @@ class QqEventHandler(BaseAdapter):
             )
             return
 
+        queue = QqEventHandler._event_queue
+        if queue is None:
+            await QqEventHandler._release_user_event(event.client_id)
+            logger.opt(colors=True).warning(
+                C.join(
+                    C.warn("QQ 事件队列未启动"),
+                    *QqEventHandler._event_log_parts(event, include_message=False),
+                )
+            )
+            return
+
         if not await QqEventHandler._reserve_waiting_event():
             await QqEventHandler._release_user_event(event.client_id)
             logger.opt(colors=True).warning(
@@ -261,27 +433,103 @@ class QqEventHandler(BaseAdapter):
             )
             return
 
-        task = asyncio.create_task(QqEventHandler._run_event_task(event))
-        QqEventHandler._background_tasks.add(task)
-        task.add_done_callback(QqEventHandler._on_event_task_done)
+        try:
+            queue.put_nowait(event)
+        except asyncio.QueueFull:
+            await QqEventHandler._release_waiting_event()
+            await QqEventHandler._release_user_event(event.client_id)
+            logger.opt(colors=True).warning(
+                C.join(
+                    C.warn("QQ webhook 后台队列已满"),
+                    C.kv("max_waiting", QqEventHandler.MAX_WAITING_EVENTS),
+                )
+            )
+            return
 
     @staticmethod
     def _ack_interaction(event: QqMessageEvent) -> None:
-        """快速确认按钮回调，让 QQ 客户端结束点击等待状态。"""
+        """把按钮回调确认请求放入 ACK 队列。
+
+        这个函数不能 await 网络请求；它运行在 webhook ACK 热路径上，只做
+        非阻塞入队。队列满时宁可丢弃 ACK，也不能拖慢开放平台回调。
+        """
 
         if not event.interaction_id:
             return
 
-        task = asyncio.create_task(QqEventHandler._ack_interaction_task(event.interaction_id))
-        QqEventHandler._interaction_ack_tasks.add(task)
-        task.add_done_callback(QqEventHandler._on_interaction_ack_done)
+        queue = QqEventHandler._interaction_ack_queue
+        if queue is None:
+            return
+
+        try:
+            queue.put_nowait(event.interaction_id)
+        except asyncio.QueueFull:
+            logger.opt(colors=True).warning(
+                C.join(
+                    C.warn("QQ 按钮 ACK 队列已满"),
+                    C.kv("interaction", QqEventHandler._short_id(event.interaction_id)),
+                    C.kv("max_waiting", QqEventHandler.MAX_WAITING_INTERACTIONS),
+                )
+            )
 
     @staticmethod
-    async def _ack_interaction_task(interaction_id: str) -> None:
+    async def _event_worker(index: int) -> None:
+        """固定事件 worker：从队列取消息并执行命令处理。"""
+
+        queue = QqEventHandler._event_queue
+        if queue is None:
+            return
+
+        try:
+            while True:
+                event = await queue.get()
+                try:
+                    await QqEventHandler._run_event_task(event)
+                except Exception as exc:
+                    logger.opt(colors=True, exception=exc).error(
+                        C.join(
+                            C.fail("QQ 事件 worker 异常"),
+                            C.kv("worker", index),
+                            *QqEventHandler._event_log_parts(event, include_message=False),
+                        )
+                    )
+                finally:
+                    queue.task_done()
+        except asyncio.CancelledError:
+            return
+
+    @staticmethod
+    async def _interaction_ack_worker(index: int) -> None:
+        """固定按钮 ACK worker：确认按钮回调，避免临时任务暴涨。"""
+
+        queue = QqEventHandler._interaction_ack_queue
+        if queue is None:
+            return
+
+        try:
+            while True:
+                interaction_id = await queue.get()
+                try:
+                    await QqEventHandler._ack_interaction_direct(interaction_id)
+                except Exception as exc:
+                    logger.opt(colors=True, exception=exc).warning(
+                        C.join(
+                            C.warn("QQ 按钮 ACK worker 异常"),
+                            C.kv("worker", index),
+                            C.kv("interaction", QqEventHandler._short_id(interaction_id)),
+                        )
+                    )
+                finally:
+                    queue.task_done()
+        except asyncio.CancelledError:
+            return
+
+    @staticmethod
+    async def _ack_interaction_direct(interaction_id: str) -> None:
         """后台确认按钮回调，避免阻塞 webhook ACK。"""
 
         try:
-            await asyncio.to_thread(client.ack_interaction, interaction_id)
+            await QqEventHandler._run_ack_sync(client.ack_interaction, interaction_id)
         except Exception as exc:
             logger.opt(colors=True, exception=exc).warning(
                 C.join(
@@ -291,20 +539,31 @@ class QqEventHandler(BaseAdapter):
             )
 
     @staticmethod
-    def _on_interaction_ack_done(task: asyncio.Task) -> None:
-        """回收按钮确认后台任务。"""
+    async def _run_ack_sync(func, *args):
+        """在按钮 ACK 专用线程池里运行同步 OpenAPI 调用。
 
-        QqEventHandler._interaction_ack_tasks.discard(task)
+        正常生命周期里 run() 会先创建线程池，再启动 ACK worker。这里不再
+        退回 asyncio 默认线程池，避免驱动器未启动时悄悄产生不可控后台线程。
+        """
+
+        executor = QqEventHandler._interaction_ack_executor
+        if executor is None:
+            raise RuntimeError("QQ 按钮 ACK 线程池未启动")
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(executor, func, *args)
 
     @staticmethod
     async def _run_event_task(event: QqMessageEvent) -> None:
-        """在并发限制、单用户顺序限制和超时限制下处理事件。"""
+        """在单用户顺序限制和超时限制下处理事件。
+
+        固定 worker 控制了全局并发数；这里的 user_lock 只负责同一个
+        client_id 的顺序一致性。
+        """
 
         async def run_with_limits() -> bool:
             user_lock = await QqEventHandler._user_lock(event.client_id)
             async with user_lock:
-                async with QqEventHandler._event_semaphore:
-                    return await QqEventHandler._process_message_event(event)
+                return await QqEventHandler._process_message_event(event)
 
         try:
             await asyncio.wait_for(run_with_limits(), timeout=QqEventHandler.EVENT_TASK_TIMEOUT)
@@ -478,6 +737,7 @@ class QqEventHandler(BaseAdapter):
 
             QqEventHandler._seen_event_ids[event_key] = now_value
             QqEventHandler._seen_event_order.append((now_value, event_key))
+            QqEventHandler._trim_seen_event_ids()
             return True
 
     @staticmethod
@@ -494,39 +754,18 @@ class QqEventHandler(BaseAdapter):
                 QqEventHandler._seen_event_ids.pop(event_key, None)
 
     @staticmethod
-    def _on_event_task_done(task: asyncio.Task) -> None:
-        """后台任务完成后的回调入口。"""
+    def _trim_seen_event_ids() -> None:
+        """限制事件去重缓存上限，避免异常流量下长期占用内存。"""
 
-        asyncio.create_task(QqEventHandler._handle_event_task_result(task))
-
-    @staticmethod
-    async def _handle_event_task_result(task: asyncio.Task) -> None:
-        """回收后台任务，并统一记录异常。"""
-
-        QqEventHandler._background_tasks.discard(task)
-        try:
-            task.result()
-        except asyncio.CancelledError:
-            return
-        except Exception as exc:
-            logger.opt(colors=True, exception=exc).error(f"{C.fail('QQ 事件处理异常')}")
+        while len(QqEventHandler._seen_event_order) > QqEventHandler.MAX_SEEN_EVENT_IDS:
+            created_at, event_key = QqEventHandler._seen_event_order.popleft()
+            if QqEventHandler._seen_event_ids.get(event_key) == created_at:
+                QqEventHandler._seen_event_ids.pop(event_key, None)
 
     @staticmethod
     def _build_command_index() -> None:
         """整理命令索引和排序，供后续事件快速匹配。"""
 
-        QqEventHandler.exact_commands = set(QqEventHandler.exact_rules.keys())
-        QqEventHandler.regex_patterns = [
-            rule.pattern.pattern
-            for rules in QqEventHandler.regex_rules.values()
-            for rule in rules
-            if rule.pattern is not None
-        ]
-        QqEventHandler.regex_patterns.extend(
-            rule.pattern.pattern
-            for rule in QqEventHandler.regex_fallback
-            if rule.pattern is not None
-        )
         QqEventHandler.regex_prefix_lengths = {
             len(prefix)
             for prefix in QqEventHandler.regex_rules
@@ -537,6 +776,14 @@ class QqEventHandler(BaseAdapter):
         for rules in QqEventHandler.regex_rules.values():
             rules.sort(key=lambda rule: (-rule.priority, rule.order))
         QqEventHandler.regex_fallback.sort(key=lambda rule: (-rule.priority, rule.order))
+
+    @staticmethod
+    def _regex_rule_count() -> int:
+        """返回已注册正则命令数量，只用于启动日志。"""
+
+        return sum(len(rules) for rules in QqEventHandler.regex_rules.values()) + len(
+            QqEventHandler.regex_fallback
+        )
 
     @staticmethod
     def _split_command(raw_message: str) -> Tuple[str, str]:

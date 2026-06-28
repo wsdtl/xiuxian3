@@ -6,7 +6,10 @@
 """
 
 import json
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from contextvars import ContextVar
+from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
 from typing import Any
@@ -23,6 +26,21 @@ current_event: ContextVar[QqMessageEvent | None] = ContextVar(
 )
 
 
+@dataclass(frozen=True)
+class QqQueuedReply:
+    """QQ 待发送回复。
+
+    manager.send 只负责捕获当前事件上下文并入队；真正的 OpenAPI 请求
+    由后台 worker 执行，避免业务命令被 QQ 网络耗时拖住。
+    """
+
+    message: object
+    event: QqMessageEvent
+    client_id: str
+    is_log: bool = True
+    request_id: object | None = None
+
+
 class QqReplyManager:
     """按当前 QQ 事件上下文发送私聊或群聊回复。
 
@@ -31,6 +49,103 @@ class QqReplyManager:
     处理事件前会把 QqMessageEvent 放进 current_event，回复器从这里
     取 QQ 私有上下文，再调用对应 OpenAPI。
     """
+
+    SEND_WORKERS = 8
+    MAX_WAITING_REPLIES = 1000
+    SHUTDOWN_DRAIN_SECONDS = 3.0
+
+    def __init__(self) -> None:
+        self._send_queue: asyncio.Queue[QqQueuedReply] | None = None
+        self._send_tasks: set[asyncio.Task] = set()
+        self._warmup_task: asyncio.Task | None = None
+        self._send_executor: ThreadPoolExecutor | None = None
+
+    async def start(self) -> None:
+        """启动 QQ 回复发送队列，并在后台预热 access token。
+
+        回复 worker 是固定数量的常驻协程。业务层调用 manager.send 时只入队，
+        不等待 QQ OpenAPI；真正的网络请求由 worker 在后台执行。
+        """
+
+        if self._send_tasks:
+            return
+
+        self._send_executor = ThreadPoolExecutor(
+            max_workers=self.SEND_WORKERS,
+            thread_name_prefix="qq-send",
+        )
+        self._send_queue = asyncio.Queue(maxsize=self.MAX_WAITING_REPLIES)
+        for index in range(self.SEND_WORKERS):
+            task = asyncio.create_task(self._send_worker(index), name=f"qq-send-worker-{index}")
+            self._send_tasks.add(task)
+            task.add_done_callback(self._send_tasks.discard)
+
+        if client.has_credentials:
+            self._warmup_task = asyncio.create_task(
+                self._warmup_access_token(),
+                name="qq-access-token-warmup",
+            )
+
+    async def shutdown(self) -> None:
+        """停止 QQ 回复发送队列，并释放 HTTP 连接池。
+
+        关闭时先短暂等待队列清空，给已经接收的回复一个发送机会；超过
+        SHUTDOWN_DRAIN_SECONDS 仍未发完，就丢弃剩余项，避免停服时一直挂住。
+        """
+
+        if self._warmup_task is not None:
+            self._warmup_task.cancel()
+            await asyncio.gather(self._warmup_task, return_exceptions=True)
+            self._warmup_task = None
+
+        queue = self._send_queue
+        if queue is not None:
+            try:
+                await asyncio.wait_for(queue.join(), timeout=self.SHUTDOWN_DRAIN_SECONDS)
+            except asyncio.TimeoutError:
+                dropped = self._drop_waiting_replies(queue)
+                logger.opt(colors=True).warning(
+                    C.join(
+                        C.warn("QQ 回复队列关闭等待超时，丢弃剩余回复"),
+                        C.kv("dropped", dropped),
+                        C.kv("waiting", queue.qsize()),
+                    )
+                )
+
+        tasks = list(self._send_tasks)
+        for task in tasks:
+            task.cancel()
+
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+        self._send_tasks.clear()
+        self._send_queue = None
+        self._shutdown_executor()
+        client.close()
+
+    def _shutdown_executor(self) -> None:
+        """关闭 QQ 发送专用线程池，避免 OpenAPI 线程散落到全局线程池。"""
+
+        executor = self._send_executor
+        self._send_executor = None
+        if executor is None:
+            return
+        executor.shutdown(wait=True, cancel_futures=True)
+
+    @staticmethod
+    def _drop_waiting_replies(queue: asyncio.Queue[QqQueuedReply]) -> int:
+        """丢弃还没有被 worker 取走的回复项，保证 queue.join() 不残留。"""
+
+        dropped = 0
+        while True:
+            try:
+                queue.get_nowait()
+            except asyncio.QueueEmpty:
+                return dropped
+
+            queue.task_done()
+            dropped += 1
 
     async def send(
         self,
@@ -51,39 +166,159 @@ class QqReplyManager:
                 logger.opt(colors=True).warning(f"{C.warn('QQ 回复失败，缺少当前事件上下文')}")
             return False
 
-        try:
-            payload = self._message_payload(message, event)
-            if not payload:
-                return False
+        item = QqQueuedReply(
+            message=message,
+            event=event,
+            client_id=client_id,
+            is_log=is_log,
+            request_id=request_id,
+        )
 
-            if event.is_group:
-                client.send_group_payload(
-                    event.group_openid,
-                    payload,
-                    event.message_id,
-                    event.event_id,
+        queue = self._send_queue
+        if queue is None:
+            if is_log:
+                logger.opt(colors=True).warning(
+                    C.join(
+                        C.warn("QQ 回复队列未启动"),
+                        *self._reply_log_parts(item),
+                    )
                 )
-            else:
-                client.send_c2c_payload(
-                    event.user_openid,
-                    payload,
-                    event.message_id,
-                    event.event_id,
+            return False
+
+        try:
+            queue.put_nowait(item)
+        except asyncio.QueueFull:
+            if is_log:
+                logger.opt(colors=True).warning(
+                    C.join(
+                        C.warn("QQ 回复队列已满"),
+                        *self._reply_log_parts(item),
+                        C.kv("max_waiting", self.MAX_WAITING_REPLIES),
+                    )
                 )
-        except Exception as exc:
-            logger.opt(colors=True, exception=exc).warning(f"{C.warn('QQ 回复发送失败')}")
             return False
 
         if is_log:
             logger.opt(colors=True).debug(
                 C.join(
-                    C.ok("QQ 回复已发送"),
-                    C.kv("type", "群聊" if event.is_group else "私聊"),
-                    C.kv("client", self._short_id(client_id)),
-                    C.kv("request_id", request_id or "-"),
+                    C.ok("QQ 回复已入队"),
+                    *self._reply_log_parts(item),
                 )
             )
         return True
+
+    async def _send_worker(self, index: int) -> None:
+        """后台发送 QQ 回复。
+
+        worker 自己兜住单条发送异常，避免某次 OpenAPI 报错把整个发送协程
+        打死。只有 shutdown cancel 时才退出循环。
+        """
+
+        queue = self._send_queue
+        if queue is None:
+            return
+
+        try:
+            while True:
+                item = await queue.get()
+                try:
+                    await self._send_direct(item)
+                except Exception as exc:
+                    logger.opt(colors=True, exception=exc).warning(
+                        C.join(
+                            C.warn("QQ 回复 worker 异常"),
+                            C.kv("worker", index),
+                        )
+                    )
+                finally:
+                    queue.task_done()
+        except asyncio.CancelledError:
+            return
+
+    async def _warmup_access_token(self) -> None:
+        """后台预热 access token，让第一条回复少等一次 token 请求。"""
+
+        try:
+            await self._run_sync(client.get_access_token)
+            logger.opt(colors=True).debug(f"{C.ok('QQ access token 已预热')}")
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.opt(colors=True, exception=exc).warning(f"{C.warn('QQ access token 预热失败')}")
+
+    async def _send_direct(self, item: QqQueuedReply) -> bool:
+        """执行一次 QQ 回复发送，供队列 worker 和兜底路径共用。"""
+
+        try:
+            payload = await self._run_sync(self._send_sync, item.message, item.event)
+        except Exception as exc:
+            logger.opt(colors=True, exception=exc).warning(
+                C.join(
+                    C.warn("QQ 回复发送失败"),
+                    *self._reply_log_parts(item),
+                )
+            )
+            return False
+
+        if not payload:
+            return False
+
+        if item.is_log:
+            logger.opt(colors=True).debug(
+                C.join(
+                    C.ok("QQ 回复已发送"),
+                    *self._reply_log_parts(item),
+                    C.kv("msg_type", payload.get("msg_type") or "-"),
+                )
+            )
+        return True
+
+    async def _run_sync(self, func, *args):
+        """在 QQ 发送专用线程池里运行同步 OpenAPI 调用。
+
+        发送链路必须走本驱动器自己的线程池，便于统一关闭和排查线程残留。
+        如果这里没有线程池，说明 manager.start() 没有按生命周期执行。
+        """
+
+        executor = self._send_executor
+        if executor is None:
+            raise RuntimeError("QQ 发送线程池未启动")
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(executor, func, *args)
+
+    @staticmethod
+    def _send_sync(message: object, event: QqMessageEvent) -> dict:
+        """在线程中执行 QQ OpenAPI 调用，避免阻塞 async 事件循环。"""
+
+        payload = QqReplyManager._message_payload(message, event)
+        if not payload:
+            return {}
+
+        if event.is_group:
+            client.send_group_payload(
+                event.group_openid,
+                payload,
+                event.message_id,
+                event.event_id,
+            )
+        else:
+            client.send_c2c_payload(
+                event.user_openid,
+                payload,
+                event.message_id,
+                event.event_id,
+            )
+        return payload
+
+    @staticmethod
+    def _reply_log_parts(item: QqQueuedReply) -> list[str]:
+        """生成 QQ 回复日志摘要。"""
+
+        return [
+            C.kv("type", "群聊" if item.event.is_group else "私聊"),
+            C.kv("client", QqReplyManager._short_id(item.client_id)),
+            C.kv("request_id", item.request_id or "-"),
+        ]
 
     @staticmethod
     def _message_payload(message: object, event: QqMessageEvent) -> dict:
@@ -259,12 +494,6 @@ class QqReplyManager:
         if len(text) <= head + tail + 3:
             return text
         return f"{text[:head]}...{text[-tail:]}"
-
-    @staticmethod
-    def dump(message: Any) -> str:
-        """调试用：把任意消息对象转成 JSON 字符串。"""
-
-        return json.dumps(message, ensure_ascii=False, default=str)
 
 
 manager = QqReplyManager()

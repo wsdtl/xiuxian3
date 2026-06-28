@@ -5,6 +5,7 @@ from __future__ import annotations
 from ..format_text import T
 
 from datetime import timedelta
+import hashlib
 from math import hypot
 
 from ..common import (
@@ -75,6 +76,13 @@ from ..wormhole_service import WormholeService
 from ..world_materials import WORLD_RECYCLE_CATEGORY_KEYS, WorldMaterialService
 
 
+TRADE_TYPE_LABELS = {
+    "trade_luxury": "重货",
+    "trade_contract": "契货",
+    "trade_ticket": "轻货",
+}
+
+
 class TradeService(WeaponCore):
     """商场交易、背包出售和资产回收分流。"""
 
@@ -102,7 +110,9 @@ class TradeService(WeaponCore):
         panel.section(f"{item['name']}市价")
         for row in rows:
             buy, sell = self.price(row["name"], item["item_id"])
-            panel.line(f"{row['name']}｜买 **{money(buy)}**｜卖 **{money(sell)}**")
+            item_effect = load_json(item.get("effect"), {})
+            market = self._daily_market(row["location_id"], str(item_effect.get("trade_type") or ""))
+            panel.line(f"{row['name']}｜买 **{money(buy)}**｜卖 **{money(sell)}**｜行情：{market['label']}")
         return panel.render()
 
     def buy(self, client_id: str, message: str) -> str:
@@ -340,7 +350,7 @@ class TradeService(WeaponCore):
         current = player["location_name"]
         if not self._location(current):
             return T.hint("当前位置不是商场城池。", "普通商场和探险地点重合；发送：探险列表 查看城池，再发送：导航 地点名。<探险列表>")
-        options = self._trade_options(client_id, player)
+        options = self._recommended_trade_options(client_id, player)
         if not options:
             return T.hint("当前没有能购买且有利润的跑商路线。", f"确认随身{currency_name()}和背包空间足够，或换一个商场地点再试。")
         panel = T.panel()
@@ -349,7 +359,8 @@ class TradeService(WeaponCore):
             panel.line(
                 f"{index}. 商场购买 {option['item_name']} {option['quantity']} -> "
                 f"导航 {option['target']} -> 商场出售 {option['item_name']} {option['quantity']}\n"
-                f"预计净赚 **{money(option['total_profit'])}**｜单件 **{money(option['unit_profit'])}**"
+                f"预计净赚 **{money(option['total_profit'])}**｜单件 **{money(option['unit_profit'])}**｜"
+                f"{option['trade_type_label']}行情：{option['market_label']}"
             )
         return T.attach(
             panel.render(),
@@ -711,7 +722,8 @@ class TradeService(WeaponCore):
         2. 供需位置：产地便宜，离产地越远越贵。
         3. 地点需求：不同地点偏好不同类型货物。
 
-        每日波动和买卖热度只做轻微扰动，不再决定货物的核心价值。
+        固定供需决定城池性格；每日行情让同一条商路每天有一点起落；
+        买卖热度再对过度集中交易做压制。
         """
 
         day = business_day()
@@ -728,7 +740,8 @@ class TradeService(WeaponCore):
         home_id = str(home["home_location_id"] or "") if home else location_id
         home_loc = self._location_by_id(home_id) or self._location(home_name)
         distance = hypot((loc["x"] - home_loc["x"]), (loc["y"] - home_loc["y"])) if loc and home_loc else 0
-        daily_wave = 1.0
+        market = self._daily_market(location_id, trade_type)
+        daily_wave = market["factor"]
         supply_factor = self._supply_factor(distance, bool(location_id and home_id and location_id == home_id))
         demand_factor = self._demand_factor(location_id, trade_type)
         heat = (
@@ -764,7 +777,10 @@ class TradeService(WeaponCore):
 
         if is_home:
             return 0.82
-        return 0.96 + min(0.36, distance / 2600)
+        # 当前世界坐标范围是 -100..100，普通城池之间通常相隔几十格。
+        # 旧地图尺度下的 2600 会把运输价差压到几乎没有，推荐路线自然
+        # 被单个最高需求城池吸住；这里按新坐标尺度重标定运输溢价。
+        return 0.96 + min(0.36, distance / 220)
 
     @staticmethod
     def _demand_factor(location_id: str, trade_type: str) -> float:
@@ -773,6 +789,30 @@ class TradeService(WeaponCore):
         if not trade_type:
             return 0.98
         return TRADE_LOCATION_DEMANDS.get(location_id, {}).get(trade_type, 0.98)
+
+    @staticmethod
+    def _daily_market(location_id: str, trade_type: str) -> dict[str, float | str]:
+        """生成每日行情。
+
+        行情不入库：用业务日、城池和货类做稳定哈希。同一天同一城池同一类货
+        行情固定，第二天自然重算；这样市场有日更活力，又不会增加清理负担。
+        """
+
+        if not location_id or not trade_type:
+            return {"factor": 1.0, "label": "平稳"}
+        seed = f"{business_day()}|{location_id}|{trade_type}|trade_market"
+        digest = hashlib.blake2b(seed.encode("utf-8"), digest_size=2).digest()
+        value = int.from_bytes(digest, "big") / 65535
+        if value < 0.18:
+            factor = 0.88 + value / 0.18 * 0.06
+            label = "滞销"
+        elif value > 0.82:
+            factor = 1.08 + (value - 0.82) / 0.18 * 0.07
+            label = "紧俏"
+        else:
+            factor = 0.96 + (value - 0.18) / 0.64 * 0.10
+            label = "平稳"
+        return {"factor": factor, "label": label}
 
     def _trade_options(self, client_id: str, player: dict) -> list[dict]:
         """计算当前位置可执行的跑商路线。"""
@@ -807,28 +847,125 @@ class TradeService(WeaponCore):
                 if total_profit <= 0:
                     continue
 
-                options.append(
-                    {
-                        "item_id": item["item_id"],
-                        "item_name": item["name"],
-                        "quantity": quantity,
-                        "target": loc["name"],
-                        "target_x": loc["x"],
-                        "target_y": loc["y"],
-                        "buy_price": buy_price,
-                        "sell_price": sell_price,
-                        "buy_total": buy_total,
-                        "buy_fee": buy_fee,
-                        "sell_total": sell_total,
-                        "sell_fee": sell_fee,
-                        "unit_profit": unit_profit,
-                        "total_profit": total_profit,
-                        "profit_per_weight": total_profit / max(1, int(item["weight"]) * quantity),
-                    }
-                )
+                option = {
+                    "item_id": item["item_id"],
+                    "item_name": item["name"],
+                    "quantity": quantity,
+                    "target": loc["name"],
+                    "target_x": loc["x"],
+                    "target_y": loc["y"],
+                    "buy_price": buy_price,
+                    "sell_price": sell_price,
+                    "buy_total": buy_total,
+                    "buy_fee": buy_fee,
+                    "sell_total": sell_total,
+                    "sell_fee": sell_fee,
+                    "unit_profit": unit_profit,
+                    "total_profit": total_profit,
+                    "profit_per_weight": total_profit / max(1, int(item["weight"]) * quantity),
+                }
+                item_effect = load_json(item.get("effect"), {})
+                trade_type = str(item_effect.get("trade_type") or "")
+                market = self._daily_market(str(loc.get("location_id") or ""), trade_type)
+                option["trade_type_label"] = TRADE_TYPE_LABELS.get(trade_type, "商货")
+                option["market_label"] = market["label"]
+                option["market_factor"] = market["factor"]
+                option["recommend_score"] = self._trade_route_score(client_id, current, option)
+                options.append(option)
 
         options.sort(key=lambda row: (row["total_profit"], row["profit_per_weight"]), reverse=True)
         return options
+
+    def _recommended_trade_options(self, client_id: str, player: dict, limit: int = 3) -> list[dict]:
+        """生成玩家看到的推荐路线。
+
+        `_trade_options()` 仍保留纯利润排序，方便自动出售和老测试拿最优解；
+        展示推荐则更像真正行商：利润是底盘，同时参考单位负重收益、终点热度
+        和一点按日稳定的随机扰动，并尽量避免前三条全挤到同一个终点。
+        """
+
+        options = self._trade_options(client_id, player)
+        if len(options) <= 1:
+            return options
+
+        ranked = sorted(
+            options,
+            key=lambda row: (
+                row.get("recommend_score", 0),
+                row["total_profit"],
+                row["profit_per_weight"],
+            ),
+            reverse=True,
+        )
+        result: list[dict] = []
+        used_targets: set[str] = set()
+        for option in ranked:
+            target = str(option["target"])
+            if target in used_targets and len(used_targets) < min(limit, len({str(row["target"]) for row in ranked})):
+                continue
+            result.append(option)
+            used_targets.add(target)
+            if len(result) >= limit:
+                return result
+        for option in ranked:
+            if option in result:
+                continue
+            result.append(option)
+            if len(result) >= limit:
+                break
+        return result
+
+    def _trade_route_score(self, client_id: str, current: str, option: dict) -> float:
+        """计算跑商推荐分。
+
+        分数只影响“推荐顺序”，不影响真实买卖价。这样市场看起来会流动，
+        但玩家按推荐买卖时仍然走 `price()` 和收益曲线的正式结算。
+        """
+
+        total_profit = max(1.0, float(option["total_profit"]))
+        weight_profit = max(1.0, float(option["profit_per_weight"]))
+        heat_penalty = self._target_trade_heat_penalty(str(option["target"]))
+        jitter = self._stable_route_jitter(client_id, current, option)
+        return total_profit * (0.80 + min(0.30, weight_profit / total_profit)) * heat_penalty * jitter
+
+    def _target_trade_heat_penalty(self, target: str) -> float:
+        """终点近期卖货越拥挤，推荐分越低，避免所有路线被一个城池吸住。"""
+
+        location = self._location(target)
+        location_id = str(location.get("location_id") or "") if location else ""
+        if not location_id:
+            return 1.0
+        row = self.db.fetch_one(
+            """
+            SELECT COALESCE(SUM(sell_count), 0) AS sell_count
+            FROM trade_heat
+            WHERE location_id = ? AND business_day = ?
+            """,
+            (location_id, business_day()),
+        )
+        sell_count = int(row["sell_count"] if row else 0)
+        return max(0.72, 1.0 - min(0.28, sell_count * 0.018))
+
+    @staticmethod
+    def _stable_route_jitter(client_id: str, current: str, option: dict) -> float:
+        """按玩家、日期和路线生成稳定随机扰动。
+
+        同一天同一玩家看到的推荐不会频繁跳；不同玩家、不同日期会自然分散。
+        扰动幅度控制在 ±10%，只在相近利润路线之间制造变化。
+        """
+
+        seed = "|".join(
+            [
+                business_day(),
+                str(client_id),
+                str(current),
+                str(option.get("item_id") or ""),
+                str(option.get("target") or ""),
+            ]
+        )
+        digest = hashlib.blake2b(seed.encode("utf-8"), digest_size=2).digest()
+        value = int.from_bytes(digest, "big") / 65535
+        return 0.90 + value * 0.20
 
     def _max_buy_quantity(self, client_id: str, item: dict, buy_price: int, buy_fee_rate: float, raw_stones: int) -> int:
         """计算当前随身货币和背包最多能买多少。"""

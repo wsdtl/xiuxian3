@@ -7,9 +7,11 @@
 from base64 import b64encode
 import json
 import time
-import urllib.error
-import urllib.request
+from threading import Lock
 from typing import Any, Dict
+
+import urllib3
+from urllib3.exceptions import HTTPError as Urllib3Error
 
 from launch.config import config
 from launch.log import C, logger
@@ -17,6 +19,15 @@ from launch.log import C, logger
 
 QQ_TOKEN_URL = "https://bots.qq.com/app/getAppAccessToken"
 QQ_OPEN_API_BASE = "https://api.sgroup.qq.com"
+
+# QQ OpenAPI 是回复链路里最慢、最不稳定的一段。这里把超时拆成连接超时
+# 和读取超时：连接失败尽快返回，已连上后给平台留出正常处理时间。
+QQ_HTTP_CONNECT_TIMEOUT_SECONDS = 3.0
+QQ_HTTP_READ_TIMEOUT_SECONDS = 8.0
+
+# 连接池上限需要和 manager.SEND_WORKERS 保持同一个数量级。设得太大会在
+# QQ OpenAPI 慢时占用过多本机连接，设得太小又会让后台发送 worker 互相排队。
+QQ_HTTP_POOL_SIZE = 16
 
 
 class QqOpenApiClient:
@@ -33,24 +44,15 @@ class QqOpenApiClient:
         self.client_secret = config.get("QQ_BOT_SECRET", "").strip()
         self._access_token = ""
         self._access_token_expires_at = 0.0
-
-    def send_c2c_message(
-        self,
-        openid: str,
-        content: str,
-        message_id: str,
-        event_id: str = "",
-    ) -> dict:
-        """回复 C2C 私聊消息。"""
-
-        return self.send_c2c_payload(
-            openid,
-            {
-                "content": content,
-                "msg_type": 0,
-            },
-            message_id,
-            event_id,
+        self._access_token_lock = Lock()
+        self._http = urllib3.PoolManager(
+            num_pools=4,
+            maxsize=QQ_HTTP_POOL_SIZE,
+            block=True,
+            timeout=urllib3.Timeout(
+                connect=QQ_HTTP_CONNECT_TIMEOUT_SECONDS,
+                read=QQ_HTTP_READ_TIMEOUT_SECONDS,
+            ),
         )
 
     def send_c2c_payload(
@@ -83,29 +85,6 @@ class QqOpenApiClient:
         """上传 C2C 私聊图片，返回发消息接口可使用的 file_info。"""
 
         return self._upload_image_file_info(f"/v2/users/{openid}/files", image_bytes)
-
-    def send_group_message(
-        self,
-        group_openid: str,
-        content: str,
-        message_id: str,
-        event_id: str = "",
-    ) -> dict:
-        """回复群消息。
-
-        群消息接口需要 group_openid 作为目标；event_id 可用于开放平台
-        的事件关联，传入为空时只按 message_id 回复。
-        """
-
-        return self.send_group_payload(
-            group_openid,
-            {
-                "content": content,
-                "msg_type": 0,
-            },
-            message_id,
-            event_id,
-        )
 
     def send_group_payload(
         self,
@@ -168,36 +147,35 @@ class QqOpenApiClient:
         return self._request_openapi("PUT", path, payload, log_title)
 
     def _request_openapi(self, method: str, path: str, payload: dict, log_title: str) -> dict:
-        """调用 QQ OpenAPI，遇到 token 失效时刷新后重试一次。"""
+        """调用 QQ OpenAPI，遇到 token 失效时刷新后重试一次。
+
+        这里只重试 401。其它错误通常是 payload、权限、订阅、频控或平台异常，
+        盲目重试会放大压力，也可能让同一条回复重复发送。
+        """
 
         try:
             return self._request_openapi_once(method, path, payload, log_title)
         except QqOpenApiError as exc:
             if exc.status_code != 401:
                 raise
-            self._access_token = ""
-            self._access_token_expires_at = 0.0
+            self.clear_access_token()
             return self._request_openapi_once(method, path, payload, log_title)
 
     def _request_openapi_once(self, method: str, path: str, payload: dict, log_title: str) -> dict:
         """执行一次 OpenAPI 请求，不做业务层重试。"""
 
         token = self.get_access_token()
-        request = urllib.request.Request(
+        status_code, raw = self._request_json(
+            method,
             self.api_base + path,
-            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-            headers={
+            payload,
+            {
                 "Authorization": f"QQBot {token}",
                 "Content-Type": "application/json",
             },
-            method=method,
         )
-        try:
-            with urllib.request.urlopen(request, timeout=10) as response:
-                raw = response.read().decode("utf-8")
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")
-            raise QqOpenApiError(exc.code, detail) from exc
+        if status_code >= 400:
+            raise QqOpenApiError(status_code, raw)
 
         result = json.loads(raw) if raw else {}
         if isinstance(result, dict) and int(result.get("code") or 0) != 0:
@@ -217,6 +195,33 @@ class QqOpenApiClient:
         if self._access_token and time.time() < self._access_token_expires_at - 60:
             return self._access_token
 
+        with self._access_token_lock:
+            if self._access_token and time.time() < self._access_token_expires_at - 60:
+                return self._access_token
+
+            return self._fetch_access_token()
+
+    def clear_access_token(self) -> None:
+        """清空 access token 缓存，下次请求会重新获取。"""
+
+        with self._access_token_lock:
+            self._access_token = ""
+            self._access_token_expires_at = 0.0
+
+    def close(self) -> None:
+        """关闭连接池里暂存的 HTTP 连接。"""
+
+        self._http.clear()
+
+    @property
+    def has_credentials(self) -> bool:
+        """当前是否具备主动调用 QQ OpenAPI 的凭据。"""
+
+        return bool(self.app_id and self.client_secret)
+
+    def _fetch_access_token(self) -> str:
+        """请求 QQ app access token，并更新本地缓存。"""
+
         if not self.app_id or not self.client_secret:
             raise RuntimeError("QQ_BOT_APP_ID 或 QQ_BOT_SECRET 未配置")
 
@@ -224,18 +229,14 @@ class QqOpenApiClient:
             "appId": self.app_id,
             "clientSecret": self.client_secret,
         }
-        request = urllib.request.Request(
+        status_code, raw = self._request_json(
+            "POST",
             QQ_TOKEN_URL,
-            data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
-            method="POST",
+            payload,
+            {"Content-Type": "application/json"},
         )
-        try:
-            with urllib.request.urlopen(request, timeout=10) as response:
-                raw = response.read().decode("utf-8")
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"获取 QQ access_token 失败：{exc.code} {detail}") from exc
+        if status_code >= 400:
+            raise RuntimeError(f"获取 QQ access_token 失败：{status_code} {raw}")
 
         data = json.loads(raw)
         token = str(data.get("access_token") or "").strip()
@@ -246,6 +247,34 @@ class QqOpenApiClient:
         self._access_token = token
         self._access_token_expires_at = time.time() + expires_in
         return token
+
+    def _request_json(
+        self,
+        method: str,
+        url: str,
+        payload: dict,
+        headers: dict[str, str],
+    ) -> tuple[int, str]:
+        """通过连接池发送 JSON 请求，并返回状态码和原始响应文本。
+
+        QQ 回复链路会频繁访问同一批域名，连接池可以复用 TLS 连接，
+        避免每条消息都重新握手。这里不在 urllib3 层自动重试，业务层
+        只允许 token 失效这种确定可恢复的情况重试一次。
+        """
+
+        try:
+            response = self._http.request(
+                method,
+                url,
+                body=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                headers=headers,
+                retries=False,
+            )
+        except Urllib3Error as exc:
+            raise RuntimeError(f"QQ HTTP 请求失败：{exc}") from exc
+
+        raw = response.data.decode("utf-8", errors="replace") if response.data else ""
+        return int(response.status), raw
 
     @staticmethod
     def _openapi_result_log_parts(path: str, payload: dict, result: object) -> list[str]:

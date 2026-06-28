@@ -12,6 +12,11 @@ from typing import Any, Dict
 FIRST_LEADING_MENTION_RE = re.compile(r"^\s*<@([^>]+)>")
 LEADING_MENTION_CHAIN_RE = re.compile(r"^(?:\s*<@[^>]+>\s*)+")
 MENTION_RE = re.compile(r"<@([^>]+)>")
+GROUP_MESSAGE_EVENT_TYPES = {
+    "GROUP_AT_MESSAGE_CREATE",
+    "GROUP_MESSAGE_AT_CREATE",
+    "GROUP_MESSAGE_CREATE",
+}
 
 
 @dataclass(frozen=True)
@@ -45,6 +50,9 @@ def parse_message_event(payload: dict) -> QqMessageEvent | None:
 
     不属于消息创建的事件返回 None，调用方仍会 ACK；字段不完整的消息
     也返回 None，避免后续回复阶段缺少 openid 或 message_id。
+
+    这里故意不抛异常。QQ webhook 的原则是“能 ACK 就先 ACK”，异常 payload
+    不应该拖垮整个回调入口。
     """
 
     data = payload.get("d")
@@ -55,12 +63,7 @@ def parse_message_event(payload: dict) -> QqMessageEvent | None:
     if event_type == "INTERACTION_CREATE":
         return parse_interaction_event(payload, data)
 
-    if event_type not in {
-        "C2C_MESSAGE_CREATE",
-        "GROUP_AT_MESSAGE_CREATE",
-        "GROUP_MESSAGE_AT_CREATE",
-        "GROUP_MESSAGE_CREATE",
-    }:
+    if event_type not in {"C2C_MESSAGE_CREATE", *GROUP_MESSAGE_EVENT_TYPES}:
         return None
 
     content = normalize_content(
@@ -79,6 +82,8 @@ def parse_message_event(payload: dict) -> QqMessageEvent | None:
     ).strip()
     group_openid = str(data.get("group_openid") or data.get("group_id") or "").strip()
 
+    if event_type in GROUP_MESSAGE_EVENT_TYPES and not group_openid:
+        return None
     if not content or not message_id or not user_openid:
         return None
 
@@ -95,14 +100,18 @@ def parse_message_event(payload: dict) -> QqMessageEvent | None:
 
 
 def parse_interaction_event(payload: dict, data: dict) -> QqMessageEvent | None:
-    """从 QQ 按钮回调事件中提取可派发的命令事件。"""
+    """从 QQ 按钮回调事件中提取可派发的命令事件。
+
+    按钮 action.data 会落到 button_data，驱动器把它当成普通命令正文继续
+    派发。interaction_id 额外保留，用于 ACK 点击，避免 QQ 客户端等待失败。
+    """
 
     resolved = _interaction_resolved_data(data)
     content = normalize_content(resolved.get("button_data"))
     interaction_id = str(data.get("id") or payload.get("id") or "").strip()
     event_id = str(payload.get("id") or interaction_id).strip()
     message_id = str(resolved.get("message_id") or "").strip()
-    group_openid = str(data.get("group_openid") or "").strip()
+    group_openid = str(data.get("group_openid") or data.get("group_id") or "").strip()
     user_openid = str(
         data.get("user_openid")
         or data.get("group_member_openid")
@@ -110,6 +119,8 @@ def parse_interaction_event(payload: dict, data: dict) -> QqMessageEvent | None:
         or ""
     ).strip()
 
+    if data.get("group_member_openid") and not group_openid:
+        return None
     if not content or not interaction_id or not user_openid:
         return None
 
@@ -132,7 +143,12 @@ def normalize_content(
     event_type: str = "",
     mentions: Any = None,
 ) -> str:
-    """清理 QQ 消息正文，并把 QQ at 段转成业务层可识别的入口 ID。"""
+    """清理 QQ 消息正文，并把 QQ at 段转成业务层可识别的入口 ID。
+
+    群聊里用户通常用“@机器人 命令”触发；开头的机器人 at 只表示触发，
+    不应该作为业务参数。正文中其它用户 at 会被替换成入口 ID，供修仙业务
+    后续通过用户组映射到角色。
+    """
 
     text = "" if value is None else str(value)
     if _should_strip_leading_mentions(text, event_type, mentions):

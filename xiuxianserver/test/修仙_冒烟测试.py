@@ -1750,7 +1750,11 @@ def _check_trade_and_treasure(services: dict[str, object]) -> None:
     assert player is not None
     options = trade._trade_options("u1", player)
     assert options, "商场推荐应该至少给出一条可盈利路线"
-    option = options[0]
+    recommended_options = trade._recommended_trade_options("u1", player)
+    assert recommended_options, "商场推荐应该至少给出一条展示路线"
+    unique_targets = {str(row["target"]) for row in recommended_options[:3]}
+    assert len(unique_targets) >= min(3, len({str(row["target"]) for row in options})), recommended_options[:3]
+    option = recommended_options[0]
     trade_item = str(option["item_name"])
     trade_quantity = int(option["quantity"])
     trade_target = str(option["target"])

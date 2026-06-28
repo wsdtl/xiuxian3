@@ -25,6 +25,9 @@ async def qq_event_endpoint(request: Request) -> Dict[str, Any]:
     op=13 是开放平台的回调地址验证，必须同步返回签名结果。
     其他 payload 统一交给 QqEventHandler，handler 会快速 ACK 并把消息
     事件放进后台任务队列。
+
+    这个函数必须保持很薄：HTTP 层只负责读 JSON 和分流验证请求，业务处理
+    全部放到 handler，避免开放平台因为响应慢而重试。
     """
 
     payload = await _read_payload(request)
@@ -46,7 +49,11 @@ async def qq_event_endpoint(request: Request) -> Dict[str, Any]:
 
 
 async def _read_payload(request: Request) -> Dict[str, Any]:
-    """读取并校验 QQ webhook JSON。"""
+    """读取并校验 QQ webhook JSON。
+
+    QQ 正常回调一定是 JSON object。非 object 直接返回 400，方便定位配置
+    或代理问题；对象内部字段缺失则交给 handler 走 ACK 兼容逻辑。
+    """
 
     try:
         payload = await request.json()

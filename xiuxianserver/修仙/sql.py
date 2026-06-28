@@ -439,12 +439,13 @@ def trade_item_id(name: str) -> str:
 def _trade_item_def(location: str, location_index: int, item_index: int, name: str) -> tuple[str, str, int, int, int, str]:
     """生成纯经济特产定义。"""
 
+    trade_type = ("trade_luxury", "trade_contract", "trade_ticket")[item_index]
     quality = quality_key(("良品", "良品", "凡品")[item_index])
     weight = (2, 1, 1)[item_index] + (1 if item_index == 0 and location_index % 3 == 0 else 0)
     stack_limit = (50, 70, 80)[item_index]
     base_price = (900, 760, 600)[item_index] + location_index * 35
     desc = f"{location}流通的地方特产：{name}。它只服务本界商路差价和地区供需，不从探险或秘境掉落。"
-    return ("trade", quality, weight, stack_limit, base_price, desc)
+    return (trade_type, quality, weight, stack_limit, base_price, desc)
 
 
 TRADE_ITEM_DEFS = {
@@ -458,22 +459,27 @@ WORLD_ITEM_IDS = tuple(row[0] for row in ITEM_DEFS) + tuple(trade_item_id(name) 
 
 
 TRADE_LOCATION_DEMANDS = {
-    "city_tianshu": {"trade": 1.00},
-    "city_qinglan": {"trade": 0.98},
-    "city_chixia": {"trade": 1.03},
-    "city_xuantie": {"trade": 0.96},
-    "city_wanyao": {"trade": 1.02},
-    "city_yunmeng": {"trade": 1.01},
-    "city_liusha": {"trade": 0.94},
-    "city_hanshuang": {"trade": 1.08},
-    "city_leize": {"trade": 1.04},
-    "city_bichao": {"trade": 1.06},
-    "city_xingyun": {"trade": 1.12},
+    "city_tianshu": {"trade_luxury": 0.98, "trade_contract": 1.18, "trade_ticket": 1.04},
+    "city_qinglan": {"trade_luxury": 1.20, "trade_contract": 1.02, "trade_ticket": 0.90},
+    "city_chixia": {"trade_luxury": 0.92, "trade_contract": 1.07, "trade_ticket": 1.20},
+    "city_xuantie": {"trade_luxury": 1.21, "trade_contract": 0.91, "trade_ticket": 1.03},
+    "city_wanyao": {"trade_luxury": 1.01, "trade_contract": 1.20, "trade_ticket": 0.96},
+    "city_yunmeng": {"trade_luxury": 1.05, "trade_contract": 0.94, "trade_ticket": 1.19},
+    "city_liusha": {"trade_luxury": 1.12, "trade_contract": 0.88, "trade_ticket": 1.21},
+    "city_hanshuang": {"trade_luxury": 1.22, "trade_contract": 1.00, "trade_ticket": 0.89},
+    "city_leize": {"trade_luxury": 0.97, "trade_contract": 1.22, "trade_ticket": 1.06},
+    "city_bichao": {"trade_luxury": 0.93, "trade_contract": 1.08, "trade_ticket": 1.22},
+    "city_xingyun": {"trade_luxury": 1.12, "trade_contract": 1.18, "trade_ticket": 1.00},
 }
 
 
 TRADE_FORBIDDEN_SPECIALTY_TYPES = {"药材", "丹材", "燃料", "纺织", "水产", "盐鲜", "香料"}
-TRADE_GROUP_BY_TYPE = {"trade": "trade"}
+TRADE_GROUP_BY_TYPE = {
+    "trade": "trade",
+    "trade_luxury": "trade",
+    "trade_contract": "trade",
+    "trade_ticket": "trade",
+}
 
 
 def trade_group_for_type(trade_type: str) -> str:
