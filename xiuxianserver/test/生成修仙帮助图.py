@@ -365,7 +365,7 @@ def main() -> None:
     draw.text((footer_x, footer_y + 10), footer, font=footer_font, fill="#7A6252")
 
     OUTPUT.parent.mkdir(parents=True, exist_ok=True)
-    image.save(OUTPUT, format="JPEG", quality=62, optimize=True, progressive=True, subsampling=2)
+    image.save(OUTPUT, format="JPEG", quality=100, optimize=True, progressive=True, subsampling=2)
     print(f"saved={OUTPUT}")
     print(f"size={OUTPUT.stat().st_size}")
     print(f"image={image.width}x{image.height}")
