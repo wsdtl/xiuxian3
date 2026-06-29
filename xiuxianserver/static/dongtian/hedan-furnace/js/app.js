@@ -29,6 +29,7 @@ const state = {
   timerId: 0,
   running: false,
   finishing: false,
+  minSettleSeconds: 10,
 };
 
 const el = {
@@ -41,6 +42,7 @@ const el = {
   difficultyLabel: document.querySelector("#difficultyLabel"),
   difficultyText: document.querySelector("#difficultyText"),
   startButton: document.querySelector("#startButton"),
+  finishButton: document.querySelector("#finishButton"),
   againButton: document.querySelector("#againButton"),
   statusText: document.querySelector("#statusText"),
   settlement: document.querySelector("#settlement"),
@@ -63,6 +65,7 @@ async function bootstrap() {
     state.gameToken = data.game_token;
     const config = data.config || {};
     state.duration = Number(config.game_duration || 150);
+    state.minSettleSeconds = Number(config.round_min_seconds || state.minSettleSeconds || 10);
     el.timeLeft.textContent = String(state.duration);
     el.statusText.textContent = "洞天凭证已就绪。";
     el.startButton.disabled = false;
@@ -73,6 +76,7 @@ async function bootstrap() {
 }
 
 el.startButton.addEventListener("click", startRound);
+el.finishButton.addEventListener("click", () => finishRound("主动收火。"));
 el.againButton.addEventListener("click", () => {
   if (!el.settlement.hidden && state.roundToken && !el.codeBox.textContent.trim()) {
     finishRound("重试收火。");
@@ -82,6 +86,12 @@ el.againButton.addEventListener("click", () => {
 });
 el.copyCommandButton.addEventListener("click", () => copySettlementText(el.commandBox.textContent, el.copyCommandButton, "已复制兑换命令"));
 el.copyCodeButton.addEventListener("click", () => copySettlementText(el.codeBox.textContent, el.copyCodeButton, "已复制兑换码"));
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) {
+    settleIfExpired();
+  }
+});
+window.addEventListener("focus", settleIfExpired);
 
 async function startRound() {
   if (!state.gameToken || state.running) {
@@ -95,6 +105,7 @@ async function startRound() {
     state.sessionId = data.session_id;
     state.roundToken = data.round_token;
     state.duration = Number(data.game_duration || state.duration || 150);
+    state.minSettleSeconds = Number(data.round_min_seconds || state.minSettleSeconds || 10);
     state.difficulty = data.difficulty || { label: "真火炉", description: "炉火平稳。", start_tiles: 2, four_rate: 0.1 };
     el.difficultyLabel.textContent = state.difficulty.label || "真火炉";
     el.difficultyText.textContent = state.difficulty.description || "炉火平稳。";
@@ -102,6 +113,7 @@ async function startRound() {
     state.startedAt = Date.now();
     state.running = true;
     el.statusText.textContent = "滑动或方向键合丹。";
+    el.finishButton.disabled = false;
     tick();
     state.timerId = window.setInterval(tick, 250);
     render();
@@ -124,6 +136,7 @@ function resetRound() {
   state.timerId = 0;
   state.running = false;
   state.finishing = false;
+  el.finishButton.disabled = true;
   el.settlement.hidden = true;
   el.againButton.textContent = "再开一炉";
   el.codeBlock.hidden = true;
@@ -150,6 +163,12 @@ function tick() {
   const left = Math.max(0, state.duration - elapsed);
   el.timeLeft.textContent = String(left);
   if (left <= 0) {
+    finishRound("丹炉火候已满。");
+  }
+}
+
+function settleIfExpired() {
+  if (state.running && !state.finishing && elapsedSeconds() >= state.duration) {
     finishRound("丹炉火候已满。");
   }
 }
@@ -302,10 +321,14 @@ async function finishRound(reason) {
   if (state.finishing || !state.roundToken) {
     return;
   }
+  if (!ensureSettleReady()) {
+    return;
+  }
   state.finishing = true;
   state.running = false;
   window.clearInterval(state.timerId);
   el.statusText.textContent = "正在收火结算。";
+  el.finishButton.disabled = true;
   try {
     const result = await postJson(`${API_BASE}/finish`, {
       gameToken: state.gameToken,
@@ -334,7 +357,12 @@ async function finishRound(reason) {
     el.copyCodeButton.hidden = !code;
     el.againButton.textContent = "再开一炉";
     el.startButton.disabled = false;
+    el.finishButton.disabled = true;
   } catch (error) {
+    if (isTooEarlyError(error)) {
+      resumeRoundAfterTooEarly(error);
+      return;
+    }
     el.settleMessage.textContent = `${messageOf(error, "结算失败")}，可以重试结算本局。`;
     el.codeBox.textContent = "";
     el.commandBox.textContent = "";
@@ -346,8 +374,37 @@ async function finishRound(reason) {
     el.copyCommandButton.hidden = true;
     el.copyCodeButton.hidden = true;
     el.startButton.disabled = true;
+    el.finishButton.disabled = false;
   } finally {
     state.finishing = false;
+  }
+}
+
+function ensureSettleReady() {
+  const minSeconds = Math.max(0, Number(state.minSettleSeconds || 0));
+  const elapsed = elapsedSeconds();
+  if (elapsed >= minSeconds) {
+    return true;
+  }
+  const wait = Math.max(1, minSeconds - elapsed);
+  el.statusText.textContent = `炉火未稳，还需 ${wait} 秒后才能收火。`;
+  el.settlement.hidden = true;
+  return false;
+}
+
+function isTooEarlyError(error) {
+  return messageOf(error, "").includes("结束过快");
+}
+
+function resumeRoundAfterTooEarly(error) {
+  state.running = true;
+  el.settlement.hidden = true;
+  el.statusText.textContent = messageOf(error, "炉火未稳，请稍后再收火。");
+  el.startButton.disabled = true;
+  el.finishButton.disabled = false;
+  if (!state.timerId) {
+    tick();
+    state.timerId = window.setInterval(tick, 250);
   }
 }
 
@@ -361,7 +418,13 @@ function render(bump = false) {
       if (value) {
         tile.dataset.value = String(value);
         tile.dataset.tier = value < 128 ? "small" : value < 1024 ? "medium" : "large";
-        tile.textContent = TILE_NAMES[value] || `${value} 丹`;
+        const name = document.createElement("span");
+        name.className = "tile-name";
+        name.textContent = TILE_NAMES[value] || "丹胚";
+        const number = document.createElement("span");
+        number.className = "tile-number";
+        number.textContent = String(value);
+        tile.append(name, number);
       }
       el.board.appendChild(tile);
     }

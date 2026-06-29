@@ -40,6 +40,14 @@
       align-items: center;
       justify-content: center;
       gap: 18px;
+      transition: filter 0.18s ease, transform 0.18s ease, opacity 0.18s ease;
+    }
+
+    body.modal-open .game-layout {
+      filter: blur(10px) saturate(0.78) brightness(0.72);
+      transform: scale(0.985);
+      opacity: 0.86;
+      pointer-events: none;
     }
 
     .board-wrap {
@@ -227,9 +235,9 @@
       display: none;
       place-items: center;
       padding: 18px;
-      background: rgba(2, 6, 23, 0.58);
-      backdrop-filter: blur(6px);
-      z-index: 30;
+      background: rgba(2, 6, 23, 0.68);
+      backdrop-filter: blur(16px) saturate(0.9);
+      z-index: 40;
     }
     .modal.show { display: grid; }
     .modal-card {
@@ -238,8 +246,8 @@
       border-radius: 12px;
       padding: 18px;
       text-align: center;
-      background: rgba(15, 23, 42, 0.86);
-      box-shadow: 0 20px 70px rgba(2, 6, 23, 0.52);
+      background: linear-gradient(180deg, rgba(15, 23, 42, 0.96), rgba(8, 16, 30, 0.94));
+      box-shadow: 0 24px 90px rgba(2, 6, 23, 0.68), inset 0 1px 0 rgba(255, 255, 255, 0.08);
     }
     .modal-card h2 {
       margin: 0;
@@ -353,28 +361,6 @@
     <section class="game-layout" aria-label="灵泉十滴">
       <div class="board-wrap">
         <canvas id="gameCanvas" width="480" height="480"></canvas>
-        <div class="modal" id="resultModal">
-          <div class="modal-card">
-            <h2 id="modalTitle">灵泉收束</h2>
-            <p id="modalText">本次试炼已经结算。</p>
-            <div class="modal-code-block" id="modalCodeBlock" hidden>
-              <div>
-                <div class="modal-label">发送给机器人</div>
-                <div class="modal-command" id="modalCommand"></div>
-              </div>
-              <div>
-                <div class="modal-label">兑换码</div>
-                <div class="modal-code" id="modalCode"></div>
-              </div>
-            </div>
-            <div class="modal-preview" id="modalPreview"></div>
-            <div class="modal-actions">
-              <button class="secondary" id="copyCommandButton" hidden>复制兑换命令</button>
-              <button class="secondary" id="copyCodeButton" hidden>复制兑换码</button>
-              <button class="primary" id="modalButton">知道了</button>
-            </div>
-          </div>
-        </div>
       </div>
 
       <aside class="side">
@@ -405,6 +391,29 @@
         </div>
       </aside>
     </section>
+
+    <div class="modal" id="resultModal">
+      <div class="modal-card">
+        <h2 id="modalTitle">灵泉收束</h2>
+        <p id="modalText">本次试炼已经结算。</p>
+        <div class="modal-code-block" id="modalCodeBlock" hidden>
+          <div>
+            <div class="modal-label">发送给机器人</div>
+            <div class="modal-command" id="modalCommand"></div>
+          </div>
+          <div>
+            <div class="modal-label">兑换码</div>
+            <div class="modal-code" id="modalCode"></div>
+          </div>
+        </div>
+        <div class="modal-preview" id="modalPreview"></div>
+        <div class="modal-actions">
+          <button class="secondary" id="copyCommandButton" hidden>复制兑换命令</button>
+          <button class="secondary" id="copyCodeButton" hidden>复制兑换码</button>
+          <button class="primary" id="modalButton">知道了</button>
+        </div>
+      </div>
+    </div>
   </main>
 
   <script>
@@ -490,6 +499,7 @@
       try {
         configData = await fetchJson(endpoint("config"));
         durationSeconds = Number(configData.config?.game_duration || DEFAULT_DURATION);
+        startButton.textContent = "开启试炼";
         setMessage("灵泉入口已开启，点击开启试炼。");
         startButton.disabled = false;
       } catch (error) {
@@ -640,11 +650,13 @@
         span.textContent = line;
         modalPreview.appendChild(span);
       }
+      document.body.classList.add("modal-open");
       resultModal.classList.add("show");
     }
 
     function hideModal() {
       resultModal.classList.remove("show");
+      document.body.classList.remove("modal-open");
     }
 
     function draw() {
@@ -811,12 +823,18 @@
         setMessage("本关灵泉清净，余波回赠一滴。");
         initLevel();
       } else if (dropsLeft <= 0) {
+        setMessage("水滴已尽，正在结算本局。");
         finishRound("failed");
       }
     }
 
     function handleInput(clientX, clientY) {
-      if (gameState !== "playing" || isAnimating || finishing || dropsLeft <= 0) return;
+      if (gameState !== "playing" || isAnimating || finishing) return;
+      if (dropsLeft <= 0) {
+        setMessage("水滴已尽，正在结算本局。");
+        finishRound("failed");
+        return;
+      }
       const rect = canvas.getBoundingClientRect();
       const x = (clientX - rect.left) * (canvas.width / rect.width);
       const y = (clientY - rect.top) * (canvas.height / rect.height);
@@ -835,7 +853,8 @@
       if (finishing || !["playing", "settlement_failed"].includes(gameState)) return;
       const minSeconds = Number(configData?.config?.round_min_seconds || 10);
       if (elapsedSeconds() < minSeconds && reason === "manual") {
-        setMessage(`灵泉还没完全映身，至少 ${minSeconds} 秒后再收取。`);
+        const wait = Math.max(1, minSeconds - elapsedSeconds());
+        setMessage(`灵泉还没完全映身，还需 ${wait} 秒后再收取。`);
         return;
       }
       finishing = true;
@@ -863,15 +882,23 @@
         });
         const code = result.code || "";
         const text = `${result.message || "灵泉试炼已经结算。"} 兑换码已生成。`;
-        setMessage(text, code, result.reward_preview || []);
+        setMessage(`${text} 请在弹窗中复制。`);
         showModal(reason === "timeout" ? "五分钟已至" : "灵泉收束", `认可分数 ${result.accepted_score ?? payload.score}。兑换码 10 分钟有效。`, result);
         startButton.textContent = "再来一局";
         startButton.disabled = false;
         gameState = "ended";
       } catch (error) {
+        if (String(error.message || "").includes("结束过快")) {
+          setMessage(error.message || "本局结束过快，请稍后再结算。");
+          claimButton.disabled = false;
+          startButton.textContent = "请先结算本局";
+          startButton.disabled = true;
+          gameState = "settlement_failed";
+          return;
+        }
         setMessage(`${error.message || "结算失败"}，可以重试结算本局。`);
         claimButton.disabled = false;
-        startButton.textContent = "新开一局";
+        startButton.textContent = "请先结算本局";
         startButton.disabled = true;
         gameState = "settlement_failed";
       } finally {

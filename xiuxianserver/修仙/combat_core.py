@@ -116,7 +116,8 @@ class CombatCore(CoreService):
             boss=True,
             enemy_skill=enemy_skill,
         )
-        actions = self._run_action_bar_combat(player_state, enemy_state, action_limit or self.BOSS_ACTION_LIMIT)
+        boss_action_limit = self.BOSS_ACTION_LIMIT if action_limit is None else int(action_limit)
+        actions = self._run_action_bar_combat(player_state, enemy_state, boss_action_limit)
         total_damage = max(0, int(event["hp"]) - max(0, int(enemy_state["hp"])))
         mp_left = 0 if player_state["hp"] <= 0 else max(0, int(player_state["mp"]))
         weapon_exp = (

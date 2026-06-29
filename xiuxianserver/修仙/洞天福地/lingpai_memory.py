@@ -1,14 +1,12 @@
 """灵牌记忆小游戏结算。
 
-灵牌记忆是 90 秒的翻牌配对短局。牌面顺序由 24 小时启动凭证
-派生，刷新页面和重复开局不会重洗牌；前端只提交配对数、翻牌数、
+灵牌记忆是 90 秒的翻牌配对短局。牌面顺序由单局凭证派生，
+每次开局都会重洗；前端只提交配对数、翻牌数、
 经过时间和是否完成，服务端再按时间密度、翻牌密度和统一上限裁定。
 """
 
 from __future__ import annotations
 
-import hashlib
-import random
 import secrets
 from dataclasses import dataclass
 from typing import Any
@@ -16,6 +14,8 @@ from typing import Any
 from ..common import dt, now
 from ..constants import DONGTIAN_ROUND_MIN_SECONDS, DONGTIAN_ROUND_TTL_MINUTES
 from .lingxi_fishing import DongtianIssuer
+from .random_seed import round_rng
+from .service import medicine_embryo_reward
 
 LINGPAI_MEMORY_KEY = "lingpai-memory"
 LINGPAI_MEMORY_TITLE = "灵牌记忆"
@@ -67,19 +67,21 @@ def lingpai_memory_config(service: DongtianIssuer, reuse_token: str | None = Non
 
 
 def start_lingpai_memory(service: DongtianIssuer, payload: dict[str, Any]) -> dict[str, Any]:
-    """校验启动凭证，签发单局凭证和本日固定牌序。"""
+    """校验启动凭证，签发单局凭证和本局牌序。"""
 
     if not isinstance(payload, dict):
         raise ValueError("灵牌记忆开局数据异常，请重新进入小游戏。")
     game_token = str(payload.get("gameToken") or payload.get("game_token") or "").strip()
     round_info = service.start_round(LINGPAI_MEMORY_KEY, game_token)
+    session_id = str(round_info.get("session_id") or "")
+    round_token = str(round_info.get("round_token") or "")
     round_info.update(
         {
             "game_duration": LINGPAI_DURATION_SECONDS,
             "pair_count": LINGPAI_PAIR_COUNT,
             "card_count": LINGPAI_CARD_COUNT,
             "flip_cap": LINGPAI_FLIP_CAP,
-            "cards": _deck_for_game_token(game_token),
+            "cards": _deck_for_round(game_token, session_id, round_token),
         }
     )
     return round_info
@@ -135,14 +137,14 @@ def finish_lingpai_memory(service: DongtianIssuer, payload: dict[str, Any]) -> d
     return issued
 
 
-def _deck_for_game_token(game_token: str) -> list[dict[str, Any]]:
-    """用 24 小时启动 token 派生稳定牌序，避免刷新重洗牌。"""
+def _deck_for_round(game_token: str, session_id: str, round_token: str) -> list[dict[str, Any]]:
+    """用单局凭证派生牌序，每次开局重洗，同一局可复算。"""
 
     cards: list[dict[str, Any]] = []
     for pair_id, label in enumerate(LINGPAI_SYMBOLS, start=1):
         cards.append({"pair_id": pair_id, "label": label})
         cards.append({"pair_id": pair_id, "label": label})
-    rng = _rng_for_game_token(game_token)
+    rng = round_rng(LINGPAI_MEMORY_KEY, game_token, session_id, round_token, "deck")
     rng.shuffle(cards)
     return [
         {
@@ -169,9 +171,9 @@ def _lingpai_memory_rewards(result: LingpaiMemoryResult) -> list[dict[str, Any]]
     rewards.append({"type": "exp", "quantity": max(4, exp)})
 
     if result.matched_pairs >= 2 or score >= 160:
-        rewards.append({"type": "ring_item", "key": "xueqidan" if score % 2 == 0 else "yinmingcao", "quantity": 1})
+        rewards.append(medicine_embryo_reward("xueqidan" if score % 2 == 0 else "yinmingcao"))
     if result.completed or score >= 700:
-        rewards.append({"type": "ring_item", "key": "huichunlu" if score % 2 else "ningshenlu", "quantity": 1})
+        rewards.append(medicine_embryo_reward("huichunlu" if score % 2 else "ningshenlu"))
     if result.completed and result.flip_count <= 36:
         chance = min(220, 20 + score // 12 + max(0, 40 - result.flip_count) * 4)
         if _chance_per_10000(chance):
@@ -215,13 +217,6 @@ def _sanitize_lingpai_memory_payload(
         elapsed_seconds=elapsed_seconds,
         completed=completed,
     )
-
-
-def _rng_for_game_token(game_token: str) -> random.Random:
-    """返回由启动 token 派生的稳定随机源。"""
-
-    seed = hashlib.sha256(f"{LINGPAI_MEMORY_KEY}:{game_token}".encode("utf-8")).digest()
-    return random.Random(int.from_bytes(seed[:16], "big"))
 
 
 def _server_elapsed_seconds(round_row: dict[str, Any]) -> int:

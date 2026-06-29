@@ -1,12 +1,11 @@
 """合丹炉小游戏结算。
 
 合丹炉是 150 秒的短局 2048 玩法。前端只负责把炼丹过程摘要上报；
-服务端按 24 小时启动凭证、单局凭证、经过时间、本局随机炉火和分数密度重新裁定成绩。
+服务端按启动凭证、单局凭证、经过时间、本局随机炉火和分数密度重新裁定成绩。
 """
 
 from __future__ import annotations
 
-import hashlib
 import math
 import secrets
 from dataclasses import dataclass
@@ -15,6 +14,8 @@ from typing import Any
 from ..common import dt, now
 from ..constants import DONGTIAN_ROUND_MIN_SECONDS, DONGTIAN_ROUND_TTL_MINUTES
 from .lingxi_fishing import DongtianIssuer
+from .random_seed import round_rng
+from .service import medicine_embryo_reward
 
 HEDAN_FURNACE_KEY = "hedan-furnace"
 HEDAN_FURNACE_TITLE = "合丹炉"
@@ -30,8 +31,8 @@ HEDAN_MERGE_CAP = 220
 class HedanDifficulty:
     """服务端定义的一局炉火。
 
-    炉火由 24 小时启动 token 派生，刷新和重复开局不会重抽。前端可以
-    按这些安全字段生成手感，但不能把炉火当成结算依据提交回来。
+    炉火由单局凭证派生，每次开炉都会换一炉火。前端可以按这些
+    安全字段生成手感，但不能把炉火当成结算依据提交回来。
     """
 
     key: str
@@ -131,13 +132,18 @@ def start_hedan_furnace(service: DongtianIssuer, payload: dict[str, Any]) -> dic
         raise ValueError("合丹炉开局数据异常，请重新进入小游戏。")
     game_token = str(payload.get("gameToken") or payload.get("game_token") or "").strip()
     round_info = service.start_round(HEDAN_FURNACE_KEY, game_token)
-    difficulty = _difficulty_for_game_token(game_token)
+    difficulty = _difficulty_for_round(
+        game_token,
+        str(round_info.get("session_id") or ""),
+        str(round_info.get("round_token") or ""),
+    )
     round_info.update(
         {
             "game_duration": HEDAN_DURATION_SECONDS,
             "board_size": HEDAN_BOARD_SIZE,
             "score_cap": HEDAN_SCORE_CAP,
             "max_tile_cap": HEDAN_MAX_TILE_CAP,
+            "round_min_seconds": DONGTIAN_ROUND_MIN_SECONDS,
             "difficulty": difficulty.public_config(),
         }
     )
@@ -152,7 +158,7 @@ def finish_hedan_furnace(service: DongtianIssuer, payload: dict[str, Any]) -> di
     game_token = str(payload.get("gameToken") or payload.get("game_token") or "").strip()
     session_id = str(payload.get("sessionId") or payload.get("session_id") or "").strip()
     round_token = str(payload.get("roundToken") or payload.get("round_token") or "").strip()
-    difficulty = _difficulty_for_game_token(game_token)
+    difficulty = _difficulty_for_round(game_token, session_id, round_token)
     round_row = service.inspect_round(
         HEDAN_FURNACE_KEY,
         game_token,
@@ -217,11 +223,11 @@ def _hedan_furnace_rewards(result: HedanFurnaceResult) -> list[dict[str, Any]]:
     rewards.append({"type": "exp", "quantity": max(4, exp)})
 
     if score >= 180 or max_tile >= 64:
-        rewards.append({"type": "ring_item", "key": "xueqidan" if score % 2 == 0 else "yinmingcao", "quantity": 1})
+        rewards.append(medicine_embryo_reward("xueqidan" if score % 2 == 0 else "yinmingcao"))
     if score >= 1100 or max_tile >= 256:
-        rewards.append({"type": "ring_item", "key": "huichunlu" if score % 2 else "ningshenlu", "quantity": 1})
-    if score >= 2300 or max_tile >= 512:
-        rewards.append({"type": "ring_item", "key": "shenggudan" if score % 2 else "yanghundan", "quantity": 1})
+        rewards.append(medicine_embryo_reward("huichunlu" if score % 2 else "ningshenlu"))
+    if (score >= 2300 or max_tile >= 512) and _chance_per_10000(min(520, 110 + tier * 18 + merge_count // 2)):
+        rewards.append(medicine_embryo_reward("shenggudan" if score % 2 else "yanghundan"))
     if score >= 1900 and _chance_per_10000(min(820, 100 + score // 6 + tier * 28)):
         rewards.append({"type": "wish_token", "quantity": 1})
     if score >= 3600 and _chance_per_10000(min(110, 22 + tier * 4 + merge_count // 8)):
@@ -270,14 +276,11 @@ def _sanitize_hedan_furnace_payload(
     )
 
 
-def _difficulty_for_game_token(game_token: str) -> HedanDifficulty:
-    """用 24 小时启动 token 派生炉火，刷新和重复开局不会重抽。"""
+def _difficulty_for_round(game_token: str, session_id: str, round_token: str) -> HedanDifficulty:
+    """用单局凭证派生炉火，每次开炉随机，但结算阶段可复算。"""
 
-    token = str(game_token or "").strip()
-    if not token:
-        return HEDAN_DIFFICULTIES[0]
-    digest = hashlib.sha256(f"{HEDAN_FURNACE_KEY}:{token}".encode("utf-8")).digest()
-    return HEDAN_DIFFICULTIES[digest[0] % len(HEDAN_DIFFICULTIES)]
+    rng = round_rng(HEDAN_FURNACE_KEY, game_token, session_id, round_token, "difficulty")
+    return HEDAN_DIFFICULTIES[rng.randrange(len(HEDAN_DIFFICULTIES))]
 
 
 def _server_elapsed_seconds(round_row: dict[str, Any]) -> int:

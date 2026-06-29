@@ -13,12 +13,11 @@ from datetime import timedelta
 from urllib.parse import quote
 from dataclasses import dataclass
 
-from ..common import CoreService, business_day, dt, dump_json, load_json, money, now, ring_item_display_name, ts
+from ..common import CoreService, business_day, dt, dump_json, load_json, money, now, ring_category_key, ring_item_display_name, ts
 from ..constants import (
     DONGTIAN_CODE_RETENTION_DAYS,
     DONGTIAN_CODE_TTL_MINUTES,
     DONGTIAN_GAME_TOKEN_TTL_HOURS,
-    DONGTIAN_MIN_MEDICINE_RATE,
     DONGTIAN_MIN_REWARD_RATE,
     DONGTIAN_ROUND_MIN_SECONDS,
     DONGTIAN_ROUND_TTL_MINUTES,
@@ -37,6 +36,26 @@ DONGTIAN_CODE_PREFIX = "DT"
 TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
 TAG_RE = re.compile(r"<[^>]+>")
 DISALLOWED_RING_REWARDS = {"cuifengdan", "kaikongqi"}
+DONGTIAN_MEDICINE_EMBRYO_TYPE = "medicine_embryo"
+DONGTIAN_MEDICINE_EMBRYO_DECAY = 0.17
+DONGTIAN_MEDICINE_EMBRYO_FREE_POINTS = 2
+DONGTIAN_MEDICINE_EMBRYO_MIN_RATE = 0.24
+DONGTIAN_MEDICINE_EMBRYO_DEFS: dict[str, dict[str, Any]] = {
+    "dim_blood": {"name": "微光气血药胚", "medicine_id": "xueqidan", "points": 1},
+    "dim_spirit": {"name": "微光神念药胚", "medicine_id": "yinmingcao", "points": 1},
+    "dew_blood": {"name": "凝露气血药胚", "medicine_id": "huichunlu", "points": 2},
+    "dew_spirit": {"name": "凝露神念药胚", "medicine_id": "ningshenlu", "points": 2},
+    "mystic_blood": {"name": "玄息气血药胚", "medicine_id": "shenggudan", "points": 4},
+    "mystic_spirit": {"name": "玄息神念药胚", "medicine_id": "yanghundan", "points": 4},
+}
+MEDICINE_TO_EMBRYO_KEY = {
+    "xueqidan": "dim_blood",
+    "yinmingcao": "dim_spirit",
+    "huichunlu": "dew_blood",
+    "ningshenlu": "dew_spirit",
+    "shenggudan": "mystic_blood",
+    "yanghundan": "mystic_spirit",
+}
 
 
 @dataclass(frozen=True)
@@ -88,7 +107,8 @@ class DongtianService(CoreService):
 
         claimed_count = self._today_claim_count(client_id)
         reward_rate = dongtian_reward_rate(claimed_count)
-        medicine_rate = dongtian_medicine_rate(reward_rate)
+        medicine_points = self._today_medicine_points(client_id)
+        embryo_rate = dongtian_medicine_embryo_rate(medicine_points)
         rows = self.db.fetch_all(
             """
             SELECT game_title, score, granted_json, claimed_at
@@ -103,12 +123,12 @@ class DongtianService(CoreService):
         panel = T.panel()
         panel.section("洞天记录")
         panel.line(f"今日已兑换：**{claimed_count}** 次")
-        panel.line(f"当前资源收益系数：**{_percent_text(reward_rate)}**｜恢复药系数：**{_percent_text(medicine_rate)}**")
+        panel.line(f"当前资源收益系数：**{_percent_text(reward_rate)}**｜今日药息点：**{medicine_points}**｜药胚稳定率：**{_percent_text(embryo_rate)}**")
         if rows:
             panel.hr()
             panel.section("最近兑换")
             for row in rows:
-                granted_lines = load_json(row["granted_json"], [])
+                granted_lines = _grant_lines(load_json(row["granted_json"], []))
                 reward_text = "、".join(str(item) for item in granted_lines if str(item).strip())
                 score_text = f"｜分数 {int(row['score'] or 0)}"
                 panel.line(f"{row['claimed_at']}｜{row['game_title']}{score_text}｜{reward_text or '无奖励'}")
@@ -164,15 +184,17 @@ class DongtianService(CoreService):
 
             claimed_count = max(0, self._today_claim_count_conn(conn, client_id) - 1)
             reward_rate = dongtian_reward_rate(claimed_count)
-            medicine_rate = dongtian_medicine_rate(reward_rate)
-            granted_lines = self._grant_rewards_conn(conn, client_id, rewards, reward_rate, medicine_rate)
+            medicine_points = self._today_medicine_points_conn(conn, client_id)
+            embryo_rate = dongtian_medicine_embryo_rate(medicine_points)
+            granted = self._grant_rewards_conn(conn, client_id, rewards, reward_rate, medicine_points)
+            granted_lines = _grant_lines(granted)
             conn.execute(
                 """
                 UPDATE dongtian_codes
                 SET reward_rate = ?, medicine_rate = ?, granted_json = ?
                 WHERE code = ?
                 """,
-                (reward_rate, medicine_rate, dump_json(granted_lines), code),
+                (reward_rate, embryo_rate, dump_json(granted), code),
             )
             conn.execute(
                 "INSERT INTO game_logs (client_id, action, detail, created_at) VALUES (?, '洞天兑换', ?, ?)",
@@ -182,7 +204,7 @@ class DongtianService(CoreService):
         panel = T.panel()
         panel.section("洞天福地")
         panel.line(f"{row['game_title']} 的异世回响落入修仙界。")
-        panel.line(f"洞天收益系数：资源 {_percent_text(reward_rate)}｜恢复药 {_percent_text(medicine_rate)}")
+        panel.line(f"洞天收益系数：资源 {_percent_text(reward_rate)}｜药胚稳定 {_percent_text(embryo_rate)}")
         panel.hr()
         panel.section("获得")
         panel.lines(granted_lines or ["这枚兑换码没有可发放奖励。"])
@@ -708,11 +730,11 @@ class DongtianService(CoreService):
         client_id: str,
         rewards: list[dict[str, Any]],
         reward_rate: float,
-        medicine_rate: float,
-    ) -> list[str]:
+        medicine_points: int,
+    ) -> list[dict[str, Any]]:
         """按兑换人当日曲线发放奖励快照。"""
 
-        lines: list[str] = []
+        granted: list[dict[str, Any]] = []
         for reward in rewards:
             reward_type = str(reward.get("type") or reward.get("reward_type") or "").strip()
             key = str(reward.get("key") or reward.get("reward_key") or "").strip()
@@ -722,28 +744,37 @@ class DongtianService(CoreService):
             if reward_type == "currency":
                 amount = max(1, int(quantity * reward_rate))
                 conn.execute("UPDATE players SET raw_stones = raw_stones + ? WHERE client_id = ?", (amount, client_id))
-                lines.append(f"原石 +{money(amount)}")
+                granted.append({"type": "currency", "quantity": amount, "text": f"原石 +{money(amount)}"})
             elif reward_type == "exp":
                 amount = max(1, int(quantity * reward_rate))
                 old_level, new_level = self.add_exp_conn(conn, client_id, amount)
                 level_text = f"，等级 {old_level}->{new_level}" if new_level != old_level else ""
-                lines.append(f"经验 +{amount}{level_text}")
+                granted.append({"type": "exp", "quantity": amount, "text": f"经验 +{amount}{level_text}"})
             elif reward_type == "ring_item":
                 if key in DISALLOWED_RING_REWARDS:
                     continue
                 item = self.ring_item_def(key)
                 if not item:
                     continue
-                rate = medicine_rate if str(item.get("category_key") or item.get("category")) == "recovery" else reward_rate
-                amount = max(1, int(quantity * rate))
-                self.add_ring_conn(conn, client_id, key, amount)
-                lines.append(f"纳戒获得 {ring_item_display_name(item, key)} x{amount}")
+                category_key = ring_category_key(item.get("category_key") or item.get("category"))
+                if category_key == "recovery":
+                    continue
+                else:
+                    amount = max(1, int(quantity * reward_rate))
+                    self.add_ring_conn(conn, client_id, key, amount)
+                    granted.append({"type": "ring_item", "key": key, "quantity": amount, "text": f"纳戒获得 {ring_item_display_name(item, key)} x{amount}"})
+            elif reward_type == DONGTIAN_MEDICINE_EMBRYO_TYPE:
+                for _ in range(quantity):
+                    embryo_rate = dongtian_medicine_embryo_rate(medicine_points)
+                    result = self._stabilize_medicine_embryo_conn(conn, client_id, key, embryo_rate)
+                    medicine_points += result.get("points", 0) if result.get("success") else 0
+                    granted.append(result)
             elif reward_type == "wish_token":
                 amount = max(1, int(quantity * reward_rate))
                 self.add_ring_conn(conn, client_id, WISH_TOKEN_ITEM_ID, amount)
                 item = self.ring_item_def(WISH_TOKEN_ITEM_ID)
-                lines.append(f"纳戒获得 {ring_item_display_name(item, WISH_TOKEN_ITEM_ID)} x{amount}")
-        return lines
+                granted.append({"type": "wish_token", "key": WISH_TOKEN_ITEM_ID, "quantity": amount, "text": f"纳戒获得 {ring_item_display_name(item, WISH_TOKEN_ITEM_ID)} x{amount}"})
+        return granted
 
     def reward_preview(self, rewards: list[dict[str, Any]]) -> list[str]:
         """给小游戏页面展示基础奖励预览。"""
@@ -762,6 +793,10 @@ class DongtianService(CoreService):
             elif reward_type == "wish_token":
                 item = self.ring_item_def(WISH_TOKEN_ITEM_ID)
                 lines.append(f"{ring_item_display_name(item, WISH_TOKEN_ITEM_ID)} x{quantity}")
+            elif reward_type == DONGTIAN_MEDICINE_EMBRYO_TYPE:
+                embryo = DONGTIAN_MEDICINE_EMBRYO_DEFS.get(key)
+                if embryo:
+                    lines.append(f"{embryo['name']} x{quantity}")
             elif reward_type == "ring_item":
                 item = self.ring_item_def(key)
                 if item:
@@ -782,9 +817,52 @@ class DongtianService(CoreService):
                 continue
             if reward_type in {"currency", "exp", "wish_token"}:
                 clean.append({"type": reward_type, "key": key, "quantity": quantity})
+            elif reward_type == DONGTIAN_MEDICINE_EMBRYO_TYPE and key in DONGTIAN_MEDICINE_EMBRYO_DEFS:
+                clean.append({"type": DONGTIAN_MEDICINE_EMBRYO_TYPE, "key": key, "quantity": quantity})
             elif reward_type == "ring_item" and key and key not in DISALLOWED_RING_REWARDS and self.ring_item_def(key):
-                clean.append({"type": reward_type, "key": key, "quantity": quantity})
+                item = self.ring_item_def(key)
+                category_key = ring_category_key(item.get("category_key") or item.get("category")) if item else ""
+                if category_key != "recovery":
+                    clean.append({"type": reward_type, "key": key, "quantity": quantity})
         return clean
+
+    def _stabilize_medicine_embryo_conn(self, conn, client_id: str, embryo_key: str, embryo_rate: float) -> dict[str, Any]:
+        """让洞天药胚在兑换人手里成药；失败只散形，不再计入今日药息点。"""
+
+        embryo = DONGTIAN_MEDICINE_EMBRYO_DEFS.get(embryo_key)
+        if not embryo:
+            return {"type": "medicine_embryo", "key": embryo_key, "success": False, "text": "药胚散形：未知药胚未能成丹"}
+        rate = max(0.0, min(1.0, float(embryo_rate)))
+        if secrets.randbelow(10_000) >= int(rate * 10_000):
+            return {
+                "type": "medicine_embryo",
+                "key": embryo_key,
+                "success": False,
+                "points": 0,
+                "text": f"药胚散形：{embryo['name']}未能成丹",
+            }
+
+        medicine_id = str(embryo["medicine_id"])
+        item = self.ring_item_def(medicine_id)
+        if not item:
+            return {
+                "type": "medicine_embryo",
+                "key": embryo_key,
+                "success": False,
+                "points": 0,
+                "text": f"药胚散形：{embryo['name']}未能成丹",
+            }
+        self.add_ring_conn(conn, client_id, medicine_id, 1)
+        points = int(embryo["points"])
+        return {
+            "type": "medicine_embryo",
+            "key": embryo_key,
+            "success": True,
+            "medicine_id": medicine_id,
+            "quantity": 1,
+            "points": points,
+            "text": f"药胚成形：{ring_item_display_name(item, medicine_id)} x1",
+        }
 
     def _today_claim_count(self, client_id: str) -> int:
         """读取玩家今天已兑换次数。"""
@@ -808,6 +886,33 @@ class DongtianService(CoreService):
         ).fetchone()
         return int(row["count"] or 0) if row else 0
 
+    def _today_medicine_points(self, client_id: str) -> int:
+        """读取玩家今天从洞天药胚成功稳定出的药息点。"""
+
+        with self.db.transaction() as conn:
+            return self._today_medicine_points_conn(conn, client_id)
+
+    @staticmethod
+    def _today_medicine_points_conn(conn, client_id: str) -> int:
+        """事务内读取洞天药息点；只认结构化发放摘要，旧文本自然不参与。"""
+
+        rows = conn.execute(
+            """
+            SELECT granted_json
+            FROM dongtian_codes
+            WHERE claimed_by = ?
+              AND claimed_at IS NOT NULL
+              AND date(datetime(replace(claimed_at, 'T', ' '), '-4 hours')) = ?
+            """,
+            (client_id, business_day()),
+        ).fetchall()
+        total = 0
+        for row in rows:
+            for item in _granted_entries(load_json(row["granted_json"], [])):
+                if item.get("type") == DONGTIAN_MEDICINE_EMBRYO_TYPE and item.get("success"):
+                    total += max(0, int(item.get("points") or 0))
+        return total
+
     @staticmethod
     def _new_code() -> str:
         """生成玩家可复制的短兑换码。"""
@@ -822,10 +927,46 @@ def dongtian_reward_rate(claimed_count: int) -> float:
     return max(DONGTIAN_MIN_REWARD_RATE, 1 / (1 + DONGTIAN_REWARD_DECAY * pressure))
 
 
-def dongtian_medicine_rate(reward_rate: float) -> float:
-    """恢复药衰减更温和。"""
+def dongtian_medicine_embryo_rate(medicine_points: int) -> float:
+    """按今日已成药药息点计算药胚稳定率。"""
 
-    return max(DONGTIAN_MIN_MEDICINE_RATE, (1 + float(reward_rate)) / 2)
+    points = max(0, int(medicine_points))
+    if points <= DONGTIAN_MEDICINE_EMBRYO_FREE_POINTS:
+        return 1.0
+    pressure = points - DONGTIAN_MEDICINE_EMBRYO_FREE_POINTS
+    return max(DONGTIAN_MEDICINE_EMBRYO_MIN_RATE, 1 / (1 + DONGTIAN_MEDICINE_EMBRYO_DECAY * pressure))
+
+
+def medicine_embryo_reward(medicine_id: str, quantity: int = 1) -> dict[str, Any]:
+    """小游戏把恢复药写成药胚快照，真正成药留到洞天兑换阶段。"""
+
+    embryo_key = MEDICINE_TO_EMBRYO_KEY.get(str(medicine_id).strip())
+    if not embryo_key:
+        raise ValueError(f"未知洞天药胚来源：{medicine_id}")
+    return {"type": DONGTIAN_MEDICINE_EMBRYO_TYPE, "key": embryo_key, "quantity": max(1, int(quantity))}
+
+
+def _granted_entries(value: Any) -> list[dict[str, Any]]:
+    """读取结构化发放摘要，供药息点统计使用。"""
+
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, dict)]
+    return []
+
+
+def _grant_lines(value: Any) -> list[str]:
+    """把结构化发放摘要转回玩家可读文本。"""
+
+    if not isinstance(value, list):
+        return []
+    lines: list[str] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        text = str(item.get("text") or "").strip()
+        if text:
+            lines.append(text)
+    return lines
 
 
 def ts_from_now_minutes(minutes: int) -> str:

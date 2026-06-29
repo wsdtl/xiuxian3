@@ -1,6 +1,5 @@
 import { GameScene, Fish, Seaweed, CaughtFishRecord } from './types';
 import {
-  GAME_DURATION,
   WATER_LEVEL_RATIO,
   HOOK_X_RATIO,
   FISH_SPAWN_INTERVAL_MIN,
@@ -72,13 +71,14 @@ export function updateScene(
   scene: GameScene,
   dt: number,
   spacePressed: boolean,
+  durationSeconds: number,
   combo: number,
   callbacks: EngineCallbacks
 ): number {
   scene.gameTime += dt;
 
   // Update time
-  const timeLeft = Math.max(0, GAME_DURATION - scene.gameTime);
+  const timeLeft = Math.max(0, Math.max(1, durationSeconds) - scene.gameTime);
   callbacks.onTimeUpdate(timeLeft);
 
   if (timeLeft <= 0) return 0;

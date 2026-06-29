@@ -830,7 +830,7 @@ class WormholeService(CoreService):
     def _fight_boss(self, player: dict[str, Any], event: dict[str, Any]) -> dict[str, Any]:
         """只计算一次战斗并返回逐次出手结果；数据库记录由外层 challenge() 写入。"""
 
-        action_limit = 10 + min(4, int(player["level"]) // 25)
+        action_limit = 14 + min(4, int(player["level"]) // 25)
         combat_kind = self._combat_kind_for_event(event)
         return self.combat_core.fight_boss(
             player,

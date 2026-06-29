@@ -32,6 +32,7 @@ export function useGameLoop(canvasRef: React.RefObject<HTMLCanvasElement | null>
   const resetCombo = useGameStore((s) => s.resetCombo);
   const addCaughtFish = useGameStore((s) => s.addCaughtFish);
   const setLastCatch = useGameStore((s) => s.setLastCatch);
+  const setStatusText = useGameStore((s) => s.setStatusText);
 
   const initScene = useCallback((width: number, height: number) => {
     sceneRef.current = createScene(width, height);
@@ -93,8 +94,9 @@ export function useGameLoop(canvasRef: React.RefObject<HTMLCanvasElement | null>
         },
       };
 
-      const combo = useGameStore.getState().combo;
-      const timeLeft = updateScene(scene, dt, spacePressedRef.current, combo, callbacks);
+      const stateSnapshot = useGameStore.getState();
+      const combo = stateSnapshot.combo;
+      const timeLeft = updateScene(scene, dt, spacePressedRef.current, stateSnapshot.gameDuration, combo, callbacks);
 
       // Track if hook went deep (below surface + margin)
       if (scene.hook.y > scene.waterLevel + 20) {
@@ -114,6 +116,7 @@ export function useGameLoop(canvasRef: React.RefObject<HTMLCanvasElement | null>
       }
 
       if (timeLeft <= 0) {
+        setStatusText('');
         setGameState('ended');
         render(ctx, scene);
         return;
@@ -134,9 +137,11 @@ export function useGameLoop(canvasRef: React.RefObject<HTMLCanvasElement | null>
     resetScene(sceneRef.current);
 
     hookWentDeepRef.current = false;
+    setTimeLeft(useGameStore.getState().gameDuration);
+    setStatusText('');
     lastTimeRef.current = performance.now();
     animFrameRef.current = requestAnimationFrame(gameLoop);
-  }, [canvasRef, syncSceneSize, gameLoop]);
+  }, [canvasRef, syncSceneSize, gameLoop, setTimeLeft, setStatusText]);
 
   const ambientLoop = useCallback(
     (timestamp: number) => {
@@ -208,7 +213,7 @@ export function useGameLoop(canvasRef: React.RefObject<HTMLCanvasElement | null>
   useEffect(() => {
     if (gameState === 'playing') {
       startGame();
-    } else {
+    } else if (gameState === 'idle') {
       startAmbient();
     }
     return () => stopGame();

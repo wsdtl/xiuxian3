@@ -24,6 +24,8 @@ const fruitImgRef = ref<HTMLImageElement | null>(null);
 const toastRef = ref<HTMLElement | null>(null);
 const newBtnRef = ref<HTMLButtonElement | null>(null);
 const newBtnHeaderRef = ref<HTMLButtonElement | null>(null);
+const settleBtnRef = ref<HTMLButtonElement | null>(null);
+const settleBtnHeaderRef = ref<HTMLButtonElement | null>(null);
 const timerFillRef = ref<HTMLElement | null>(null);
 const timerLabelRef = ref<HTMLElement | null>(null);
 
@@ -38,6 +40,7 @@ const settleError = ref("");
 const settlePayload = ref<RoundSettlePayload | null>(null);
 const settleResult = ref<LingguoFinishResponse | null>(null);
 const copied = ref(false);
+const needsSettleRetry = computed(() => Boolean(settleError.value && !settleResult.value));
 
 const settleFruitUrl = computed(() => {
   const file = settlePayload.value?.fruitFile;
@@ -51,6 +54,7 @@ async function ensureConfig(force = false): Promise<LingguoConfigResponse> {
 }
 
 async function startRound(silent = false): Promise<void> {
+  if (needsSettleRetry.value) return;
   loading.value = true;
   bootError.value = "";
   settleOpen.value = false;
@@ -109,11 +113,35 @@ async function retrySettle(): Promise<void> {
 async function copyCode(): Promise<void> {
   const code = settleResult.value?.code;
   if (!code) return;
-  await navigator.clipboard?.writeText(`洞天兑换 ${code}`);
-  copied.value = true;
+  try {
+    await writeClipboard(`洞天兑换 ${code}`);
+    copied.value = true;
+    window.setTimeout(() => {
+      copied.value = false;
+    }, 1600);
+  } catch {
+    copied.value = false;
+  }
+}
+
+async function writeClipboard(text: string): Promise<void> {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  const area = document.createElement("textarea");
+  area.value = text;
+  area.style.position = "fixed";
+  area.style.opacity = "0";
+  document.body.appendChild(area);
+  area.focus();
+  area.select();
+  document.execCommand("copy");
+  area.remove();
 }
 
 function playAgain(): void {
+  if (needsSettleRetry.value) return;
   void startRound(true);
 }
 
@@ -133,6 +161,9 @@ onMounted(() => {
   const newGameBtns = [newBtnHeaderRef.value, newBtnRef.value].filter(
     (item): item is HTMLButtonElement => item != null
   );
+  const settleBtns = [settleBtnHeaderRef.value, settleBtnRef.value].filter(
+    (item): item is HTMLButtonElement => item != null
+  );
   const timerFillEl = timerFillRef.value;
   const timerLabelEl = timerLabelRef.value;
   if (
@@ -149,6 +180,7 @@ onMounted(() => {
     !fruitImgEl ||
     !toastEl ||
     newGameBtns.length === 0 ||
+    settleBtns.length === 0 ||
     !timerFillEl ||
     !timerLabelEl
   ) {
@@ -170,6 +202,7 @@ onMounted(() => {
     fruitImgEl,
     toastEl,
     newGameBtns,
+    settleBtns,
     timerFillEl,
     timerLabelEl,
     onRoundSettle,
@@ -202,10 +235,18 @@ onBeforeUnmount(() => {
       <button
         ref="newBtnHeaderRef"
         type="button"
-        :disabled="loading || settling"
-        class="lg:hidden shrink-0 whitespace-nowrap border-none py-2 px-3 rounded-lg text-[0.72rem] font-semibold cursor-pointer text-white bg-gradient-to-b from-[#5b73ff] via-[#4f6cf5] to-[#3d52d4] shadow-[0_2px_10px_rgba(99,102,241,0.4)] disabled:opacity-60"
+        :disabled="loading || settling || needsSettleRetry"
+        class="lg:hidden shrink-0 min-h-11 whitespace-nowrap border-none py-2.5 px-3 rounded-lg text-[0.72rem] font-semibold cursor-pointer text-white bg-gradient-to-b from-[#5b73ff] via-[#4f6cf5] to-[#3d52d4] shadow-[0_2px_10px_rgba(99,102,241,0.4)] disabled:opacity-60"
       >
         新开一局
+      </button>
+      <button
+        ref="settleBtnHeaderRef"
+        type="button"
+        :disabled="loading || settling"
+        class="lg:hidden shrink-0 min-h-11 whitespace-nowrap border border-white/10 py-2.5 px-3 rounded-lg text-[0.72rem] font-semibold cursor-pointer text-[#e8eef5] bg-white/[0.08] disabled:opacity-60"
+      >
+        结算
       </button>
     </header>
 
@@ -219,7 +260,7 @@ onBeforeUnmount(() => {
           <p class="m-0">
             框选一块矩形，让格内数字合计
             <strong class="text-white">{{ round?.sum_target ?? 10 }}</strong>
-            即可摘下灵果。每局难度由洞天随机定下，时间到自动结算兑换码。
+            即可摘下灵果。今日难度由洞天统一定下，时间到自动结算兑换码。
           </p>
         </div>
       </aside>
@@ -280,10 +321,18 @@ onBeforeUnmount(() => {
         <button
           ref="newBtnRef"
           type="button"
-          :disabled="loading || settling"
+          :disabled="loading || settling || needsSettleRetry"
           class="hidden lg:flex justify-center w-full border-none py-2.5 px-[18px] rounded-[10px] text-[0.9rem] font-semibold cursor-pointer text-white bg-gradient-to-b from-[#5b73ff] via-[#4f6cf5] to-[#3d52d4] shadow-[0_4px_20px_rgba(99,102,241,0.45),inset_0_1px_0_rgba(255,255,255,0.18)] disabled:opacity-60"
         >
           新开一局
+        </button>
+        <button
+          ref="settleBtnRef"
+          type="button"
+          :disabled="loading || settling"
+          class="hidden lg:flex justify-center w-full border border-white/[0.12] py-2.5 px-[18px] rounded-[10px] text-[0.9rem] font-semibold cursor-pointer text-[#e8eef5] bg-white/[0.08] disabled:opacity-60"
+        >
+          结算本局
         </button>
       </aside>
     </div>
@@ -364,10 +413,11 @@ onBeforeUnmount(() => {
           </button>
           <button
             type="button"
-            class="py-3 rounded-xl text-[0.9rem] font-bold text-[#e8eef5] bg-white/[0.08] border border-white/[0.12]"
+            class="py-3 rounded-xl text-[0.9rem] font-bold text-[#e8eef5] bg-white/[0.08] border border-white/[0.12] disabled:opacity-60"
+            :disabled="needsSettleRetry"
             @click="playAgain"
           >
-            {{ settleError && !settleResult ? "放弃并再来一局" : "再来一局" }}
+            {{ needsSettleRetry ? "请先结算本局" : "再来一局" }}
           </button>
         </div>
       </div>

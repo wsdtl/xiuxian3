@@ -46,6 +46,7 @@ export interface FruitGameElements {
   fruitImgEl: HTMLImageElement;
   toastEl: HTMLElement;
   newGameBtns: HTMLButtonElement[];
+  settleBtns: HTMLButtonElement[];
   timerFillEl: HTMLElement;
   timerLabelEl: HTMLElement;
   onRoundSettle?: (payload: RoundSettlePayload) => void;
@@ -92,6 +93,7 @@ export function mountFruitGame(els: FruitGameElements): FruitGameApi {
     fruitImgEl,
     toastEl,
     newGameBtns,
+    settleBtns,
     timerFillEl,
     timerLabelEl,
     onRoundSettle,
@@ -125,6 +127,7 @@ export function mountFruitGame(els: FruitGameElements): FruitGameApi {
   let roundEndTime = 0;
   let timerRaf: number | null = null;
   let roundClosed = true;
+  let pendingSettleTimer: ReturnType<typeof setTimeout> | undefined;
 
   let pointerId: number | null = null;
   let startX = 0;
@@ -244,6 +247,10 @@ export function mountFruitGame(els: FruitGameElements): FruitGameApi {
       cancelAnimationFrame(timerRaf);
       timerRaf = null;
     }
+    if (pendingSettleTimer !== undefined) {
+      clearTimeout(pendingSettleTimer);
+      pendingSettleTimer = undefined;
+    }
   }
 
   function tickRoundTimer(): void {
@@ -273,8 +280,25 @@ export function mountFruitGame(els: FruitGameElements): FruitGameApi {
     return Math.min(round!.game_duration, Math.max(0, Math.floor((Date.now() - roundStartedAt) / 1000)));
   }
 
-  function onRoundTimeUp(): void {
+  function secondsUntilSettleReady(): number {
+    const minSeconds = Math.max(0, Number(round?.round_min_seconds || 0));
+    return Math.max(0, minSeconds - elapsedSeconds());
+  }
+
+  function settleRound(reason: "manual" | "timeout"): void {
     if (!round || roundClosed) return;
+    const wait = secondsUntilSettleReady();
+    if (wait > 0) {
+      showToast(`灵果还没完全归档，还需 ${wait} 秒后才能结算。`, "bad");
+      if (reason === "timeout") {
+        if (pendingSettleTimer !== undefined) clearTimeout(pendingSettleTimer);
+        pendingSettleTimer = setTimeout(() => {
+          pendingSettleTimer = undefined;
+          settleRound("timeout");
+        }, wait * 1000 + 80);
+      }
+      return;
+    }
     roundClosed = true;
     stopRoundTimer();
     clearSelectionVisual();
@@ -289,6 +313,14 @@ export function mountFruitGame(els: FruitGameElements): FruitGameApi {
       sessionId: round.session_id,
       roundToken: round.round_token,
     });
+  }
+
+  function onRoundTimeUp(): void {
+    settleRound("timeout");
+  }
+
+  function settleRoundManually(): void {
+    settleRound("manual");
   }
 
   function setTheme(nextTheme: FruitTheme): void {
@@ -589,6 +621,10 @@ export function mountFruitGame(els: FruitGameElements): FruitGameApi {
     btn.addEventListener("click", onNewGameClick);
   }
 
+  for (const btn of settleBtns) {
+    btn.addEventListener("click", settleRoundManually);
+  }
+
   return {
     newGame,
     setNewRoundHandler(handler) {
@@ -601,6 +637,9 @@ export function mountFruitGame(els: FruitGameElements): FruitGameApi {
       boardWrap.removeEventListener("pointercancel", onPointerCancel);
       for (const btn of newGameBtns) {
         btn.removeEventListener("click", onNewGameClick);
+      }
+      for (const btn of settleBtns) {
+        btn.removeEventListener("click", settleRoundManually);
       }
       stopRoundTimer();
       if (hideToastTimer !== undefined) clearTimeout(hideToastTimer);

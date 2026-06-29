@@ -14,6 +14,7 @@ from typing import Any
 from ..common import dt, now
 from ..constants import DONGTIAN_ROUND_MIN_SECONDS, DONGTIAN_ROUND_TTL_MINUTES
 from .lingxi_fishing import DongtianIssuer
+from .service import medicine_embryo_reward
 
 LINGQUAN_TEN_DROP_KEY = "lingquan-ten-drop"
 LINGQUAN_TEN_DROP_TITLE = "灵泉十滴"
@@ -130,11 +131,11 @@ def _lingquan_ten_drop_rewards(result: LingquanTenDropResult) -> list[dict[str, 
     rewards.append({"type": "exp", "quantity": max(4, exp)})
 
     if score >= 160 or levels >= 1:
-        rewards.append({"type": "ring_item", "key": "yinmingcao" if score % 2 else "xueqidan", "quantity": 1})
+        rewards.append(medicine_embryo_reward("yinmingcao" if score % 2 else "xueqidan"))
     if score >= 900 or levels >= 4:
-        rewards.append({"type": "ring_item", "key": "huichunlu" if score % 2 else "ningshenlu", "quantity": 1})
-    if score >= 1800 or levels >= 8:
-        rewards.append({"type": "ring_item", "key": "shenggudan" if score % 2 else "yanghundan", "quantity": 1})
+        rewards.append(medicine_embryo_reward("huichunlu" if score % 2 else "ningshenlu"))
+    if (score >= 1800 or levels >= 8) and _chance_per_10000(min(520, 120 + levels * 28 + chain)):
+        rewards.append(medicine_embryo_reward("shenggudan" if score % 2 else "yanghundan"))
     if score >= 1500 and _chance_per_10000(min(850, 120 + levels * 35 + chain * 2)):
         rewards.append({"type": "wish_token", "quantity": 1})
     if score >= 3600 and _chance_per_10000(min(110, 28 + levels * 2 + chain // 6)):

@@ -18,27 +18,65 @@
       --bad: #ff8c8c;
       --card: #283646;
       --card-back: linear-gradient(145deg, #244556, #1a2936);
+      --app-height: 100dvh;
     }
 
     * { box-sizing: border-box; }
-    html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--text); font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-    body { display: grid; place-items: center; padding: 16px; }
-    main { width: min(560px, 100%); }
-    .top { display: flex; justify-content: space-between; gap: 12px; align-items: flex-end; margin-bottom: 12px; }
-    h1 { margin: 0 0 4px; font-size: clamp(28px, 7vw, 42px); line-height: 1; letter-spacing: 0; }
+    html, body {
+      width: 100%;
+      height: 100%;
+      min-height: 100%;
+      margin: 0;
+      overflow: hidden;
+      background: var(--bg);
+      color: var(--text);
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    body {
+      min-height: var(--app-height);
+      display: grid;
+      place-items: center;
+      padding: clamp(8px, 1.8vh, 16px);
+      touch-action: manipulation;
+    }
+    main {
+      width: min(560px, calc(100vw - 20px));
+      height: calc(var(--app-height) - clamp(16px, 3.6vh, 32px));
+      max-height: 760px;
+      display: grid;
+      grid-template-rows: auto auto minmax(0, 1fr) auto auto;
+      gap: clamp(6px, 1.1vh, 12px);
+      min-height: 0;
+    }
+    .top { display: flex; justify-content: space-between; gap: 12px; align-items: flex-end; min-width: 0; }
+    .top > div { min-width: 0; }
+    h1 { margin: 0 0 4px; font-size: clamp(24px, 5vh, 42px); line-height: 1; letter-spacing: 0; }
     .sub { margin: 0; color: var(--muted); font-size: 14px; }
-    .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 12px; }
-    .stat { padding: 10px; border: 1px solid var(--line); background: var(--panel); border-radius: 8px; text-align: center; }
-    .stat b { display: block; font-size: 20px; color: var(--accent); }
+    .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: clamp(5px, 1vh, 8px); }
+    .stat { min-height: 0; padding: clamp(6px, 1.2vh, 10px); border: 1px solid var(--line); background: var(--panel); border-radius: 8px; text-align: center; }
+    .stat b { display: block; font-size: clamp(16px, 3vh, 20px); color: var(--accent); }
     .stat span { color: var(--muted); font-size: 12px; }
-    .board { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+    .board {
+      width: min(100%, calc((var(--app-height) - 216px) * 0.9), 520px);
+      max-height: 100%;
+      min-height: 0;
+      aspect-ratio: 1;
+      align-self: center;
+      justify-self: center;
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: clamp(4px, 1vh, 8px);
+    }
     .card {
-      aspect-ratio: 1 / 1.12;
+      width: 100%;
+      min-width: 0;
+      min-height: 0;
+      aspect-ratio: 1;
       border: 1px solid var(--line);
       border-radius: 8px;
       background: var(--card-back);
       color: var(--text);
-      font-size: clamp(17px, 4.4vw, 24px);
+      font-size: clamp(16px, 3vh, 24px);
       font-weight: 800;
       letter-spacing: 0;
       display: grid;
@@ -51,7 +89,7 @@
     .card:active { transform: scale(.97); }
     .card.open { background: #f7ead4; color: #20242a; border-color: rgba(243,201,105,.72); }
     .card.done { background: rgba(119,214,178,.18); border-color: rgba(119,214,178,.74); color: var(--accent); cursor: default; }
-    .actions { display: flex; gap: 10px; margin-top: 12px; }
+    .actions { display: flex; gap: 10px; }
     button.action {
       border: 0;
       border-radius: 8px;
@@ -78,6 +116,8 @@
     .result.show { display: grid; }
     .result-card {
       width: min(430px, 100%);
+      max-height: calc(var(--app-height) - 32px);
+      overflow-y: auto;
       border: 1px solid var(--line);
       border-radius: 12px;
       background: var(--panel);
@@ -111,15 +151,39 @@
     .copy-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 12px; }
     .result-card > .action { margin-top: 8px; width: 100%; }
     .error { color: var(--bad); }
+    .inline-status {
+      min-height: 22px;
+      margin: 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+      text-align: center;
+    }
 
     @media (max-width: 420px) {
-      body { padding: 10px; align-items: start; }
-      .top { align-items: flex-start; flex-direction: column; }
+      body { padding: 8px; }
+      main {
+        width: calc(100vw - 16px);
+        height: calc(var(--app-height) - 16px);
+        gap: 7px;
+      }
+      .top { align-items: center; }
       .stats { gap: 6px; }
       .stat { padding: 8px 4px; }
       .board { gap: 6px; }
-      .actions { flex-direction: column; }
       .copy-actions { grid-template-columns: 1fr; }
+    }
+
+    @media (max-width: 340px) {
+      .actions { flex-direction: column; }
+    }
+
+    @media (max-height: 640px) {
+      h1 { font-size: 24px; }
+      .sub { display: none; }
+      .stat { padding: 6px 4px; }
+      button.action { min-height: 38px; padding: 8px 12px; }
+      .inline-status { min-height: 18px; font-size: 12px; line-height: 1.35; }
     }
   </style>
 </head>
@@ -130,7 +194,7 @@
         <h1>灵牌记忆</h1>
         <p class="sub">翻开相同灵牌，九十息内尽量归位。</p>
       </div>
-      <button class="action secondary" id="restart" type="button">重开</button>
+      <button class="action secondary" id="restart" type="button" disabled>重开</button>
     </section>
 
     <section class="stats" aria-live="polite">
@@ -142,9 +206,10 @@
     <section class="board" id="board" aria-label="灵牌棋盘"></section>
 
     <section class="actions">
-      <button class="action" id="start" type="button">开局</button>
+      <button class="action" id="start" type="button" disabled>开局</button>
       <button class="action secondary" id="finish" type="button" disabled>结算本局</button>
     </section>
+    <p class="inline-status" id="status">正在叩问洞天入口。</p>
 
     <section class="result" id="result" aria-live="polite"></section>
   </main>
@@ -161,7 +226,9 @@
       startedAt: 0,
       timer: null,
       finished: false,
-      duration: 90
+      duration: 90,
+      minSettleSeconds: 10,
+      pendingFinishTimer: null
     };
 
     const els = {
@@ -172,7 +239,8 @@
       time: document.getElementById("time"),
       pairs: document.getElementById("pairs"),
       flips: document.getElementById("flips"),
-      result: document.getElementById("result")
+      result: document.getElementById("result"),
+      status: document.getElementById("status")
     };
 
     async function request(path, options = {}) {
@@ -187,17 +255,44 @@
     }
 
     async function loadConfig() {
-      state.config = await request("/config", { method: "GET", headers: undefined });
-      state.duration = Number(state.config.config?.game_duration || 90);
-      updateStats();
+      try {
+        state.config = await request("/config", { method: "GET", headers: undefined });
+        state.duration = Number(state.config.config?.game_duration || 90);
+        state.minSettleSeconds = Number(state.config.config?.round_min_seconds || 10);
+        els.start.disabled = false;
+        els.restart.disabled = false;
+        setStatus("洞天凭证已就绪。");
+        updateStats();
+      } catch (err) {
+        els.start.disabled = true;
+        els.restart.disabled = true;
+        showError(err.message || "洞天入口暂时没有回应。");
+        setStatus("洞天凭证获取失败，请稍后重进。");
+      }
     }
 
     async function startGame() {
+      if (!state.config?.game_token) {
+        setStatus("洞天凭证还没准备好，请稍等。");
+        return;
+      }
+      clearTimeout(state.pendingFinishTimer);
       clearResult();
-      state.round = await request("/start", {
-        method: "POST",
-        body: JSON.stringify({ gameToken: state.config.game_token })
-      });
+      setStatus("正在开局。");
+      els.start.disabled = true;
+      els.restart.disabled = true;
+      try {
+        state.round = await request("/start", {
+          method: "POST",
+          body: JSON.stringify({ gameToken: state.config.game_token })
+        });
+      } catch (err) {
+        els.start.disabled = false;
+        els.restart.disabled = false;
+        setStatus(err.message || "开局失败，请稍后再试。");
+        showError(err.message || "开局失败，请稍后再试。");
+        return;
+      }
       state.cards = state.round.cards || [];
       state.open = [];
       state.matched = new Set();
@@ -205,7 +300,9 @@
       state.startedAt = Date.now();
       state.finished = false;
       els.start.disabled = true;
+      els.restart.disabled = false;
       els.finish.disabled = false;
+      setStatus("翻开相同灵牌，尽量少翻错。");
       renderBoard();
       tick();
       clearInterval(state.timer);
@@ -239,7 +336,7 @@
           state.matched.add(a.id);
           state.matched.add(b.id);
           state.open = [];
-          if (matchedPairs() >= 8) finishGame();
+          if (matchedPairs() >= 8) finishGame("completed");
         } else {
           setTimeout(() => {
             state.open = [];
@@ -265,7 +362,7 @@
     function tick() {
       const left = Math.max(0, state.duration - elapsedSeconds());
       els.time.textContent = String(left);
-      if (left <= 0 && state.startedAt && !state.finished) finishGame();
+      if (left <= 0 && state.startedAt && !state.finished) finishGame("timeout");
     }
 
     function matchedPairs() {
@@ -283,12 +380,23 @@
       els.time.textContent = String(Math.max(0, state.duration - elapsedSeconds()));
     }
 
-    async function finishGame() {
+    async function finishGame(reason = "manual") {
       if (!state.round || state.finished) return;
+      const wait = secondsUntilSettleReady();
+      if (wait > 0) {
+        setStatus(`灵牌还没完全归档，还需 ${wait} 秒后才能结算。`);
+        if (reason !== "manual") {
+          clearTimeout(state.pendingFinishTimer);
+          state.pendingFinishTimer = setTimeout(() => finishGame(reason), wait * 1000 + 80);
+        }
+        return;
+      }
       state.finished = true;
       clearInterval(state.timer);
       els.finish.disabled = true;
-      els.start.disabled = false;
+      els.start.disabled = true;
+      els.restart.disabled = true;
+      setStatus("正在向洞天校验本局成绩。");
       refreshCards();
       updateStats();
       try {
@@ -307,13 +415,36 @@
         state.finished = false;
         els.finish.disabled = false;
         els.start.disabled = true;
+        els.restart.disabled = true;
+        if (isTooEarlyError(err)) {
+          setStatus(err.message || "本局结束过快，请稍后再结算。");
+          refreshCards();
+          return;
+        }
         showError(`${err.message || "结算失败"}，可以重试结算本局。`, true);
       }
+    }
+
+    function secondsUntilSettleReady() {
+      const minSeconds = Math.max(0, Number(state.minSettleSeconds || 0));
+      return Math.max(0, minSeconds - elapsedSeconds());
+    }
+
+    function isTooEarlyError(error) {
+      return String(error?.message || "").includes("结束过快");
+    }
+
+    function setStatus(text) {
+      els.status.textContent = text;
     }
 
     function showResult(issued) {
       const code = issued.code || "";
       const rewards = (issued.reward_preview || []).map(item => `<li>${escapeHtml(item)}</li>`).join("") || "<li>本局没有生成可兑换奖励。</li>";
+      els.start.disabled = false;
+      els.restart.disabled = false;
+      els.finish.disabled = true;
+      setStatus("兑换码十分钟内有效。");
       els.result.className = "result show";
       els.result.innerHTML = `
         <div class="result-card" role="dialog" aria-modal="true" aria-label="灵牌记忆结算">
@@ -345,7 +476,7 @@
         </div>
       `;
       if (retry) {
-        document.getElementById("retryFinish")?.addEventListener("click", () => finishGame());
+        document.getElementById("retryFinish")?.addEventListener("click", () => finishGame("manual"));
       } else {
         document.getElementById("closeResult")?.addEventListener("click", clearResult);
       }
@@ -388,9 +519,9 @@
     }
 
     els.start.addEventListener("click", () => startGame().catch(err => showError(err.message)));
-    els.finish.addEventListener("click", () => finishGame());
+    els.finish.addEventListener("click", () => finishGame("manual"));
     els.restart.addEventListener("click", () => startGame().catch(err => showError(err.message)));
-    loadConfig().catch(err => showError(err.message));
+    loadConfig();
   </script>
 </body>
 </html>

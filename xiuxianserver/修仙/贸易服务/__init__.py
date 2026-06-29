@@ -73,7 +73,7 @@ async def ws_treasure_claim(player_id: str = Depends(current_player_id)) -> None
     await send_reply(player_id, service.treasure_claim(player_id), manager, service)
 
 
-@MessageHandler.handler(cmd="商场推荐", priority=100, block=True)
+@MessageHandler.handler(cmd=("商场推荐","商路推荐"), priority=100, block=True)
 async def ws_trade_recommend(player_id: str = Depends(current_player_id)) -> None:
     """推荐跑商路线。"""
 

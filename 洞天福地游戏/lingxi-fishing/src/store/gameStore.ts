@@ -15,6 +15,10 @@ interface GameStore {
   sessionId: string;
   roundToken: string;
   roundExpiresAt: string;
+  gameDuration: number;
+  roundMinSeconds: number;
+  startedAt: number;
+  statusText: string;
 
   setGameState: (state: GameState) => void;
   setScore: (score: number) => void;
@@ -26,6 +30,9 @@ interface GameStore {
   setGameConfig: (config: FishingGameConfig) => void;
   setRound: (round: FishingRoundStart) => void;
   clearRound: () => void;
+  finishGame: () => void;
+  requestFinish: () => boolean;
+  setStatusText: (text: string) => void;
   resetGame: () => void;
 }
 
@@ -42,6 +49,10 @@ export const useGameStore = create<GameStore>((set) => ({
   sessionId: '',
   roundToken: '',
   roundExpiresAt: '',
+  gameDuration: 90,
+  roundMinSeconds: 10,
+  startedAt: 0,
+  statusText: '',
 
   setGameState: (gameState) => set({ gameState }),
   setScore: (score) => set({ score }),
@@ -55,19 +66,37 @@ export const useGameStore = create<GameStore>((set) => ({
     set({
       gameToken: config.game_token,
       gameTokenExpiresAt: config.token_expires_at,
+      gameDuration: Math.max(1, Number(config.config?.game_duration || 90)),
+      roundMinSeconds: Math.max(0, Number(config.config?.round_min_seconds || 10)),
     }),
   setRound: (round) =>
     set({
       sessionId: round.session_id,
       roundToken: round.round_token,
       roundExpiresAt: round.expires_at,
+      startedAt: Date.now(),
+      statusText: '',
     }),
   clearRound: () => set({ sessionId: '', roundToken: '', roundExpiresAt: '' }),
+  finishGame: () => set({ gameState: 'ended' }),
+  requestFinish: () => {
+    const state = useGameStore.getState();
+    if (state.gameState !== 'playing') return false;
+    const elapsed = state.startedAt ? Math.floor((Date.now() - state.startedAt) / 1000) : 0;
+    const wait = Math.max(0, state.roundMinSeconds - elapsed);
+    if (wait > 0) {
+      set({ statusText: `灵溪还没完全归档，还需 ${wait} 秒后才能收竿。` });
+      return false;
+    }
+    set({ gameState: 'ended', statusText: '' });
+    return true;
+  },
+  setStatusText: (statusText) => set({ statusText }),
   resetGame: () =>
     set((s) => ({
       gameState: 'idle',
       score: 0,
-      timeLeft: 90,
+      timeLeft: s.gameDuration || 90,
       combo: 0,
       caughtFish: [],
       lastCatchScore: 0,
@@ -75,7 +104,11 @@ export const useGameStore = create<GameStore>((set) => ({
       sessionId: '',
       roundToken: '',
       roundExpiresAt: '',
+      startedAt: 0,
+      statusText: '',
       gameToken: s.gameToken,
       gameTokenExpiresAt: s.gameTokenExpiresAt,
+      gameDuration: s.gameDuration,
+      roundMinSeconds: s.roundMinSeconds,
     })),
 }));

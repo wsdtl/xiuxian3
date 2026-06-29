@@ -14,6 +14,11 @@ from .lingpai_memory import finish_lingpai_memory, lingpai_memory_config, start_
 from .lingquan_ten_drop import finish_lingquan_ten_drop, lingquan_ten_drop_config, start_lingquan_ten_drop
 from .lingxi_fishing import finish_lingxi_fishing, lingxi_fishing_config, start_lingxi_fishing
 from .service import service
+from .zhuiyuan_hundred_floor import (
+    finish_zhuiyuan_hundred_floor,
+    start_zhuiyuan_hundred_floor,
+    zhuiyuan_hundred_floor_config,
+)
 
 
 router = APIRouter(prefix="/xiuxian/dongtian")
@@ -92,7 +97,7 @@ async def api_lingpai_memory_start(request: Request) -> dict:
 async def api_lingpai_memory_finish(request: Request) -> dict:
     """灵牌记忆结算。
 
-    牌序由服务端按 24 小时启动凭证派生；前端提交的配对数和翻牌数
+    牌序由服务端按单局凭证派生；前端提交的配对数和翻牌数
     只是材料，服务端会按时间密度重新裁定并签发一次性洞天兑换码。
     """
 
@@ -161,7 +166,7 @@ async def api_lingguo_sum_ten_config(request: Request, response: Response) -> di
 
 @router.post("/lingguo-sum-ten/start")
 async def api_lingguo_sum_ten_start(request: Request) -> dict:
-    """灵果凑十开局，返回服务端随机难度和单局凭证。"""
+    """灵果凑十开局，返回今日难度和单局凭证。"""
 
     payload = await _json_payload(request, "灵果开局数据不是有效 JSON。")
     try:
@@ -174,8 +179,8 @@ async def api_lingguo_sum_ten_start(request: Request) -> dict:
 async def api_lingguo_sum_ten_finish(request: Request) -> dict:
     """灵果凑十结算。
 
-    只认可分数、摘果数、成局数、经过时间和单局凭证；本局难度由
-    服务端按 24 小时启动凭证复算，刷新和重新开局不会重抽难度。
+    只认可分数、摘果数、成局数、经过时间和单局凭证；今日难度由
+    服务端按开局日期复算，跨零点结算也不会漂移。
     """
 
     payload = await _json_payload(request, "灵果结算数据不是有效 JSON。")
@@ -215,7 +220,7 @@ async def api_bianling_color_start(request: Request) -> dict:
 async def api_bianling_color_finish(request: Request) -> dict:
     """辨灵试色结算。
 
-    色阶由服务端按 24 小时启动凭证派生；前端提交的通关层数和误触
+    色阶由服务端按单局凭证派生；前端提交的通关层数和误触
     只是材料，服务端会按时间密度重新裁定并签发一次性洞天兑换码。
     """
 
@@ -257,12 +262,53 @@ async def api_hedan_furnace_finish(request: Request) -> dict:
     """合丹炉结算。
 
     只认可分数、最高丹胚、合丹次数、有效手数、经过时间和单局凭证；
-    本局炉火由服务端按 24 小时启动凭证复算，刷新和重新开局不会重抽炉火。
+    本局炉火由服务端按单局凭证复算，每次开炉都会重抽。
     """
 
     payload = await _json_payload(request, "合丹炉结算数据不是有效 JSON。")
     try:
         return finish_hedan_furnace(service, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/zhuiyuan-hundred-floor/config")
+async def api_zhuiyuan_hundred_floor_config(request: Request, response: Response) -> dict:
+    """坠渊百层启动配置。"""
+
+    try:
+        return _config_with_cookie(
+            request,
+            response,
+            "zhuiyuan-hundred-floor",
+            zhuiyuan_hundred_floor_config(service, _game_token_cookie(request, "zhuiyuan-hundred-floor")),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/zhuiyuan-hundred-floor/start")
+async def api_zhuiyuan_hundred_floor_start(request: Request) -> dict:
+    """坠渊百层开局，返回一次性单局凭证。"""
+
+    payload = await _json_payload(request, "坠渊百层开局数据不是有效 JSON。")
+    try:
+        return start_zhuiyuan_hundred_floor(service, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/zhuiyuan-hundred-floor/finish")
+async def api_zhuiyuan_hundred_floor_finish(request: Request) -> dict:
+    """坠渊百层结算。
+
+    前端提交的层数和经过时间只是材料；服务端会按单局凭证、九十息
+    上限和层数密度重新裁定，最终只签发一次性洞天兑换码。
+    """
+
+    payload = await _json_payload(request, "坠渊百层结算数据不是有效 JSON。")
+    try:
+        return finish_zhuiyuan_hundred_floor(service, payload)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -283,8 +329,8 @@ def _config_with_cookie(request: Request, response: Response, game_key: str, pay
     """把 24 小时启动 token 写入 HttpOnly cookie，刷新页面时复用同一局外身份。
 
     洞天小游戏没有登录态；这个 cookie 不是玩家身份，只是浏览器和某个
-    小游戏之间的短期启动凭证。随机难度会绑定到它，避免玩家刷新网页
-    反复重抽难度。
+    小游戏之间的短期启动凭证。玩法随机是否绑定每日或单局，由具体小
+    游戏结算文件决定，不能默认绑定到启动凭证。
     """
 
     token = str(payload.get("game_token") or "").strip()

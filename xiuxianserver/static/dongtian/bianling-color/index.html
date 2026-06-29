@@ -115,6 +115,14 @@
     .copy-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 12px; }
     .result-card > .action { margin-top: 8px; width: 100%; }
     .error { color: var(--bad); }
+    .inline-status {
+      min-height: 22px;
+      margin: 8px 0 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+      text-align: center;
+    }
 
     @media (max-width: 460px) {
       body { padding: 10px; align-items: start; }
@@ -134,7 +142,7 @@
         <h1>辨灵试色</h1>
         <p class="sub">找出灵气偏色的一格，六十息后结算。</p>
       </div>
-      <button class="action secondary" id="restart" type="button">重开</button>
+      <button class="action secondary" id="restart" type="button" disabled>重开</button>
     </section>
 
     <section class="stats" aria-live="polite">
@@ -147,8 +155,10 @@
     <section class="grid" id="grid" aria-label="辨灵色阵"></section>
 
     <section class="actions">
-      <button class="action" id="start" type="button">开局</button>
+      <button class="action" id="start" type="button" disabled>开局</button>
+      <button class="action secondary" id="finish" type="button" disabled>结算本局</button>
     </section>
+    <p class="inline-status" id="status">正在叩问洞天入口。</p>
 
     <section class="result" id="result" aria-live="polite"></section>
   </main>
@@ -164,18 +174,22 @@
       startedAt: 0,
       timer: null,
       finished: false,
-      duration: 60
+      duration: 60,
+      minSettleSeconds: 10,
+      pendingFinishTimer: null
     };
 
     const els = {
       grid: document.getElementById("grid"),
       start: document.getElementById("start"),
+      finish: document.getElementById("finish"),
       restart: document.getElementById("restart"),
       time: document.getElementById("time"),
       level: document.getElementById("level"),
       layer: document.getElementById("layer"),
       mistakes: document.getElementById("mistakes"),
-      result: document.getElementById("result")
+      result: document.getElementById("result"),
+      status: document.getElementById("status")
     };
 
     async function request(path, options = {}) {
@@ -190,23 +204,53 @@
     }
 
     async function loadConfig() {
-      state.config = await request("/config", { method: "GET", headers: undefined });
-      state.duration = Number(state.config.config?.game_duration || 60);
-      updateStats();
+      try {
+        state.config = await request("/config", { method: "GET", headers: undefined });
+        state.duration = Number(state.config.config?.game_duration || 60);
+        state.minSettleSeconds = Number(state.config.config?.round_min_seconds || 10);
+        els.start.disabled = false;
+        els.restart.disabled = false;
+        setStatus("洞天凭证已就绪。");
+        updateStats();
+      } catch (err) {
+        els.start.disabled = true;
+        els.restart.disabled = true;
+        showError(err.message || "洞天入口暂时没有回应。");
+        setStatus("洞天凭证获取失败，请稍后重进。");
+      }
     }
 
     async function startGame() {
+      if (!state.config?.game_token) {
+        setStatus("洞天凭证还没准备好，请稍等。");
+        return;
+      }
+      clearTimeout(state.pendingFinishTimer);
       clearResult();
-      state.round = await request("/start", {
-        method: "POST",
-        body: JSON.stringify({ gameToken: state.config.game_token })
-      });
+      setStatus("正在开局。");
+      els.start.disabled = true;
+      els.restart.disabled = true;
+      try {
+        state.round = await request("/start", {
+          method: "POST",
+          body: JSON.stringify({ gameToken: state.config.game_token })
+        });
+      } catch (err) {
+        els.start.disabled = false;
+        els.restart.disabled = false;
+        setStatus(err.message || "开局失败，请稍后再试。");
+        showError(err.message || "开局失败，请稍后再试。");
+        return;
+      }
       state.stages = state.round.stages || [];
       state.index = 0;
       state.mistakes = 0;
       state.startedAt = Date.now();
       state.finished = false;
       els.start.disabled = true;
+      els.restart.disabled = false;
+      els.finish.disabled = false;
+      setStatus("找出灵气偏色的一格。");
       renderStage();
       tick();
       clearInterval(state.timer);
@@ -252,7 +296,7 @@
     function tick() {
       const left = Math.max(0, state.duration - elapsedSeconds());
       els.time.textContent = String(left);
-      if (left <= 0 && state.startedAt && !state.finished) finishGame();
+      if (left <= 0 && state.startedAt && !state.finished) finishGame("timeout");
     }
 
     function elapsedSeconds() {
@@ -261,7 +305,8 @@
     }
 
     function highestLayer() {
-      const lastStage = state.stages[Math.max(0, state.index - 1)];
+      if (state.index <= 0) return 0;
+      const lastStage = state.stages[state.index - 1];
       return lastStage ? Number(lastStage.layer || 0) : 0;
     }
 
@@ -272,11 +317,23 @@
       els.time.textContent = String(Math.max(0, state.duration - elapsedSeconds()));
     }
 
-    async function finishGame() {
+    async function finishGame(reason = "manual") {
       if (!state.round || state.finished) return;
+      const wait = secondsUntilSettleReady();
+      if (wait > 0) {
+        setStatus(`灵气还没完全归档，还需 ${wait} 秒后才能结算。`);
+        if (reason !== "manual") {
+          clearTimeout(state.pendingFinishTimer);
+          state.pendingFinishTimer = setTimeout(() => finishGame(reason), wait * 1000 + 80);
+        }
+        return;
+      }
       state.finished = true;
       clearInterval(state.timer);
-      els.start.disabled = false;
+      els.start.disabled = true;
+      els.restart.disabled = true;
+      els.finish.disabled = true;
+      setStatus("正在向洞天校验本局成绩。");
       updateStats();
       for (const cell of els.grid.children) cell.disabled = true;
       try {
@@ -294,13 +351,37 @@
       } catch (err) {
         state.finished = false;
         els.start.disabled = true;
+        els.restart.disabled = true;
+        els.finish.disabled = false;
+        if (isTooEarlyError(err)) {
+          setStatus(err.message || "本局结束过快，请稍后再结算。");
+          renderStage();
+          return;
+        }
         showError(`${err.message || "结算失败"}，可以重试结算本局。`, true);
       }
+    }
+
+    function secondsUntilSettleReady() {
+      const minSeconds = Math.max(0, Number(state.minSettleSeconds || 0));
+      return Math.max(0, minSeconds - elapsedSeconds());
+    }
+
+    function isTooEarlyError(error) {
+      return String(error?.message || "").includes("结束过快");
+    }
+
+    function setStatus(text) {
+      els.status.textContent = text;
     }
 
     function showResult(issued) {
       const code = issued.code || "";
       const rewards = (issued.reward_preview || []).map(item => `<li>${escapeHtml(item)}</li>`).join("") || "<li>本局没有生成可兑换奖励。</li>";
+      els.start.disabled = false;
+      els.restart.disabled = false;
+      els.finish.disabled = true;
+      setStatus("兑换码十分钟内有效。");
       els.result.className = "result show";
       els.result.innerHTML = `
         <div class="result-card" role="dialog" aria-modal="true" aria-label="辨灵试色结算">
@@ -332,7 +413,7 @@
         </div>
       `;
       if (retry) {
-        document.getElementById("retryFinish")?.addEventListener("click", () => finishGame());
+        document.getElementById("retryFinish")?.addEventListener("click", () => finishGame("manual"));
       } else {
         document.getElementById("closeResult")?.addEventListener("click", clearResult);
       }
@@ -376,7 +457,8 @@
 
     els.start.addEventListener("click", () => startGame().catch(err => showError(err.message)));
     els.restart.addEventListener("click", () => startGame().catch(err => showError(err.message)));
-    loadConfig().catch(err => showError(err.message));
+    els.finish.addEventListener("click", () => finishGame("manual"));
+    loadConfig();
   </script>
 </body>
 </html>

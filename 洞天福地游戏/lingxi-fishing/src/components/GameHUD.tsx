@@ -2,7 +2,7 @@ import { Clock3, Flame, Trophy } from 'lucide-react';
 import { useGameStore } from '@/store/gameStore';
 
 export default function GameHUD() {
-  const { score, timeLeft, combo, lastCatchScore, lastCatchCombo } = useGameStore();
+  const { score, timeLeft, combo, lastCatchScore, lastCatchCombo, statusText, requestFinish } = useGameStore();
 
   const minutes = Math.floor(timeLeft / 60);
   const seconds = Math.floor(timeLeft % 60);
@@ -66,6 +66,22 @@ export default function GameHUD() {
           </div>
         )}
       </div>
+      <div className="mt-2 flex justify-center">
+        <button
+          type="button"
+          onClick={requestFinish}
+          className="pointer-events-auto rounded-lg border border-white/20 bg-slate-950/40 px-4 py-2 text-xs font-black text-white shadow-[0_12px_35px_rgba(2,6,23,0.2)] backdrop-blur-md transition active:scale-[0.98] md:text-sm"
+        >
+          收竿结算
+        </button>
+      </div>
+      {statusText && (
+        <div className="mt-2 flex justify-center">
+          <div className="rounded-lg border border-amber-100/25 bg-amber-400/16 px-3 py-2 text-center text-xs font-bold text-amber-50 shadow-[0_12px_35px_rgba(2,6,23,0.18)] backdrop-blur-md md:text-sm">
+            {statusText}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

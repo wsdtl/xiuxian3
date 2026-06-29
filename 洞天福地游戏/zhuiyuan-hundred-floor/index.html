@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>坠渊百层</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main id="game-wrapper" aria-label="坠渊百层">
+    <canvas id="gameCanvas" width="400" height="600"></canvas>
+
+    <section id="start-screen" class="overlay">
+      <div class="overlay-content">
+        <h1 class="game-title">坠渊<span>百层</span></h1>
+        <p class="subtitle">踏碎浮台，坠入洞天深处。</p>
+        <div class="controls-hint">
+          <p>← → 或 A / D 移动</p>
+          <p>九十息一局，越往后越疾。</p>
+        </div>
+        <div class="platform-legend" aria-label="浮台说明">
+          <span class="legend-item"><span class="legend-color green"></span>稳台</span>
+          <span class="legend-item"><span class="legend-color blue"></span>流台</span>
+          <span class="legend-item"><span class="legend-color yellow"></span>裂台</span>
+          <span class="legend-item"><span class="legend-color red"></span>刺台</span>
+        </div>
+        <button id="start-btn" class="game-btn" type="button" disabled>叩问洞天</button>
+        <p class="best-score-display">本机最深：<span id="best-score-start">0</span> 层</p>
+        <p id="start-status" class="status-line">正在叩问洞天入口。</p>
+      </div>
+    </section>
+
+    <section id="result-screen" class="overlay hidden" aria-live="polite">
+      <div class="overlay-content result-content">
+        <h2 id="result-title" class="result-title">坠渊止步</h2>
+        <p id="result-summary" class="result-summary">本次到达 0 层。</p>
+        <div id="code-block" class="code-block hidden">
+          <div class="code-label">发送给机器人</div>
+          <div id="command-text" class="command-text"></div>
+          <div class="code-label">兑换码</div>
+          <div id="code-text" class="code-text"></div>
+        </div>
+        <div id="reward-preview" class="reward-preview"></div>
+        <p id="result-status" class="status-line"></p>
+        <div class="result-actions">
+          <button id="copy-command-btn" class="game-btn secondary hidden" type="button">复制兑换命令</button>
+          <button id="copy-code-btn" class="game-btn secondary hidden" type="button">复制兑换码</button>
+          <button id="retry-finish-btn" class="game-btn secondary hidden" type="button">重试结算</button>
+          <button id="restart-btn" class="game-btn" type="button">再入坠渊</button>
+        </div>
+      </div>
+    </section>
+
+    <div id="touch-controls" aria-label="移动方向">
+      <button id="touch-left" class="touch-btn" type="button" aria-label="向左">◀</button>
+      <button id="touch-right" class="touch-btn" type="button" aria-label="向右">▶</button>
+    </div>
+  </main>
+
+  <script src="game.js"></script>
+</body>
+</html>

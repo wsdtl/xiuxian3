@@ -89,6 +89,10 @@ export default function ResultScreen() {
   };
 
   const handleHome = () => {
+    if (finishError && !finishResult) {
+      setFinishError('请先结算本局，成功拿到兑换码后再返回主页。');
+      return;
+    }
     resetGame();
     clearRound();
   };
@@ -273,11 +277,11 @@ export default function ResultScreen() {
             </button>
             <button
               onClick={handleRestart}
-              disabled={restarting}
+              disabled={restarting || Boolean(finishError && !finishResult)}
               className="inline-flex items-center justify-center gap-2 rounded-lg bg-gradient-to-r from-amber-300 via-orange-400 to-rose-400 px-4 py-2.5 font-black text-slate-900 shadow-[0_14px_35px_rgba(251,146,60,0.28)] transition hover:-translate-y-0.5 disabled:cursor-wait disabled:opacity-70"
             >
               <RotateCcw className="h-4 w-4" strokeWidth={2.4} />
-              {restarting ? '开新局中' : '再来一局'}
+              {finishError && !finishResult ? '请先结算本局' : restarting ? '开新局中' : '再来一局'}
             </button>
           </div>
           </div>

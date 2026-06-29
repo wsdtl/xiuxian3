@@ -89,7 +89,7 @@ from 修仙.洞天福地.lingxi_fishing import (
     start_lingxi_fishing,
 )
 from 修仙.洞天福地.lingquan_ten_drop import finish_lingquan_ten_drop, lingquan_ten_drop_config, start_lingquan_ten_drop
-from 修仙.洞天福地.service import DongtianService
+from 修仙.洞天福地.service import DongtianService, dongtian_medicine_embryo_rate
 from 修仙.宗门.service import SectService
 from 修仙.纳戒.service import RingService
 from 修仙.保险箱.service import InsuranceBoxService
@@ -498,10 +498,11 @@ def _check_player(services: dict[str, object]) -> None:
     user_group: UserGroupService = services["user_group"]  # type: ignore[assignment]
 
     _check_bank_interest_caps()
-    _must_contain(help_service.command_guide(), "<指南 战斗:探险战斗>")
-    _must_contain(help_service.command_guide("成长"), "<用户组>")
-    _must_contain(help_service.command_guide("战斗"), "<探险状态>")
-    _must_contain(help_service.command_guide("战斗"), "<结束探险>")
+    _must_contain(help_service.command_guide(), "<指南 战斗:玩家对战>")
+    _must_contain(help_service.command_guide("账户"), "<用户组>")
+    _must_contain(help_service.command_guide("探险"), "<探险状态>")
+    _must_contain(help_service.command_guide("探险"), "<结束探险>")
+    _must_contain(help_service.command_guide("战斗"), "<抢劫 玩家名>")
     user_group_overview = user_group.overview()
     _must_contain(user_group_overview, "[用户组后台](")
     assert "网页登录：http" not in user_group_overview
@@ -2182,17 +2183,21 @@ def _check_dongtian_refresh_token_lock(dongtian: DongtianService) -> None:
     furnace_config = hedan_furnace_config(dongtian)
     furnace_round_a = start_hedan_furnace(dongtian, {"gameToken": furnace_config["game_token"]})
     furnace_round_b = start_hedan_furnace(dongtian, {"gameToken": furnace_config["game_token"]})
-    assert furnace_round_a["difficulty"]["key"] == furnace_round_b["difficulty"]["key"]
+    assert furnace_round_a["session_id"] != furnace_round_b["session_id"]
+    assert furnace_round_a["difficulty"]["key"] in {"wenhuo", "zhenhuo", "jiehuo"}
+    assert furnace_round_b["difficulty"]["key"] in {"wenhuo", "zhenhuo", "jiehuo"}
 
     memory_config = lingpai_memory_config(dongtian)
     memory_round_a = start_lingpai_memory(dongtian, {"gameToken": memory_config["game_token"]})
     memory_round_b = start_lingpai_memory(dongtian, {"gameToken": memory_config["game_token"]})
-    assert memory_round_a["cards"] == memory_round_b["cards"]
+    assert memory_round_a["session_id"] != memory_round_b["session_id"]
+    assert memory_round_a["cards"] != memory_round_b["cards"]
 
     color_config = bianling_color_config(dongtian)
     color_round_a = start_bianling_color(dongtian, {"gameToken": color_config["game_token"]})
     color_round_b = start_bianling_color(dongtian, {"gameToken": color_config["game_token"]})
-    assert color_round_a["stages"] == color_round_b["stages"]
+    assert color_round_a["session_id"] != color_round_b["session_id"]
+    assert color_round_a["stages"] != color_round_b["stages"]
 
     cookie_name = dongtian_routes_module._game_token_cookie_name("hedan-furnace")
     cookie_response = Response()
@@ -2483,7 +2488,8 @@ def _check_dongtian(services: dict[str, object]) -> None:
             assert normal_finish["accepted_score"] == 370
             assert "基础原石 +136" in normal_finish["reward_preview"]
             assert "基础经验 +11" in normal_finish["reward_preview"]
-            assert len([reward for reward in normal_finish["rewards"] if reward.get("type") == "ring_item"]) == 1
+            assert any("微光" in line and "药胚" in line for line in normal_finish["reward_preview"])
+            assert len([reward for reward in normal_finish["rewards"] if reward.get("type") == "medicine_embryo"]) == 1
 
             issued = dongtian.issue_code(
                 "fishing-demo",
@@ -2500,40 +2506,45 @@ def _check_dongtian(services: dict[str, object]) -> None:
             )
             assert issued["game_key"] == "fishing-demo"
             assert not any(reward.get("key") == "kaikongqi" for reward in issued["rewards"])
+            assert not any(reward.get("key") == "xueqidan" for reward in issued["rewards"])
 
             before_player = player.player("u1")
             assert before_player is not None
             redeem_text = dongtian.redeem("u1", str(issued["code"]))
             _must_contain(redeem_text, "灵溪垂钓 的异世回响")
-            _must_contain(redeem_text, "洞天收益系数：资源 100%｜恢复药 100%")
+            _must_contain(redeem_text, "洞天收益系数：资源 100%｜药胚稳定 100%")
             _must_contain(redeem_text, "原石 +100")
             _must_contain(redeem_text, "经验 +30")
-            _must_contain(redeem_text, "纳戒获得 血契丹 x2")
             _must_contain(redeem_text, "纳戒获得 流光签 x1")
             assert "开孔器" not in redeem_text
+            assert "血契丹" not in redeem_text
             after_player = player.player("u1")
             assert after_player is not None
             assert int(after_player["raw_stones"]) >= int(before_player["raw_stones"]) + 100
             _must_contain(dongtian.redeem("u1", str(issued["code"])), "已经被兑换过")
 
-            issued_again = dongtian.issue_code(
+            issued_embryo = dongtian.issue_code(
                 "fishing-demo",
                 "灵溪垂钓",
                 [
                     {"type": "currency", "quantity": 1000},
-                    {"type": "ring_item", "key": "xueqidan", "quantity": 10},
+                    {"type": "medicine_embryo", "key": "dim_blood", "quantity": 2},
                 ],
                 score=456,
             )
-            second_text = dongtian.redeem("u1", str(issued_again["code"]))
-            _must_contain(second_text, "洞天收益系数：资源 96.6%｜恢复药 98.3%")
-            _must_contain(second_text, "原石 +966")
-            _must_contain(second_text, "纳戒获得 血契丹 x9")
+            second_text = dongtian.redeem("u1", str(issued_embryo["code"]))
+            _must_contain(second_text, "洞天收益系数：资源 94.8%｜药胚稳定 100%")
+            _must_contain(second_text, "原石 +947")
+            assert second_text.count("药胚成形：血契丹 x1") == 2
+            assert dongtian_medicine_embryo_rate(0) == 1.0
+            assert dongtian_medicine_embryo_rate(2) == 1.0
+            assert dongtian_medicine_embryo_rate(21) == 0.24
 
             records_text = dongtian.records("u1")
             _must_contain(records_text, "今日已兑换：**2** 次")
-            _must_contain(records_text, "当前资源收益系数：**93.5%**")
-            _must_contain(records_text, "灵溪垂钓｜分数 456｜原石 +966")
+            _must_contain(records_text, "当前资源收益系数：**90.1%**")
+            _must_contain(records_text, "今日药息点：**2**")
+            _must_contain(records_text, "灵溪垂钓｜分数 456｜原石 +947")
         finally:
             dongtian_service_module.DONGTIAN_STATIC_DIR = original_static_dir
 

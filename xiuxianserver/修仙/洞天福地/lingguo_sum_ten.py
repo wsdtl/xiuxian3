@@ -1,12 +1,11 @@
 """灵果凑十小游戏结算。
 
 灵果凑十是两分半的轻量心算局。前端只负责上报得分材料；本文件按
-24 小时启动凭证、单局凭证、服务端经过时间和本局随机难度重新裁定成绩与奖励。
+每日难度、单局凭证、服务端经过时间重新裁定成绩与奖励。
 """
 
 from __future__ import annotations
 
-import hashlib
 import secrets
 from dataclasses import dataclass
 from typing import Any
@@ -14,6 +13,8 @@ from typing import Any
 from ..common import dt, now
 from ..constants import DONGTIAN_ROUND_MIN_SECONDS, DONGTIAN_ROUND_TTL_MINUTES
 from .lingxi_fishing import DongtianIssuer
+from .random_seed import daily_rng
+from .service import medicine_embryo_reward
 
 LINGGUO_SUM_TEN_KEY = "lingguo-sum-ten"
 LINGGUO_SUM_TEN_TITLE = "灵果凑十"
@@ -31,7 +32,7 @@ class LingguoDifficulty:
     """服务端定义的一局难度。
 
     这些字段一部分给前端生成棋盘，一部分给服务端验分和奖励使用。
-    难度由 24 小时启动 token 派生，刷新和重复开局不会重抽。
+    难度由开局日期派生，同一天全服统一，跨零点结算仍按开局日复算。
     """
 
     key: str
@@ -136,7 +137,7 @@ def start_lingguo_sum_ten(service: DongtianIssuer, payload: dict[str, Any]) -> d
         raise ValueError("灵果开局数据异常，请重新进入小游戏。")
     game_token = str(payload.get("gameToken") or payload.get("game_token") or "").strip()
     round_info = service.start_round(LINGGUO_SUM_TEN_KEY, game_token)
-    difficulty = _difficulty_for_game_token(game_token)
+    difficulty = _difficulty_for_day(str(round_info.get("issued_at") or ""))
     round_info.update(
         {
             "game_duration": LINGGUO_DURATION_SECONDS,
@@ -144,6 +145,7 @@ def start_lingguo_sum_ten(service: DongtianIssuer, payload: dict[str, Any]) -> d
             "sum_target": LINGGUO_SUM_TARGET,
             "cols": LINGGUO_COLS,
             "rows": LINGGUO_ROWS,
+            "round_min_seconds": DONGTIAN_ROUND_MIN_SECONDS,
             "difficulty": difficulty.public_config(),
         }
     )
@@ -158,13 +160,13 @@ def finish_lingguo_sum_ten(service: DongtianIssuer, payload: dict[str, Any]) -> 
     game_token = str(payload.get("gameToken") or payload.get("game_token") or "").strip()
     session_id = str(payload.get("sessionId") or payload.get("session_id") or "").strip()
     round_token = str(payload.get("roundToken") or payload.get("round_token") or "").strip()
-    difficulty = _difficulty_for_game_token(game_token)
     round_row = service.inspect_round(
         LINGGUO_SUM_TEN_KEY,
         game_token,
         session_id,
         round_token,
     )
+    difficulty = _difficulty_for_day(str(round_row.get("issued_at") or ""))
     result = _sanitize_lingguo_sum_ten_payload(
         payload,
         difficulty=difficulty,
@@ -218,9 +220,9 @@ def _lingguo_sum_ten_rewards(result: LingguoSumTenResult) -> list[dict[str, Any]
     rewards.append({"type": "exp", "quantity": max(4, exp)})
 
     if score >= 24 or valid_clears >= 4:
-        rewards.append({"type": "ring_item", "key": "yinmingcao" if score % 2 else "xueqidan", "quantity": 1})
+        rewards.append(medicine_embryo_reward("yinmingcao" if score % 2 else "xueqidan"))
     if score >= 90 or valid_clears >= 14:
-        rewards.append({"type": "ring_item", "key": "huichunlu" if score % 2 else "ningshenlu", "quantity": 1})
+        rewards.append(medicine_embryo_reward("huichunlu" if score % 2 else "ningshenlu"))
     if score >= 150 and _chance_per_10000(min(720, 90 + score * 2 + valid_clears * 6)):
         rewards.append({"type": "wish_token", "quantity": 1})
     if score >= 225 and _chance_per_10000(min(90, 18 + valid_clears)):
@@ -275,14 +277,12 @@ def _sanitize_lingguo_sum_ten_payload(
     )
 
 
-def _difficulty_for_game_token(game_token: str) -> LingguoDifficulty:
-    """用 24 小时启动 token 派生难度，刷新和重复开局不会重抽。"""
+def _difficulty_for_day(issued_at: str) -> LingguoDifficulty:
+    """用开局日期派生每日难度，全服同日一致，结算跨零点也不漂移。"""
 
-    token = str(game_token or "").strip()
-    if not token:
-        return LINGGUO_DIFFICULTIES[0]
-    digest = hashlib.sha256(f"{LINGGUO_SUM_TEN_KEY}:{token}".encode("utf-8")).digest()
-    return LINGGUO_DIFFICULTIES[digest[0] % len(LINGGUO_DIFFICULTIES)]
+    day = str(issued_at or "").strip()[:10]
+    rng = daily_rng(LINGGUO_SUM_TEN_KEY, "difficulty", day)
+    return LINGGUO_DIFFICULTIES[rng.randrange(len(LINGGUO_DIFFICULTIES))]
 
 
 def _server_elapsed_seconds(round_row: dict[str, Any]) -> int:

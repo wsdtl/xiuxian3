@@ -1,13 +1,12 @@
 """辨灵试色小游戏结算。
 
-辨灵试色是 60 秒的找异色短局。色阶序列由 24 小时启动凭证
-派生，刷新页面和重复开局不会重抽；前端只提交通关层数、误触、
+辨灵试色是 60 秒的找异色短局。色阶序列由单局凭证派生，
+每次开局都会重抽；前端只提交通关层数、误触、
 经过时间和最高难层，服务端按时间密度和统一上限重新裁定。
 """
 
 from __future__ import annotations
 
-import hashlib
 import random
 import secrets
 from dataclasses import dataclass
@@ -16,6 +15,8 @@ from typing import Any
 from ..common import dt, now
 from ..constants import DONGTIAN_ROUND_MIN_SECONDS, DONGTIAN_ROUND_TTL_MINUTES
 from .lingxi_fishing import DongtianIssuer
+from .random_seed import round_rng
+from .service import medicine_embryo_reward
 
 BIANLING_COLOR_KEY = "bianling-color"
 BIANLING_COLOR_TITLE = "辨灵试色"
@@ -55,19 +56,21 @@ def bianling_color_config(service: DongtianIssuer, reuse_token: str | None = Non
 
 
 def start_bianling_color(service: DongtianIssuer, payload: dict[str, Any]) -> dict[str, Any]:
-    """校验启动凭证，签发单局凭证和本日固定色阶。"""
+    """校验启动凭证，签发单局凭证和本局色阶。"""
 
     if not isinstance(payload, dict):
         raise ValueError("辨灵试色开局数据异常，请重新进入小游戏。")
     game_token = str(payload.get("gameToken") or payload.get("game_token") or "").strip()
     round_info = service.start_round(BIANLING_COLOR_KEY, game_token)
+    session_id = str(round_info.get("session_id") or "")
+    round_token = str(round_info.get("round_token") or "")
     round_info.update(
         {
             "game_duration": BIANLING_DURATION_SECONDS,
             "level_cap": BIANLING_LEVEL_CAP,
             "mistake_cap": BIANLING_MISTAKE_CAP,
             "score_cap": BIANLING_SCORE_CAP,
-            "stages": _stages_for_game_token(game_token),
+            "stages": _stages_for_round(game_token, session_id, round_token),
         }
     )
     return round_info
@@ -86,7 +89,6 @@ def finish_bianling_color(service: DongtianIssuer, payload: dict[str, Any]) -> d
         game_token,
         session_id,
         round_token,
-        min_elapsed_seconds=BIANLING_DURATION_SECONDS,
     )
     result = _sanitize_bianling_color_payload(payload, server_elapsed_seconds=_server_elapsed_seconds(round_row))
     rewards = _bianling_color_rewards(result)
@@ -104,7 +106,6 @@ def finish_bianling_color(service: DongtianIssuer, payload: dict[str, Any]) -> d
             "elapsed_seconds": result.elapsed_seconds,
             "highest_layer": result.highest_layer,
         },
-        min_elapsed_seconds=BIANLING_DURATION_SECONDS,
     )
     display_score = max(0, int(issued.get("score", result.score))) if issued.get("reissued") else result.score
     issued_meta = issued.get("meta") if issued.get("reissued") and isinstance(issued.get("meta"), dict) else {}
@@ -125,15 +126,16 @@ def finish_bianling_color(service: DongtianIssuer, payload: dict[str, Any]) -> d
     return issued
 
 
-def _stages_for_game_token(game_token: str) -> list[dict[str, Any]]:
-    """用 24 小时启动 token 派生稳定色阶。"""
+def _stages_for_round(game_token: str, session_id: str, round_token: str) -> list[dict[str, Any]]:
+    """用单局凭证派生色阶，每次开局重抽，同一局可复算。"""
 
-    rng = _rng_for_game_token(game_token)
+    rng = round_rng(BIANLING_COLOR_KEY, game_token, session_id, round_token, "stages")
     stages: list[dict[str, Any]] = []
     for level in range(1, BIANLING_LEVEL_CAP + 1):
         size = min(9, 2 + level // 5)
-        diff = max(8, 46 - level)
-        base = [rng.randint(72, 206), rng.randint(72, 206), rng.randint(72, 206)]
+        layer = _layer_for_level(level)
+        diff = max(7, 44 - level - rng.randint(0, min(8, layer + 2)))
+        base = [rng.randint(66, 214), rng.randint(66, 214), rng.randint(66, 214)]
         target = list(base)
         channel = rng.randrange(3)
         direction = -1 if base[channel] + diff > 245 else 1
@@ -142,17 +144,32 @@ def _stages_for_game_token(game_token: str) -> list[dict[str, Any]]:
         if level >= 16:
             side_channel = (channel + 1 + rng.randrange(2)) % 3
             target[side_channel] = max(22, min(245, target[side_channel] - direction * max(3, diff // 4)))
+        if level >= 28:
+            other_channel = rng.choice([item for item in (0, 1, 2) if item != channel])
+            target[other_channel] = max(22, min(245, target[other_channel] + rng.choice((-1, 1)) * max(2, diff // 6)))
         stages.append(
             {
                 "level": level,
                 "size": size,
                 "base": _rgb_hex(base),
                 "target": _rgb_hex(target),
-                "target_index": rng.randrange(size * size),
-                "layer": _layer_for_level(level),
+                "target_index": _spread_target_index(rng, size, level),
+                "layer": layer,
             }
         )
     return stages
+
+
+def _spread_target_index(rng: random.Random, size: int, level: int) -> int:
+    """给目标格位置加一点分布约束，避免连续几层看起来总在同一块区域。"""
+
+    total = max(1, int(size) * int(size))
+    if level <= 1:
+        return rng.randrange(total)
+    previous_rolls = max(1, min(3, level // 6 + 1))
+    blocked = {rng.randrange(total) for _ in range(previous_rolls)}
+    choices = [index for index in range(total) if index not in blocked]
+    return rng.choice(choices or list(range(total)))
 
 
 def _bianling_color_rewards(result: BianlingColorResult) -> list[dict[str, Any]]:
@@ -168,9 +185,9 @@ def _bianling_color_rewards(result: BianlingColorResult) -> list[dict[str, Any]]
     rewards.append({"type": "exp", "quantity": max(4, exp)})
 
     if levels >= 6 or score >= 160:
-        rewards.append({"type": "ring_item", "key": "yinmingcao" if score % 2 else "xueqidan", "quantity": 1})
+        rewards.append(medicine_embryo_reward("yinmingcao" if score % 2 else "xueqidan"))
     if levels >= 24 or score >= 720:
-        rewards.append({"type": "ring_item", "key": "ningshenlu" if score % 2 else "huichunlu", "quantity": 1})
+        rewards.append(medicine_embryo_reward("ningshenlu" if score % 2 else "huichunlu"))
     if levels >= 32 and result.mistakes <= 4:
         chance = min(240, 22 + score // 11 + max(0, 6 - result.mistakes) * 12)
         if _chance_per_10000(chance):
@@ -220,13 +237,6 @@ def _layer_for_level(level: int) -> int:
     if value <= 0:
         return 0
     return min(6, 1 + (value - 1) // 8)
-
-
-def _rng_for_game_token(game_token: str) -> random.Random:
-    """返回由启动 token 派生的稳定随机源。"""
-
-    seed = hashlib.sha256(f"{BIANLING_COLOR_KEY}:{game_token}".encode("utf-8")).digest()
-    return random.Random(int.from_bytes(seed[:16], "big"))
 
 
 def _rgb_hex(channels: list[int]) -> str:

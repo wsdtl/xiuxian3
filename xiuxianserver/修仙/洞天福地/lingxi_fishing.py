@@ -13,6 +13,7 @@ from typing import Any, Protocol
 
 from ..common import dt, now
 from ..constants import DONGTIAN_ROUND_MIN_SECONDS, DONGTIAN_ROUND_TTL_MINUTES
+from .service import medicine_embryo_reward
 
 LINGXI_FISHING_KEY = "lingxi-fishing"
 LINGXI_FISHING_TITLE = "灵溪垂钓"
@@ -200,13 +201,13 @@ def _lingxi_fishing_rewards(result: LingxiFishingResult) -> list[dict[str, Any]]
     rewards.append({"type": "exp", "quantity": max(4, exp)})
 
     if caught_count >= 3 or score >= 200:
-        rewards.append({"type": "ring_item", "key": "xueqidan" if score % 2 == 0 else "yinmingcao", "quantity": 1})
+        rewards.append(medicine_embryo_reward("xueqidan" if score % 2 == 0 else "yinmingcao"))
     if score >= 800 or (score >= 600 and rare_count >= 2):
-        rewards.append({"type": "ring_item", "key": "yinmingcao" if score % 2 == 0 else "xueqidan", "quantity": 1})
+        rewards.append(medicine_embryo_reward("yinmingcao" if score % 2 == 0 else "xueqidan"))
     if score >= 1600 and _chance_per_10000(min(1600, 350 + rare_count * 180)):
-        rewards.append({"type": "ring_item", "key": "huichunlu" if score % 3 else "ningshenlu", "quantity": 1})
-    if score >= 2400 and _chance_per_10000(min(900, 220 + rare_count * 120)):
-        rewards.append({"type": "ring_item", "key": "shenggudan" if score % 2 else "yanghundan", "quantity": 1})
+        rewards.append(medicine_embryo_reward("huichunlu" if score % 3 else "ningshenlu"))
+    if score >= 2400 and _chance_per_10000(min(520, 120 + rare_count * 80)):
+        rewards.append(medicine_embryo_reward("shenggudan" if score % 2 else "yanghundan"))
     if score >= 1800 and _chance_per_10000(min(900, 120 + score // 12 + rare_count * 80)):
         rewards.append({"type": "wish_token", "quantity": 1})
     if score >= 3200 and _chance_per_10000(min(120, 35 + rare_count * 12)):

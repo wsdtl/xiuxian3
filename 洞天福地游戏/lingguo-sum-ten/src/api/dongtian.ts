@@ -39,6 +39,7 @@ export interface LingguoRoundResponse {
   sum_target: number;
   cols: number;
   rows: number;
+  round_min_seconds: number;
   difficulty: LingguoDifficulty;
 }
 
