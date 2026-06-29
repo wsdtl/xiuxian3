@@ -1,70 +1,76 @@
 (function () {
   const config = window.MESSAGE_FLOW_CONFIG || {};
   const state = {
-    filter: "all",
     records: new Map(),
-    counts: {
-      incoming: 0,
-      outgoing: 0,
-    },
+    source: null,
+    userLockedScroll: false,
+    pendingAutoScroll: false,
+    fontScale: 0,
   };
 
   const nodes = {
     statusBadge: document.getElementById("statusBadge"),
-    playerBadge: document.getElementById("playerBadge"),
-    retentionBadge: document.getElementById("retentionBadge"),
-    loginPanel: document.getElementById("loginPanel"),
-    loginLink: document.getElementById("loginLink"),
-    flowPanel: document.getElementById("flowPanel"),
     flowList: document.getElementById("flowList"),
-    emptyState: document.getElementById("emptyState"),
-    totalCount: document.getElementById("totalCount"),
-    incomingCount: document.getElementById("incomingCount"),
-    outgoingCount: document.getElementById("outgoingCount"),
-    latestTime: document.getElementById("latestTime"),
-    autoScroll: document.getElementById("autoScroll"),
-    filterButtons: Array.from(document.querySelectorAll("[data-filter]")),
+    jumpBottom: document.getElementById("jumpBottom"),
+    fontSizeDown: document.getElementById("fontSizeDown"),
+    fontSizeUp: document.getElementById("fontSizeUp"),
+    fontSizeLabel: document.getElementById("fontSizeLabel"),
   };
 
   function init() {
-    nodes.retentionBadge.textContent = `保留 ${config.retentionText || "短期"}`;
-    if (!config.loggedIn) {
-      showLogin();
-      return;
-    }
-
-    nodes.playerBadge.textContent = `主用户 ${config.playerId || "--"}`;
-    nodes.flowPanel.hidden = false;
-    bindFilters();
+    bindScrollSignals();
+    bindJumpBottom();
+    bindFontControls();
+    applyFontScale();
     loadRecent().then(connectStream);
   }
 
-  function showLogin() {
-    setStatus("待登录", "is-warn");
-    nodes.loginPanel.hidden = false;
-    nodes.playerBadge.textContent = "未登录";
-    nodes.loginLink.href = config.loginUrl || "/xiuxian/user-groups";
+  function bindFontControls() {
+    if (nodes.fontSizeDown) {
+      nodes.fontSizeDown.addEventListener("click", () => adjustFontScale(-1));
+    }
+    if (nodes.fontSizeUp) {
+      nodes.fontSizeUp.addEventListener("click", () => adjustFontScale(1));
+    }
   }
 
-  function bindFilters() {
-    nodes.filterButtons.forEach((button) => {
-      button.addEventListener("click", () => {
-        state.filter = button.dataset.filter || "all";
-        nodes.filterButtons.forEach((item) => item.classList.toggle("is-active", item === button));
-        applyFilter();
-      });
+  function bindJumpBottom() {
+    if (!nodes.jumpBottom) {
+      return;
+    }
+    nodes.jumpBottom.addEventListener("click", () => {
+      state.userLockedScroll = false;
+      scheduleAutoScroll(true);
+      nodes.flowList.focus?.();
     });
+  }
+
+  function bindScrollSignals() {
+    const viewport = nodes.flowList;
+    viewport.addEventListener("scroll", syncScrollLock, { passive: true });
+    viewport.addEventListener("pointerdown", () => {
+      state.userLockedScroll = true;
+    });
+    viewport.addEventListener("pointerup", () => {
+      state.userLockedScroll = !isNearBottom();
+      flushAutoScroll();
+    });
+    viewport.addEventListener("pointerleave", () => {
+      flushAutoScroll();
+    });
+    viewport.addEventListener("touchstart", () => {
+      state.userLockedScroll = true;
+    }, { passive: true });
+    viewport.addEventListener("touchend", () => {
+      state.userLockedScroll = !isNearBottom();
+      flushAutoScroll();
+    }, { passive: true });
   }
 
   async function loadRecent() {
     setStatus("读取中", "is-idle");
     try {
       const response = await fetch(config.recentUrl || "/xiuxian/message-flow/api/recent?limit=160");
-      if (response.status === 401) {
-        nodes.flowPanel.hidden = true;
-        showLogin();
-        return;
-      }
       if (!response.ok) {
         setStatus("读取失败", "is-bad");
         return;
@@ -72,6 +78,7 @@
       const data = await response.json();
       (data.records || []).forEach(appendRecord);
       setStatus("等待实时", "is-warn");
+      scheduleAutoScroll(true);
     } catch (_error) {
       setStatus("读取失败", "is-bad");
     }
@@ -79,15 +86,16 @@
 
   function connectStream() {
     const streamUrl = config.streamUrl || "/xiuxian/message-flow/stream";
-    const source = new EventSource(streamUrl);
+    state.source = new EventSource(streamUrl);
 
-    source.onopen = () => setStatus("实时连接", "is-live");
-    source.onerror = () => setStatus("重连中", "is-warn");
-    source.onmessage = (event) => {
+    state.source.onopen = () => setStatus("实时连接", "is-live");
+    state.source.onerror = () => setStatus("重连中", "is-warn");
+    state.source.onmessage = (event) => {
       try {
         appendRecord(JSON.parse(event.data));
+        scheduleAutoScroll(false);
       } catch (_error) {
-        setStatus("消息解析失败", "is-bad");
+        setStatus("解析失败", "is-bad");
       }
     };
   }
@@ -104,36 +112,24 @@
     row.dataset.direction = direction;
     row.dataset.flowId = flowId;
 
+    const stack = document.createElement("div");
+    stack.className = "message-stack";
+
+    const sender = document.createElement("div");
+    sender.className = "sender";
+    sender.textContent = record.sender_name || (direction === "outgoing" ? "修仙服务" : record.display_name || "未知");
+
     const bubble = document.createElement("div");
     bubble.className = "bubble";
-    bubble.appendChild(renderMeta(record, direction));
     bubble.appendChild(renderContent(record));
 
-    row.appendChild(bubble);
+    stack.appendChild(sender);
+    stack.appendChild(bubble);
+    row.appendChild(stack);
     nodes.flowList.appendChild(row);
     state.records.set(flowId, { record, row });
-    state.counts[direction] += 1;
-
-    updateStats(record);
-    applyFilterToRow(row);
-    nodes.emptyState.classList.toggle("is-hidden", state.records.size > 0);
-    if (nodes.autoScroll.checked) {
-      nodes.flowList.scrollTop = nodes.flowList.scrollHeight;
-    }
-  }
-
-  function renderMeta(record, direction) {
-    const meta = document.createElement("div");
-    meta.className = "flow-meta";
-    meta.appendChild(tag(record.adapter || "unknown"));
-    meta.appendChild(tag(direction === "outgoing" ? "发出" : "收到", "direction"));
-    if (record.message_type) {
-      meta.appendChild(tag(record.message_type));
-    }
-    const time = document.createElement("span");
-    time.textContent = compactTime(record.created_at);
-    meta.appendChild(time);
-    return meta;
+    trimVisibleRecords();
+    applyVisibility(row);
   }
 
   function renderContent(record) {
@@ -144,27 +140,85 @@
     return content;
   }
 
-  function tag(text, extraClass) {
-    const item = document.createElement("span");
-    item.className = extraClass ? `tag ${extraClass}` : "tag";
-    item.textContent = text;
-    return item;
+  function syncScrollLock() {
+    state.userLockedScroll = !isNearBottom();
+    if (!state.userLockedScroll) {
+      flushAutoScroll();
+    }
   }
 
-  function updateStats(record) {
-    nodes.totalCount.textContent = String(state.records.size);
-    nodes.incomingCount.textContent = String(state.counts.incoming);
-    nodes.outgoingCount.textContent = String(state.counts.outgoing);
-    nodes.latestTime.textContent = compactTime(record.created_at) || "--";
+  function scheduleAutoScroll(force) {
+    if (!force && state.userLockedScroll) {
+      state.pendingAutoScroll = true;
+      return;
+    }
+    requestAnimationFrame(() => {
+      if (force || !state.userLockedScroll) {
+        nodes.flowList.scrollTop = nodes.flowList.scrollHeight;
+        state.pendingAutoScroll = false;
+      }
+    });
   }
 
-  function applyFilter() {
-    state.records.forEach(({ row }) => applyFilterToRow(row));
+  function flushAutoScroll() {
+    if (state.pendingAutoScroll && !state.userLockedScroll) {
+      state.pendingAutoScroll = false;
+      nodes.flowList.scrollTop = nodes.flowList.scrollHeight;
+    }
   }
 
-  function applyFilterToRow(row) {
-    const hidden = state.filter !== "all" && row.dataset.direction !== state.filter;
-    row.classList.toggle("is-hidden", hidden);
+  function trimVisibleRecords() {
+    const limit = Number(config.visibleLimit || 260);
+    if (!Number.isFinite(limit) || limit < 50) {
+      return;
+    }
+    while (state.records.size > limit) {
+      const oldest = state.records.keys().next().value;
+      if (!oldest) {
+        break;
+      }
+      const entry = state.records.get(oldest);
+      if (entry && entry.row && entry.row.parentNode) {
+        entry.row.parentNode.removeChild(entry.row);
+      }
+      state.records.delete(oldest);
+    }
+  }
+
+  function adjustFontScale(step) {
+    state.fontScale = Math.max(-2, Math.min(2, state.fontScale + step));
+    applyFontScale();
+  }
+
+  function applyFontScale() {
+    const scaleMap = {
+      "-2": 0.88,
+      "-1": 0.94,
+      "0": 1,
+      "1": 1.06,
+      "2": 1.12,
+    };
+    const labelMap = {
+      "-2": "极小",
+      "-1": "小",
+      "0": "中",
+      "1": "大",
+      "2": "极大",
+    };
+    const scale = scaleMap[String(state.fontScale)] || 1;
+    document.documentElement.style.setProperty("--message-font-scale", String(scale));
+    if (nodes.fontSizeLabel) {
+      nodes.fontSizeLabel.textContent = labelMap[String(state.fontScale)] || "中";
+    }
+  }
+
+  function isNearBottom() {
+    const el = nodes.flowList;
+    return el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+  }
+
+  function applyVisibility(row) {
+    row.classList.remove("is-hidden");
   }
 
   function setStatus(text, className) {
@@ -172,21 +226,13 @@
     nodes.statusBadge.className = `status-badge ${className || "is-idle"}`;
   }
 
-  function compactTime(value) {
-    if (!value) {
-      return "";
-    }
-    const text = String(value).replace("T", " ");
-    return text.length > 16 ? text.slice(5, 16) : text;
-  }
-
   function escapeHtml(text) {
-    return String(text || "").replace(/[&<>"]/g, (char) => ({
-      "&": "&amp;",
-      "<": "&lt;",
-      ">": "&gt;",
-      "\"": "&quot;",
-    }[char]));
+    return String(text || "").replace(/[&<>"]/g, (char) => {
+      if (char === "&") return "&amp;";
+      if (char === "<") return "&lt;";
+      if (char === ">") return "&gt;";
+      return "&quot;";
+    });
   }
 
   function hardenLinks(root) {

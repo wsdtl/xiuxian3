@@ -788,6 +788,7 @@ def test_command_guide_buttons() -> None:
         "指南 出售",
         "指南 宗门",
         "指南 世界",
+        "指南 消息",
     ]
 
     explore_message = markdown_message_from_text(help_service.command_guide("探险"))
@@ -844,6 +845,31 @@ def test_command_guide_buttons() -> None:
     assert "出售全部 武器" in sell_commands
     assert "二手市场上架 物品名 数量 价格" in sell_commands
 
+    flow_message = markdown_message_from_text(help_service.command_guide("消息"))
+    assert flow_message is not None
+    flow_commands = [
+        item["action"]["data"]
+        for row in flow_message["keyboard"]["content"]["rows"]
+        for item in row["buttons"]
+    ]
+    assert flow_commands[0] == "消息流水"
+    assert flow_commands[-1] == "指南"
+    assert len(flow_commands) == 2
+
+
+def test_daily_guide_uses_inline_command_links() -> None:
+    """引导只使用无框命令链接，不生成底部按钮。"""
+
+    text = help_service.daily_guide()
+    assert "引导" in text
+    assert "[签到](mqqapi://aio/inlinecmd?" in text
+    assert "command=%E7%AD%BE%E5%88%B0" in text
+    assert "[领奖](mqqapi://aio/inlinecmd?" in text
+    assert "command=%E9%A2%86%E5%8F%96%E5%AE%97%E9%97%A8%E5%A4%A7%E4%BC%9A%E5%A5%96%E5%8A%B1" in text
+    payload = markdown_message_from_text(text)
+    assert payload is not None
+    assert "keyboard" not in payload["message"]
+
 
 def test_web_help_uses_hidden_web_links() -> None:
     """帮助入口隐藏帮助站和交互地图真实链接。"""
@@ -853,7 +879,7 @@ def test_web_help_uses_hidden_web_links() -> None:
     assert "/xiuxian/help" in text
     assert "[修仙界地图](" in text
     assert "/xiuxian/map" in text
-    assert "发送：修仙帮助 查看指令速查图，发送：指南 查看关键入口。" in text
+    assert "发送：修仙帮助 查看指令速查图，发送：引导 查看日常入口，发送：指南 查看关键入口。" in text
     assert "![修仙界地图" not in text
 
 
@@ -889,6 +915,7 @@ def main() -> None:
     test_predictive_buttons_before_context_buttons()
     test_boss_cooldown_hint_uses_safe_buttons_only()
     test_command_guide_buttons()
+    test_daily_guide_uses_inline_command_links()
     test_web_help_uses_hidden_web_links()
     print("修仙 markdown 按钮测试通过")
 

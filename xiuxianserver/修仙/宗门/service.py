@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 import random as random_module
 import sqlite3
 
-from ..common import CoreService, player_level_label, split_words, to_int, ts, validate_name
+from ..common import CoreService, dump_json, load_json, now, player_level_label, split_words, to_int, ts, validate_name
 from ..constants import WORLD_COORD_MAX, WORLD_COORD_MIN
 from ..format_text import T
 from ..sect_war import (
@@ -30,6 +30,22 @@ from ..sect_war import (
     SECT_WAR_REWARD_TYPE_SECT_RANDOM,
 )
 from ..sql import db
+
+
+SECT_QUIT_REQUEST_ACTION = "申请退出宗门"
+SECT_QUIT_CANCEL_ACTION = "取消退出宗门"
+SECT_QUIT_CONFIRM_ACTION = "确认退出宗门"
+SECT_QUIT_EXPIRE_ACTION = "退出宗门申请过期"
+SECT_DISBAND_CONFIRM_ACTION = "确认解散宗门"
+SECT_QUIT_ACTIONS = (
+    SECT_QUIT_REQUEST_ACTION,
+    SECT_QUIT_CANCEL_ACTION,
+    SECT_QUIT_CONFIRM_ACTION,
+    SECT_QUIT_EXPIRE_ACTION,
+    SECT_DISBAND_CONFIRM_ACTION,
+)
+SECT_QUIT_COOLDOWN = timedelta(minutes=30)
+SECT_QUIT_REQUEST_TTL = timedelta(hours=24)
 
 
 class SectService(CoreService):
@@ -172,7 +188,7 @@ class SectService(CoreService):
         return T.attach(T.success(f"已加入宗门：{sect['name']}。"), T.buttons("宗门", "地图"))
 
     def quit(self, client_id: str) -> str:
-        """退出当前宗门；宗主退出时自动移交或解散空宗门。"""
+        """申请退出当前宗门。"""
 
         _, error = self.require_player(client_id)
         if error:
@@ -185,64 +201,266 @@ class SectService(CoreService):
             )
 
         with self.db.transaction() as conn:
-            membership = conn.execute(
-                """
-                SELECT s.sect_id, s.name, s.master_client_id, m.role
-                FROM sect_members AS m
-                JOIN sects AS s ON s.sect_id = m.sect_id
-                WHERE m.client_id = ?
-                """,
-                (client_id,),
-            ).fetchone()
+            membership = self._member_sect_conn(conn, client_id)
             if not membership:
                 return T.hint("你还没有加入宗门。", "可以先到宗门山门发送：加入宗门 宗门名。<宗门><地图>")
 
             sect_id = int(membership["sect_id"])
             sect_name = str(membership["name"])
-            is_master = str(membership["master_client_id"]) == client_id
-            remaining = conn.execute(
-                """
-                SELECT client_id
-                FROM sect_members
-                WHERE sect_id = ? AND client_id != ?
-                ORDER BY role = '宗主' DESC, joined_at ASC, client_id ASC
-                LIMIT 1
-                """,
-                (sect_id, client_id),
-            ).fetchone()
-            conn.execute("DELETE FROM sect_members WHERE client_id = ?", (client_id,))
-            if not is_master:
-                conn.execute(
-                    "INSERT INTO game_logs (client_id, action, detail, created_at) VALUES (?, '退出宗门', ?, ?)",
-                    (client_id, f"sect={sect_name}", ts()),
-                )
-                return T.attach(T.success(f"已退出宗门：{sect_name}。"), T.buttons("宗门", "地图"))
-            if remaining:
-                new_master = str(remaining["client_id"])
-                conn.execute(
-                    "UPDATE sect_members SET role = CASE WHEN client_id = ? THEN '宗主' ELSE '成员' END WHERE sect_id = ?",
-                    (new_master, sect_id),
-                )
-                conn.execute(
-                    "UPDATE sects SET master_client_id = ? WHERE sect_id = ?",
-                    (new_master, sect_id),
-                )
-                detail = f"sect={sect_name}, new_master={new_master}"
-                conn.execute(
-                    "INSERT INTO game_logs (client_id, action, detail, created_at) VALUES (?, '退出宗门', ?, ?)",
-                    (client_id, detail, ts()),
-                )
-                return T.attach(
-                    T.success(f"已退出宗门：{sect_name}。新宗主为 {self.format_player_name(new_master)}。"),
-                    T.buttons("宗门", "地图"),
+            pending = self._latest_quit_request_conn(conn, client_id)
+            current_time = now()
+            if pending and int(pending.get("sect_id") or 0) == sect_id:
+                available_at = self._parse_time(pending.get("available_at"))
+                expires_at = self._parse_time(pending.get("expires_at"))
+                if expires_at and current_time > expires_at:
+                    self._expire_quit_request_conn(conn, client_id, pending, current_time)
+                    return T.hint(
+                        "退出申请已过期。",
+                        "需要退出宗门的话，请重新发送：退出宗门。",
+                        buttons=("退出宗门", "宗门"),
+                    )
+                if available_at and current_time < available_at:
+                    return T.hint(
+                        "退出宗门冷静期尚未结束。",
+                        f"还需等待 {self._duration_text(available_at - current_time)}；冷静期结束后发送：确认退出宗门。",
+                        buttons=("确认退出宗门", "取消退出宗门", "宗门"),
+                    )
+                return T.hint(
+                    "退出宗门冷静期已结束。",
+                    "发送：确认退出宗门 完成退出；发送：取消退出宗门 可取消本次申请。",
+                    buttons=("确认退出宗门", "取消退出宗门", "宗门"),
                 )
 
-            conn.execute("DELETE FROM sects WHERE sect_id = ?", (sect_id,))
-            conn.execute(
-                "INSERT INTO game_logs (client_id, action, detail, created_at) VALUES (?, '解散宗门', ?, ?)",
-                (client_id, f"sect={sect_name}", ts()),
+            available_at = current_time + SECT_QUIT_COOLDOWN
+            expires_at = current_time + SECT_QUIT_REQUEST_TTL
+            detail = dump_json(
+                {
+                    "sect_id": sect_id,
+                    "sect": sect_name,
+                    "available_at": ts(available_at),
+                    "expires_at": ts(expires_at),
+                }
             )
+            conn.execute(
+                "INSERT INTO game_logs (client_id, action, detail, created_at) VALUES (?, ?, ?, ?)",
+                (client_id, SECT_QUIT_REQUEST_ACTION, detail, ts(current_time)),
+            )
+        return T.hint(
+            "已进入退出宗门冷静期。",
+            "30 分钟后发送：确认退出宗门。若要取消，发送：取消退出宗门。",
+            buttons=("确认退出宗门", "取消退出宗门", "宗门"),
+        )
+
+    def confirm_quit(self, client_id: str) -> str:
+        """确认退出当前宗门。"""
+
+        _, error = self.require_player(client_id)
+        if error:
+            return error
+        if self._is_member_locked():
+            return T.hint(
+                "周六和周日不能确认退出宗门。",
+                "宗门大会结算和奖励领取期间会锁定成员名单；周一到周五可以退出。",
+                buttons=("宗门", "宗门大会"),
+            )
+
+        with self.db.transaction() as conn:
+            pending = self._latest_quit_request_conn(conn, client_id)
+            if not pending:
+                return T.hint(
+                    "没有待确认的退出申请。",
+                    "需要退出宗门的话，请先发送：退出宗门。",
+                    buttons=("退出宗门", "宗门"),
+                )
+            current_time = now()
+            available_at = self._parse_time(pending.get("available_at"))
+            expires_at = self._parse_time(pending.get("expires_at"))
+            if available_at and current_time < available_at:
+                return T.hint(
+                    "退出宗门冷静期尚未结束。",
+                    f"还需等待 {self._duration_text(available_at - current_time)}。",
+                    buttons=("确认退出宗门", "取消退出宗门", "宗门"),
+                )
+            if expires_at and current_time > expires_at:
+                self._expire_quit_request_conn(conn, client_id, pending, current_time)
+                return T.hint(
+                    "退出申请已过期。",
+                    "需要退出宗门的话，请重新发送：退出宗门。",
+                    buttons=("退出宗门", "宗门"),
+                )
+
+            membership = self._member_sect_conn(conn, client_id)
+            if not membership:
+                return T.hint("你已经不在宗门中。", "无需再次退出。<宗门>")
+            if int(membership["sect_id"]) != int(pending.get("sect_id") or 0):
+                return T.hint(
+                    "退出申请与当前宗门不一致。",
+                    "请先取消旧申请，再按当前宗门重新申请退出。",
+                    buttons=("取消退出宗门", "退出宗门", "宗门"),
+                )
+            return self._execute_quit_conn(conn, client_id, membership, current_time)
+
+    def cancel_quit(self, client_id: str) -> str:
+        """取消退出宗门申请。"""
+
+        _, error = self.require_player(client_id)
+        if error:
+            return error
+        with self.db.transaction() as conn:
+            pending = self._latest_quit_request_conn(conn, client_id)
+            if not pending:
+                return T.hint("没有待取消的退出申请。", "当前无需处理。<宗门>")
+            conn.execute(
+                "INSERT INTO game_logs (client_id, action, detail, created_at) VALUES (?, ?, ?, ?)",
+                (
+                    client_id,
+                    SECT_QUIT_CANCEL_ACTION,
+                    dump_json({"sect_id": int(pending.get("sect_id") or 0), "sect": str(pending.get("sect") or "")}),
+                    ts(),
+                ),
+            )
+        return T.attach(T.success("已取消退出宗门申请。"), T.buttons("宗门", "宗门大会"))
+
+    def _expire_quit_request_conn(
+        self,
+        conn: sqlite3.Connection,
+        client_id: str,
+        pending: dict[str, object],
+        current_time: datetime,
+    ) -> None:
+        """写入过期标记，避免旧申请反复拦截新的退出申请。"""
+
+        conn.execute(
+            "INSERT INTO game_logs (client_id, action, detail, created_at) VALUES (?, ?, ?, ?)",
+            (
+                client_id,
+                SECT_QUIT_EXPIRE_ACTION,
+                dump_json({"sect_id": int(pending.get("sect_id") or 0), "sect": str(pending.get("sect") or "")}),
+                ts(current_time),
+            ),
+        )
+
+    def _execute_quit_conn(
+        self,
+        conn: sqlite3.Connection,
+        client_id: str,
+        membership: sqlite3.Row | dict[str, object],
+        current_time: datetime,
+    ) -> str:
+        """执行真正退出、宗主移交或空宗门解散。"""
+
+        sect_id = int(membership["sect_id"])
+        sect_name = str(membership["name"])
+        is_master = str(membership["master_client_id"]) == client_id
+        remaining = conn.execute(
+            """
+            SELECT client_id
+            FROM sect_members
+            WHERE sect_id = ? AND client_id != ?
+            ORDER BY role = '宗主' DESC, joined_at ASC, client_id ASC
+            LIMIT 1
+            """,
+            (sect_id, client_id),
+        ).fetchone()
+        if is_master and not remaining:
+            cycle_start, _cycle_end = self._cycle_bounds()
+            influence = self._sect_influence_conn(conn, sect_id, cycle_start)
+            if influence > 0:
+                return T.hint(
+                    "本期宗门大会影响力不为 0，宗主不能解散宗门。",
+                    "请等本期结算结束后再重新申请退出，避免本期贡献失去结算资格。",
+                    buttons=("宗门大会", "宗门"),
+                )
+
+        conn.execute("DELETE FROM sect_members WHERE client_id = ?", (client_id,))
+        if not is_master:
+            conn.execute(
+                "INSERT INTO game_logs (client_id, action, detail, created_at) VALUES (?, ?, ?, ?)",
+                (client_id, SECT_QUIT_CONFIRM_ACTION, dump_json({"sect_id": sect_id, "sect": sect_name}), ts(current_time)),
+            )
+            return T.attach(T.success(f"已退出宗门：{sect_name}。"), T.buttons("宗门", "地图"))
+        if remaining:
+            new_master = str(remaining["client_id"])
+            conn.execute(
+                "UPDATE sect_members SET role = CASE WHEN client_id = ? THEN '宗主' ELSE '成员' END WHERE sect_id = ?",
+                (new_master, sect_id),
+            )
+            conn.execute(
+                "UPDATE sects SET master_client_id = ? WHERE sect_id = ?",
+                (new_master, sect_id),
+            )
+            detail = dump_json({"sect_id": sect_id, "sect": sect_name, "new_master": new_master})
+            conn.execute(
+                "INSERT INTO game_logs (client_id, action, detail, created_at) VALUES (?, ?, ?, ?)",
+                (client_id, SECT_QUIT_CONFIRM_ACTION, detail, ts(current_time)),
+            )
+            return T.attach(
+                T.success(f"已退出宗门：{sect_name}。新宗主为 {self.format_player_name(new_master)}。"),
+                T.buttons("宗门", "地图"),
+            )
+
+        conn.execute("DELETE FROM sects WHERE sect_id = ?", (sect_id,))
+        conn.execute(
+            "INSERT INTO game_logs (client_id, action, detail, created_at) VALUES (?, ?, ?, ?)",
+            (client_id, SECT_DISBAND_CONFIRM_ACTION, dump_json({"sect_id": sect_id, "sect": sect_name}), ts(current_time)),
+        )
         return T.attach(T.success(f"已退出并解散宗门：{sect_name}。"), T.buttons("宗门", "地图"))
+
+    def _member_sect_conn(self, conn: sqlite3.Connection, client_id: str) -> sqlite3.Row | None:
+        """读取玩家当前宗门。"""
+
+        return conn.execute(
+            """
+            SELECT s.sect_id, s.name, s.master_client_id, m.role
+            FROM sect_members AS m
+            JOIN sects AS s ON s.sect_id = m.sect_id
+            WHERE m.client_id = ?
+            """,
+            (client_id,),
+        ).fetchone()
+
+    def _latest_quit_request_conn(self, conn: sqlite3.Connection, client_id: str) -> dict[str, object] | None:
+        """读取最近一条仍处于申请态的退出宗门日志。"""
+
+        placeholders = ",".join("?" for _ in SECT_QUIT_ACTIONS)
+        row = conn.execute(
+            f"""
+            SELECT action, detail, created_at
+            FROM game_logs
+            WHERE client_id = ? AND action IN ({placeholders})
+            ORDER BY created_at DESC, log_id DESC
+            LIMIT 1
+            """,
+            (client_id, *SECT_QUIT_ACTIONS),
+        ).fetchone()
+        if not row or str(row["action"]) != SECT_QUIT_REQUEST_ACTION:
+            return None
+        detail = load_json(row["detail"], {})
+        if not isinstance(detail, dict):
+            return None
+        return detail
+
+    @staticmethod
+    def _parse_time(value: object) -> datetime | None:
+        """解析退出申请里的时间。"""
+
+        if not value:
+            return None
+        try:
+            return datetime.fromisoformat(str(value))
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _duration_text(value: timedelta) -> str:
+        """格式化剩余冷静期。"""
+
+        seconds = max(0, int(value.total_seconds()))
+        minutes = (seconds + 59) // 60
+        if minutes < 60:
+            return f"{minutes} 分钟"
+        hours, rest = divmod(minutes, 60)
+        return f"{hours} 小时 {rest} 分钟" if rest else f"{hours} 小时"
 
     def war(self, client_id: str) -> str:
         """查看本期宗门大会影响力和奖励。"""
@@ -264,14 +482,14 @@ class SectService(CoreService):
         panel.section("宗门大会")
         panel.line(f"本期周期：{cycle_start} 到 {self._display_cycle_end(cycle_end)}")
         if self._in_reward_claim_window():
-            panel.line("今日为奖励领取日，本期战斗已结束，抢劫不再增加宗门大会影响力。")
+            panel.line("今日为奖励领取日，本期战斗已结束，不再增加宗门大会影响力。")
         else:
             panel.line("战斗日：周一到周六；宗门成员抢劫会按结果和战利品价值增加影响力。")
         panel.line(f"成员变动：{self._member_lock_text()}")
         if own_sect:
             panel.lines(self._sect_bonus_lines(self._sect_bonus(int(own_sect["sect_id"])), compact=True))
         panel.hr()
-        panel.section("本期影响力")
+        panel.section("宗门大会影响力")
         if current_rank:
             qualified = self._qualified_count(len(current_rank))
             if self._in_reward_claim_window():
@@ -513,7 +731,7 @@ class SectService(CoreService):
         panel.line(f"山门：{sect['location_name']} ({sect['location_x']},{sect['location_y']})")
         panel.line(f"宗主：{self._player_name(str(sect['master_client_id']))}")
         panel.line(f"成员：{member_count}")
-        panel.line(f"本期影响力：{influence}")
+        panel.line(f"宗门大会影响力：{influence}")
         panel.lines(self._sect_bonus_lines(sect_bonus, compact=False))
         panel.line(f"成员变动：{self._member_lock_text()}")
         panel.line(f"创建时间：{sect['created_at']}")
@@ -543,7 +761,7 @@ class SectService(CoreService):
         panel.section("宗门成员")
         panel.line(f"宗门：{sect['name']}｜成员 {member_count} 人")
         panel.line(f"宗主：{self._player_name_with_title(str(sect['master_client_id']))}")
-        panel.line(f"本期影响力：{influence}")
+        panel.line(f"宗门大会影响力：{influence}")
         panel.hr()
         if not rows:
             panel.line("暂无成员。")
@@ -695,6 +913,20 @@ class SectService(CoreService):
             """,
             (int(sect_id), cycle_start),
         )
+        return int(row["influence"]) if row else 0
+
+    @staticmethod
+    def _sect_influence_conn(conn: sqlite3.Connection, sect_id: int, cycle_start: str) -> int:
+        """在当前事务内读取某宗门某周期影响力。"""
+
+        row = conn.execute(
+            """
+            SELECT COALESCE(SUM(influence), 0) AS influence
+            FROM sect_influence_records
+            WHERE sect_id = ? AND cycle_start = ?
+            """,
+            (int(sect_id), cycle_start),
+        ).fetchone()
         return int(row["influence"]) if row else 0
 
     def _city_bonus(self, sect_id: int) -> dict[str, object]:

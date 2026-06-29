@@ -46,6 +46,20 @@ async def ws_quit_sect(player_id: str = Depends(current_player_id)) -> None:
     await send_reply(player_id, service.quit(player_id), manager, service)
 
 
+@MessageHandler.handler(cmd="确认退出宗门", priority=100, block=True)
+async def ws_confirm_quit_sect(player_id: str = Depends(current_player_id)) -> None:
+    """确认退出当前宗门。"""
+
+    await send_reply(player_id, service.confirm_quit(player_id), manager, service)
+
+
+@MessageHandler.handler(cmd="取消退出宗门", priority=100, block=True)
+async def ws_cancel_quit_sect(player_id: str = Depends(current_player_id)) -> None:
+    """取消退出当前宗门。"""
+
+    await send_reply(player_id, service.cancel_quit(player_id), manager, service)
+
+
 @MessageHandler.handler(cmd="宗门大会", priority=100, block=True)
 async def ws_sect_war(player_id: str = Depends(current_player_id)) -> None:
     """查看宗门大会。"""

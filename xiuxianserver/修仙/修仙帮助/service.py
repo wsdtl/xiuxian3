@@ -8,7 +8,7 @@ from urllib.parse import quote
 
 from ..common import CoreService, currency_name
 from ..format_text import T
-from ..markdown_utils import markdown_link
+from ..markdown_utils import inline_command_link, markdown_link
 from ..public_url import public_url
 from ..sql import db
 
@@ -194,6 +194,8 @@ GUIDE_COMMANDS: dict[str, tuple[str, tuple[str, ...]]] = {
             "建立宗门 x y 宗门名",
             "加入宗门 宗门名",
             "退出宗门",
+            "确认退出宗门",
+            "取消退出宗门",
             "宗门大会",
             "领取宗门大会奖励",
         ),
@@ -217,12 +219,10 @@ GUIDE_COMMANDS: dict[str, tuple[str, tuple[str, ...]]] = {
             "修仙帮助",
         ),
     ),
-    "消息流水": (
-        "消息流水观察",
+    "消息": (
+        "公开消息流",
         (
             "消息流水",
-            "消息记录",
-            "用户组后台",
         ),
     ),
 }
@@ -269,7 +269,95 @@ GUIDE_ALIASES = {
     "历史": "世界",
     "百科": "世界",
     "帮助": "世界",
+    "消息": "消息",
+    "消息流": "消息",
+    "消息流水": "消息",
+    "消息记录": "消息",
 }
+
+DAILY_GUIDE_GROUPS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
+    (
+        "修行",
+        (
+            ("签到", "签到"),
+            ("状态", "状态"),
+            ("信息", "修仙信息"),
+            ("休息", "休息"),
+            ("结束休息", "结束休息"),
+        ),
+    ),
+    (
+        "探险",
+        (
+            ("地图", "地图"),
+            ("列表", "探险列表"),
+            ("探险", "探险"),
+            ("状态", "探险状态"),
+            ("结算", "结束探险"),
+        ),
+    ),
+    (
+        "整理",
+        (
+            ("背包", "背包"),
+            ("纳戒", "纳戒"),
+            ("保险箱", "保险箱"),
+            ("自动出售", "自动出售"),
+            ("卖宝石", "出售全部 宝石"),
+            ("卖技能书", "出售全部 技能书"),
+        ),
+    ),
+    (
+        "成长",
+        (
+            ("武器", "武器"),
+            ("装备", "装备"),
+            ("宝石", "宝石"),
+            ("孔位", "孔位"),
+            ("升限", "武器升限"),
+            ("体质", "体质重塑"),
+        ),
+    ),
+    (
+        "挑战",
+        (
+            ("首领", "首领"),
+            ("挑战首领", "挑战首领"),
+            ("首领奖励", "首领奖励"),
+            ("虫洞", "虫洞"),
+            ("挑战虫洞", "挑战虫洞"),
+            ("虫洞奖励", "虫洞奖励"),
+        ),
+    ),
+    (
+        "交易",
+        (
+            ("商路", "商场推荐"),
+            ("跑商奖励", "跑商奖励"),
+            ("藏宝图", "藏宝图"),
+            ("二手市场", "二手市场"),
+        ),
+    ),
+    (
+        "宗门",
+        (
+            ("宗门", "宗门"),
+            ("成员", "宗门成员"),
+            ("大会", "宗门大会"),
+            ("领奖", "领取宗门大会奖励"),
+        ),
+    ),
+    (
+        "机缘",
+        (
+            ("祈愿", "祈愿"),
+            ("十连", "十连祈愿"),
+            ("凭证", "我的凭证"),
+            ("缘契", "开启缘契"),
+            ("洞天", "洞天福地"),
+        ),
+    ),
+)
 
 
 class HelpService(CoreService):
@@ -283,7 +371,7 @@ class HelpService(CoreService):
         return (
             f"{markdown_link('修仙帮助网页', help_url)}\n"
             f"{markdown_link('修仙界地图', map_url)}\n\n"
-            "发送：修仙帮助 查看指令速查图，发送：指南 查看关键入口。"
+            "发送：修仙帮助 查看指令速查图，发送：引导 查看日常入口，发送：指南 查看关键入口。"
         )
 
     def map_help(self, player_id: str = "") -> str:
@@ -306,10 +394,21 @@ class HelpService(CoreService):
         if key not in sections:
             return T.hint(
                 f"没有这个指南方向：{section.strip()}。",
-                "可用方向：成长、账户、行囊、奖励、武器、装备、铭刻、探险、战斗、首领、交易、出售、宗门、世界。",
+                "可用方向：成长、账户、行囊、奖励、武器、装备、铭刻、探险、战斗、首领、交易、出售、宗门、世界、消息。",
                 buttons=self._guide_section_buttons(),
             )
         return self._guide_section(key)
+
+    def daily_guide(self) -> str:
+        """返回无框命令链接组成的日常入口引导。"""
+
+        panel = T.panel()
+        panel.section("引导")
+        panel.line("按当前想做的事点入口；这些是轻量引导，不是每日必做。")
+        for title, commands in DAILY_GUIDE_GROUPS:
+            links = "｜".join(inline_command_link(label, command) for label, command in commands)
+            panel.line(f"{title}：{links}")
+        return panel.render()
 
     def _guide_index(self) -> str:
         """返回指南方向首页。"""
@@ -423,10 +522,10 @@ class HelpService(CoreService):
                 "世界历史、史榜、百科、世界皮肤和帮助入口。",
                 GUIDE_COMMANDS["世界"][1],
             ),
-            "消息流水": (
-                GUIDE_COMMANDS["消息流水"][0],
-                "查看驱动器收发消息的聊天框式短期流水和后台页面。",
-                GUIDE_COMMANDS["消息流水"][1],
+            "消息": (
+                GUIDE_COMMANDS["消息"][0],
+                "查看驱动器收发消息的公开聊天框式短期流水。消息记录是同义入口，不单独放按钮。",
+                GUIDE_COMMANDS["消息"][1],
             ),
         }
 

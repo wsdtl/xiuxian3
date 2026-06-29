@@ -109,8 +109,31 @@ async def test_outgoing_sanitizes_header_and_notifications() -> None:
             assert "<blockquote>" in html
             assert "<strong>状态</strong>" in html
             assert 'href="https://example.com/log/1"' in html
+            assert "<ul>" not in html
         finally:
             db.close()
+
+
+def test_markdown_fragment_renders_more_fully() -> None:
+    """消息流水富文本应支持标题、列表、代码块和行内代码。"""
+
+    html = render_markdown_fragment(
+        "# 标题\n"
+        "## 副标题\n"
+        "- 第一项\n"
+        "1. 第二项\n"
+        "```python\n"
+        "print('ok')\n"
+        "```\n"
+        "正文里有 `代码` 和 [链接](https://example.com)\n"
+    )
+    assert "<h1>" in html
+    assert "<h2>" in html
+    assert "<ul>" in html
+    assert "<ol>" in html
+    assert "<pre><code>" in html
+    assert "<code>代码</code>" in html
+    assert 'href="https://example.com"' in html
 
 
 async def test_message_flow_retention_keeps_latest_rows() -> None:
@@ -141,6 +164,7 @@ async def test_message_flow_retention_keeps_latest_rows() -> None:
 def main() -> None:
     asyncio.run(test_message_flow_records_group_primary_id())
     asyncio.run(test_outgoing_sanitizes_header_and_notifications())
+    test_markdown_fragment_renders_more_fully()
     asyncio.run(test_message_flow_retention_keeps_latest_rows())
     print("修仙消息流水测试通过")
 

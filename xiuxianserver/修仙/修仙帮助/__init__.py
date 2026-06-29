@@ -102,3 +102,21 @@ async def ws_command_guide(message: str, player_id: str = Depends(current_player
         manager,
         service,
     )
+
+
+@MessageHandler.handler(cmd="引导", priority=100, block=True)
+async def ws_daily_guide(player_id: str = Depends(current_player_id)) -> None:
+    """查看日常入口无框命令链接。"""
+
+    await send_reply(
+        player_id,
+        {
+            "code": 202,
+            "type": "text",
+            "message": service.daily_guide(),
+            "auto_buttons": False,
+            "default_buttons": False,
+        },
+        manager,
+        service,
+    )

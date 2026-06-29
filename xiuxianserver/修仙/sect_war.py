@@ -27,6 +27,12 @@ SECT_MERIT_EXP_WEIGHTS = {
     "support": 0.65,
     "influence": 0.45,
 }
+SECT_MERIT_CONTRIBUTION_WEIGHTS = {
+    "build": 0.5,
+    "support": 0.35,
+    "influence": 1.0,
+}
+SECT_ROBBERY_CONTRIBUTION_MULTIPLIER = 1.35
 SECT_MERIT_COLUMNS = {
     "build": "build_merit",
     "support": "support_merit",
@@ -134,7 +140,8 @@ def sect_war_robbery_influence(*, success: bool, item_value: int, battle: dict) 
     level_gap = max(-20, right_level - left_level)
     duration_bonus = min(30, action_count * 2)
     difficulty_bonus = min(80, difficulty * 2 + max(0, level_gap) * 4)
-    value_bonus = min(400, max(0, int(item_value)) // 120)
+    # 抢劫战利品价值直接转成影响力，鼓励高价值抢劫。
+    value_bonus = max(0, int(item_value)) // 60
     if success:
         return max(20, 30 + duration_bonus + difficulty_bonus + value_bonus)
     return max(8, 10 + duration_bonus // 2 + difficulty_bonus // 3)
@@ -167,6 +174,29 @@ def normalize_sect_merit_category(category: str) -> str:
     """把底蕴分类统一为英文内部键。"""
 
     return SECT_MERIT_ALIASES.get(str(category).strip(), "")
+
+
+def sect_merit_contribution_score(category: str, amount: int) -> int:
+    """把宗门底蕴流水折算为本期宗门大会贡献。"""
+
+    key = normalize_sect_merit_category(category)
+    value = max(0, int(amount))
+    if not key or value <= 0:
+        return 0
+    weight = max(0.0, float(SECT_MERIT_CONTRIBUTION_WEIGHTS.get(key, 0.0)))
+    if weight <= 0:
+        return 0
+    return max(1, int(ceil(value * weight)))
+
+
+def sect_merit_war_contribution_score(category: str, amount: int, multiplier: float = 1.0) -> int:
+    """把宗门底蕴流水按来源放大后折算为本期大会分。"""
+
+    score = sect_merit_contribution_score(category, amount)
+    factor = max(0.0, float(multiplier))
+    if score <= 0 or factor <= 0:
+        return 0
+    return max(1, int(ceil(score * factor)))
 
 
 def ensure_sect_stats_conn(conn: sqlite3.Connection, sect_id: int) -> sqlite3.Row | None:
@@ -270,6 +300,84 @@ def sect_direction_bonus_conn(conn: sqlite3.Connection, client_id: str, category
     return max(0.0, float(bonus.get("total_bonus", 0.0) or 0.0)) * focus
 
 
+def _record_sect_cycle_contribution_conn(
+    conn: sqlite3.Connection,
+    client_id: str,
+    *,
+    sect_id: int,
+    influence: int,
+    action: str,
+    item_value: int = 0,
+    success: bool = False,
+    detail: str = "",
+    occurred_at: datetime | None = None,
+) -> int:
+    """把本期贡献同时累计到宗门榜和个人榜。"""
+
+    value = max(0, int(influence))
+    if value <= 0:
+        return 0
+    occurred_time = occurred_at or now()
+    if not sect_war_in_battle_window(occurred_time):
+        return 0
+    cycle_start, cycle_end = sect_war_cycle_bounds(occurred_time)
+    now_text = ts(occurred_time)
+    conn.execute(
+        """
+        INSERT INTO sect_influence_records
+        (sect_id, client_id, action, influence, item_value, success, cycle_start, cycle_end, detail, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(sect_id, cycle_start) DO UPDATE SET
+            client_id = excluded.client_id,
+            action = excluded.action,
+            influence = sect_influence_records.influence + excluded.influence,
+            item_value = sect_influence_records.item_value + excluded.item_value,
+            success = sect_influence_records.success + excluded.success,
+            cycle_end = excluded.cycle_end,
+            detail = excluded.detail,
+            created_at = excluded.created_at
+        """,
+        (
+            int(sect_id),
+            client_id,
+            str(action),
+            value,
+            max(0, int(item_value)),
+            1 if success else 0,
+            cycle_start,
+            cycle_end,
+            detail,
+            now_text,
+        ),
+    )
+    conn.execute(
+        """
+        INSERT INTO sect_contribution_records
+        (sect_id, client_id, influence, item_value, success, cycle_start, cycle_end, detail, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(sect_id, client_id, cycle_start) DO UPDATE SET
+            influence = sect_contribution_records.influence + excluded.influence,
+            item_value = sect_contribution_records.item_value + excluded.item_value,
+            success = sect_contribution_records.success + excluded.success,
+            cycle_end = excluded.cycle_end,
+            detail = excluded.detail,
+            created_at = excluded.created_at
+        """,
+        (
+            int(sect_id),
+            client_id,
+            value,
+            max(0, int(item_value)),
+            1 if success else 0,
+            cycle_start,
+            cycle_end,
+            detail,
+            now_text,
+        ),
+    )
+    return value
+
+
 def record_sect_merit_conn(
     conn: sqlite3.Connection,
     client_id: str,
@@ -280,6 +388,10 @@ def record_sect_merit_conn(
     detail: str = "",
     sect_id: int | None = None,
     occurred_at: datetime | None = None,
+    war_action: str = "底蕴",
+    war_item_value: int = 0,
+    war_success: bool = False,
+    war_multiplier: float = 1.0,
 ) -> dict[str, Any]:
     """把成员行为沉淀为宗门三底蕴。"""
 
@@ -319,7 +431,8 @@ def record_sect_merit_conn(
         current_exp = 0
 
     column = SECT_MERIT_COLUMNS[key]
-    now_text = ts(occurred_at or now())
+    occurred_time = occurred_at or now()
+    now_text = ts(occurred_time)
     conn.execute(
         f"""
         UPDATE sect_stats
@@ -339,11 +452,24 @@ def record_sect_merit_conn(
         """,
         (actual_sect_id, client_id, key, value, exp_gain, source, detail, now_text),
     )
+    war_detail = f"source={source}, category={key}, amount={value}, detail={detail}"
+    war_contribution = _record_sect_cycle_contribution_conn(
+        conn,
+        client_id,
+        sect_id=actual_sect_id,
+        influence=sect_merit_war_contribution_score(key, value, war_multiplier),
+        action=war_action,
+        item_value=war_item_value,
+        success=war_success,
+        detail=war_detail,
+        occurred_at=occurred_time,
+    )
     return {
         "added": value,
         "sect_id": actual_sect_id,
         "category": key,
         "exp_gain": exp_gain,
+        "war_contribution": war_contribution,
         "old_level": old_level,
         "level": current_level,
         "leveled": current_level > old_level,
@@ -500,58 +626,9 @@ def record_sect_robbery_influence_conn(
         detail=detail,
         sect_id=sect_id,
         occurred_at=occurred_time,
-    )
-    cycle_start, cycle_end = sect_war_cycle_bounds(occurred_time)
-    conn.execute(
-        """
-        INSERT INTO sect_influence_records
-        (sect_id, client_id, action, influence, item_value, success, cycle_start, cycle_end, detail, created_at)
-        VALUES (?, ?, '抢劫', ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(sect_id, cycle_start) DO UPDATE SET
-            client_id = excluded.client_id,
-            action = excluded.action,
-            influence = sect_influence_records.influence + excluded.influence,
-            item_value = sect_influence_records.item_value + excluded.item_value,
-            success = sect_influence_records.success + excluded.success,
-            cycle_end = excluded.cycle_end,
-            detail = excluded.detail,
-            created_at = excluded.created_at
-        """,
-        (
-            int(sect_id),
-            client_id,
-            influence,
-            max(0, int(item_value)),
-            1 if success else 0,
-            cycle_start,
-            cycle_end,
-            detail,
-            ts(occurred_time),
-        ),
-    )
-    conn.execute(
-        """
-        INSERT INTO sect_contribution_records
-        (sect_id, client_id, influence, item_value, success, cycle_start, cycle_end, detail, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(sect_id, client_id, cycle_start) DO UPDATE SET
-            influence = sect_contribution_records.influence + excluded.influence,
-            item_value = sect_contribution_records.item_value + excluded.item_value,
-            success = sect_contribution_records.success + excluded.success,
-            cycle_end = excluded.cycle_end,
-            detail = excluded.detail,
-            created_at = excluded.created_at
-        """,
-        (
-            int(sect_id),
-            client_id,
-            influence,
-            max(0, int(item_value)),
-            1 if success else 0,
-            cycle_start,
-            cycle_end,
-            detail,
-            ts(occurred_time),
-        ),
+        war_action="抢劫",
+        war_item_value=item_value,
+        war_success=success,
+        war_multiplier=SECT_ROBBERY_CONTRIBUTION_MULTIPLIER,
     )
     return influence

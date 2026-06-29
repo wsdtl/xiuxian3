@@ -42,6 +42,7 @@ class FlowRecord:
     request_id: str
     client_id: str
     player_id: str
+    sender_name: str
     message_type: str
     content: str
     created_at: str
@@ -67,8 +68,8 @@ class MessageFlowService:
         """返回消息流水后台入口。"""
 
         return (
-            f"消息流水后台：{message_flow_link()}\n"
-            "进入页面前需要先完成用户组后台登录。"
+            f"消息流水页面：{message_flow_link()}\n"
+            "所有人都可以直接打开查看最近消息流水。"
         )
 
     async def start(self) -> None:
@@ -109,32 +110,21 @@ class MessageFlowService:
         await self._remember_record_locked(record)
         return record
 
-    async def recent(self, player_id: str, *, limit: int = 100) -> list[dict[str, Any]]:
-        """读取某个主用户的最近消息。"""
+    async def recent(self, player_id: str = "", *, limit: int = 100) -> list[dict[str, Any]]:
+        """读取最近消息；默认返回全局公开流水。"""
 
         normalized = str(player_id or "").strip()
-        if not normalized:
-            return []
         count = max(1, min(int(limit or 100), MESSAGE_FLOW_PER_PLAYER_BUFFER))
         async with self._lock:
-            cached = list(self._player_records.get(normalized, ()))
-        if len(cached) >= count or cached:
+            cached = list(self._global_records if not normalized else self._player_records.get(normalized, ()))
+        if cached:
             return [record.to_dict() for record in cached[-count:]]
 
-        rows = self.db.fetch_all(
-            """
-            SELECT *
-            FROM message_flows
-            WHERE player_id = ?
-            ORDER BY flow_id DESC
-            LIMIT ?
-            """,
-            (normalized, count),
-        )
-        return [dict(row) for row in reversed(rows)]
+        rows = self._recent_rows_from_db(limit=count, player_id=normalized)
+        return [dict(row) for row in rows]
 
-    async def subscribe(self, player_id: str) -> asyncio.Queue[FlowRecord]:
-        """订阅某个主用户的实时流水。"""
+    async def subscribe(self, player_id: str = "") -> asyncio.Queue[FlowRecord]:
+        """订阅实时流水；默认订阅全局公开流。"""
 
         normalized = str(player_id or "").strip()
         queue: asyncio.Queue[FlowRecord] = asyncio.Queue(maxsize=100)
@@ -142,10 +132,16 @@ class MessageFlowService:
             self._subscribers[normalized].add(queue)
         return queue
 
-    async def unsubscribe(self, player_id: str, queue: asyncio.Queue[FlowRecord]) -> None:
+    async def unsubscribe(
+        self,
+        player_id: str = "",
+        queue: asyncio.Queue[FlowRecord] | None = None,
+    ) -> None:
         """取消实时流水订阅。"""
 
         normalized = str(player_id or "").strip()
+        if queue is None:
+            return
         async with self._lock:
             queues = self._subscribers.get(normalized)
             if not queues:
@@ -183,13 +179,16 @@ class MessageFlowService:
         async with self._lock:
             self._last_flow_id = max(self._last_flow_id, self._read_last_flow_id()) + 1
             flow_id = self._last_flow_id
+        direction = _safe_choice(event.direction, {"incoming", "outgoing"}, "incoming")
+        resolved_player_id = _short_token(player_id or event.client_id)
         return FlowRecord(
             flow_id=flow_id,
-            direction=_safe_choice(event.direction, {"incoming", "outgoing"}, "incoming"),
+            direction=direction,
             adapter=_short_token(event.adapter, "unknown"),
             request_id=_short_token(event.request_id),
             client_id=_short_token(event.client_id),
-            player_id=_short_token(player_id or event.client_id),
+            player_id=resolved_player_id,
+            sender_name=self._sender_name_for(direction, resolved_player_id, event.client_id),
             message_type=_safe_choice(event.message_type, {"text", "markdown", "image", "raw", "unknown"}, "unknown"),
             content=_truncate_content(content),
             created_at=datetime.now().isoformat(timespec="seconds"),
@@ -229,7 +228,8 @@ class MessageFlowService:
 
     async def _publish(self, record: FlowRecord) -> None:
         async with self._lock:
-            queues = list(self._subscribers.get(record.player_id, ()))
+            queues = set(self._subscribers.get("", ()))
+            queues.update(self._subscribers.get(record.player_id, ()))
         for queue in queues:
             if queue.full():
                 try:
@@ -246,20 +246,49 @@ class MessageFlowService:
             return self._last_flow_id
         return int(row.get("last_id") or 0) if row else 0
 
-    def _recent_rows_from_db(self, *, limit: int) -> list[dict[str, Any]]:
+    def _recent_rows_from_db(self, *, limit: int, player_id: str = "") -> list[dict[str, Any]]:
         try:
             rows = self.db.fetch_all(
                 """
-                SELECT *
-                FROM message_flows
-                ORDER BY flow_id DESC
+                SELECT
+                    mf.*,
+                    CASE
+                        WHEN mf.direction = 'outgoing' THEN '修仙服务'
+                        ELSE COALESCE(p.display_name, mf.player_id, mf.client_id, '未知道友')
+                    END AS sender_name
+                FROM message_flows AS mf
+                LEFT JOIN players AS p ON p.client_id = mf.player_id
+                WHERE ? = '' OR mf.player_id = ?
+                ORDER BY mf.flow_id DESC
                 LIMIT ?
                 """,
-                (max(1, int(limit)),),
+                (str(player_id or "").strip(), str(player_id or "").strip(), max(1, int(limit))),
             )
         except Exception:
             return []
         return list(reversed(rows))
+
+    def _sender_name_for(self, direction: str, player_id: str, client_id: str) -> str:
+        if direction == "outgoing":
+            return "修仙服务"
+
+        for token in (player_id, client_id):
+            normalized = str(token or "").strip()
+            if not normalized:
+                continue
+            try:
+                row = self.db.fetch_one(
+                    "SELECT display_name FROM players WHERE client_id = ? LIMIT 1",
+                    (normalized,),
+                )
+            except Exception:
+                continue
+            name = str(row.get("display_name") or "").strip() if row else ""
+            if name:
+                return name
+
+        fallback = str(player_id or client_id or "").strip()
+        return fallback or "未知道友"
 
 
 def sanitize_event_content(event: MessageEvent) -> str:
@@ -278,38 +307,77 @@ def render_markdown_fragment(text: str) -> str:
 
     lines = str(text or "").splitlines()
     rendered: list[str] = []
-    in_list = False
+    list_type: str | None = None
+    in_code = False
+    code_lines: list[str] = []
     for raw_line in lines:
         line = raw_line.rstrip()
-        if not line.strip():
-            if in_list:
-                rendered.append("</ul>")
-                in_list = False
-            rendered.append("<br>")
+        stripped = line.strip()
+
+        if stripped.startswith("```"):
+            if in_code:
+                rendered.append(f"<pre><code>{html.escape(chr(10).join(code_lines), quote=False)}</code></pre>")
+                code_lines = []
+                in_code = False
+            else:
+                list_type = _close_markdown_list(rendered, list_type)
+                in_code = True
+            continue
+
+        if in_code:
+            code_lines.append(line)
+            continue
+
+        if not stripped:
+            list_type = _close_markdown_list(rendered, list_type)
+            continue
+
+        heading = re.match(r"^(#{1,6})\s+(.+)$", stripped)
+        if heading:
+            list_type = _close_markdown_list(rendered, list_type)
+            level = len(heading.group(1))
+            rendered.append(f"<h{level}>{_inline_markdown(heading.group(2).strip())}</h{level}>")
+            continue
+
+        if stripped in {"---", "***", "___"}:
+            list_type = _close_markdown_list(rendered, list_type)
+            rendered.append("<hr>")
             continue
 
         if line.lstrip().startswith(">"):
-            if in_list:
-                rendered.append("</ul>")
-                in_list = False
+            list_type = _close_markdown_list(rendered, list_type)
             content = line.lstrip()[1:].strip()
-            rendered.append(f"<blockquote>{_inline_markdown(content)}</blockquote>")
+            rendered.append(f"<blockquote><p>{_inline_markdown(content)}</p></blockquote>")
             continue
 
-        if line.lstrip().startswith("- "):
-            if not in_list:
+        bullet = re.match(r"^[-*]\s+(.+)$", stripped)
+        if bullet:
+            if list_type == "ol":
+                rendered.append("</ol>")
+                list_type = None
+            if list_type != "ul":
                 rendered.append("<ul>")
-                in_list = True
-            rendered.append(f"<li>{_inline_markdown(line.lstrip()[2:].strip())}</li>")
+                list_type = "ul"
+            rendered.append(f"<li>{_inline_markdown(bullet.group(1).strip())}</li>")
             continue
 
-        if in_list:
-            rendered.append("</ul>")
-            in_list = False
-        rendered.append(f"<p>{_inline_markdown(line)}</p>")
+        ordered = re.match(r"^\d+[.)]\s+(.+)$", stripped)
+        if ordered:
+            if list_type == "ul":
+                rendered.append("</ul>")
+                list_type = None
+            if list_type != "ol":
+                rendered.append("<ol>")
+                list_type = "ol"
+            rendered.append(f"<li>{_inline_markdown(ordered.group(1).strip())}</li>")
+            continue
 
-    if in_list:
-        rendered.append("</ul>")
+        list_type = _close_markdown_list(rendered, list_type)
+        rendered.append(f"<p>{_inline_markdown(stripped)}</p>")
+
+    if in_code:
+        rendered.append(f"<pre><code>{html.escape(chr(10).join(code_lines), quote=False)}</code></pre>")
+    _close_markdown_list(rendered, list_type)
     return "\n".join(rendered)
 
 
@@ -342,12 +410,13 @@ def _strip_reply_prefix_lines(text: str) -> str:
 
 def _inline_markdown(text: str) -> str:
     escaped = html.escape(text, quote=False)
+    escaped, code_spans = _extract_inline_code_spans(escaped)
     escaped = _render_images(escaped)
     escaped = _render_links(escaped)
     escaped = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", escaped)
     escaped = re.sub(r"(?<!\*)\*([^*]+)\*(?!\*)", r"<em>\1</em>", escaped)
     escaped = re.sub(r"~~([^~]+)~~", r"<del>\1</del>", escaped)
-    return escaped
+    return _restore_inline_code_spans(escaped, code_spans)
 
 
 def _render_links(text: str) -> str:
@@ -372,6 +441,31 @@ def _render_images(text: str) -> str:
     )
 
 
+def _extract_inline_code_spans(text: str) -> tuple[str, dict[str, str]]:
+    spans: dict[str, str] = {}
+
+    def replace(match: re.Match[str]) -> str:
+        placeholder = f"__CODE_SPAN_{len(spans)}__"
+        spans[placeholder] = f"<code>{html.escape(match.group(1), quote=False)}</code>"
+        return placeholder
+
+    return re.sub(r"`([^`]+)`", replace, text), spans
+
+
+def _restore_inline_code_spans(text: str, spans: dict[str, str]) -> str:
+    for placeholder, code_html in spans.items():
+        text = text.replace(placeholder, code_html)
+    return text
+
+
+def _close_markdown_list(rendered: list[str], list_type: str | None) -> str | None:
+    if list_type == "ul":
+        rendered.append("</ul>")
+    elif list_type == "ol":
+        rendered.append("</ol>")
+    return None
+
+
 def _record_from_row(row: dict[str, Any]) -> FlowRecord:
     return FlowRecord(
         flow_id=int(row.get("flow_id") or 0),
@@ -380,6 +474,7 @@ def _record_from_row(row: dict[str, Any]) -> FlowRecord:
         request_id=str(row.get("request_id") or ""),
         client_id=str(row.get("client_id") or ""),
         player_id=str(row.get("player_id") or ""),
+        sender_name=str(row.get("sender_name") or ""),
         message_type=str(row.get("message_type") or "unknown"),
         content=str(row.get("content") or ""),
         created_at=str(row.get("created_at") or ""),
@@ -387,7 +482,7 @@ def _record_from_row(row: dict[str, Any]) -> FlowRecord:
 
 
 def _closed_record() -> FlowRecord:
-    return FlowRecord(0, "system", "", "", "", "", "text", "", "")
+    return FlowRecord(0, "system", "", "", "", "", "系统", "text", "", "")
 
 
 def _safe_choice(value: object, choices: set[str], default: str) -> str:

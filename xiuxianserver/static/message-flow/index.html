@@ -13,71 +13,20 @@
 
   <main class="app-shell">
     <header class="topbar">
-      <div class="title-block">
-        <span class="eyebrow">Message Flow</span>
-        <h1>消息流水</h1>
+      <h1>消息流水</h1>
+      <div class="font-control" role="group" aria-label="字体大小">
+        <button id="fontSizeDown" class="font-button" type="button" aria-label="缩小字体" title="缩小字体">−</button>
+        <span id="fontSizeLabel" class="font-label">中</span>
+        <button id="fontSizeUp" class="font-button" type="button" aria-label="放大字体" title="放大字体">＋</button>
       </div>
       <div class="status-strip">
         <span id="statusBadge" class="status-badge is-idle">初始化</span>
-        <span id="playerBadge" class="metric">未登录</span>
-        <span id="retentionBadge" class="metric">短期保留</span>
+        <button id="jumpBottom" class="jump-bottom" type="button" aria-label="到底" title="到底">↓</button>
       </div>
     </header>
 
-    <section id="loginPanel" class="login-panel" hidden>
-      <div>
-        <h2>需要用户组后台登录</h2>
-        <p>登录后只展示当前主用户的收发流水。</p>
-      </div>
-      <a id="loginLink" class="primary-link" href="#">用户组后台登录</a>
-    </section>
-
-    <section id="flowPanel" class="flow-layout" hidden>
-      <aside class="side-panel" aria-label="消息流水控制台">
-        <div class="panel-section">
-          <h2>过滤</h2>
-          <div class="segment" role="tablist" aria-label="消息方向">
-            <button class="segment-button is-active" type="button" data-filter="all">全部</button>
-            <button class="segment-button" type="button" data-filter="incoming">收到</button>
-            <button class="segment-button" type="button" data-filter="outgoing">发出</button>
-          </div>
-        </div>
-
-        <div class="panel-section">
-          <h2>统计</h2>
-          <dl class="stats-grid">
-            <div>
-              <dt>总数</dt>
-              <dd id="totalCount">0</dd>
-            </div>
-            <div>
-              <dt>收到</dt>
-              <dd id="incomingCount">0</dd>
-            </div>
-            <div>
-              <dt>发出</dt>
-              <dd id="outgoingCount">0</dd>
-            </div>
-            <div>
-              <dt>最近</dt>
-              <dd id="latestTime">--</dd>
-            </div>
-          </dl>
-        </div>
-
-        <div class="panel-section">
-          <h2>显示</h2>
-          <label class="toggle-line">
-            <input id="autoScroll" type="checkbox" checked>
-            <span>跟随最新消息</span>
-          </label>
-        </div>
-      </aside>
-
-      <section class="chat-board" aria-label="消息流水列表">
-        <div id="emptyState" class="empty-state">暂无消息流水</div>
-        <div id="flowList" class="flow-list" aria-live="polite"></div>
-      </section>
+    <section class="flow-stage" aria-label="消息流水列表">
+      <div id="flowList" class="flow-list" aria-live="polite"></div>
     </section>
   </main>
 

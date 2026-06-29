@@ -25,6 +25,7 @@ from 修仙.sect_war import (
     sect_bonus_conn,
     sect_city_bonus_for_position_conn,
     sect_direction_bonus_conn,
+    sect_merit_war_contribution_score,
     sect_war_cycle_bounds,
     sect_war_in_battle_window,
     sect_war_in_reward_claim_window,
@@ -37,7 +38,7 @@ from 修仙.背包.service import BackpackService
 from 修仙.纳戒.service import RingService
 from 修仙.玩家.service import PlayerService
 from 修仙.宗门 import scheduler as sect_scheduler
-from 修仙.宗门.service import SectService
+from 修仙.宗门.service import SECT_QUIT_REQUEST_ACTION, SectService
 from 修仙.武器.service import WeaponService
 
 
@@ -121,21 +122,25 @@ def main() -> None:
             assert sect_war_reward_member_count(10, 0.8) == 6
             owner_influence = _record_robbery_influence(db, "owner", finished_monday)
             assert owner_influence > base_influence
-            _record_robbery_influence(db, "owner", finished_monday)
+            owner_second_influence = _record_robbery_influence(db, "owner", finished_monday)
             member_influence = _record_robbery_influence(db, "member", finished_saturday)
             stats = _sect_stats(db, owner_sect_id)
             assert stats is not None
-            assert int(stats["influence_merit"]) >= owner_influence * 2 + member_influence
+            assert int(stats["influence_merit"]) >= owner_influence + owner_second_influence + member_influence
             assert int(stats["exp"]) > 0
             assert _sect_merit_count(db, owner_sect_id, "influence") >= 3
             with db.transaction() as conn:
-                record_sect_merit_conn(conn, "owner", "support", 1000, source="测试供养")
+                record_sect_merit_conn(conn, "owner", "support", 1000, source="测试供养", occurred_at=finished_monday)
                 support_bonus = sect_direction_bonus_conn(conn, "owner", "support")
             assert support_bonus > 0
+            owner_contribution = sect_merit_war_contribution_score("influence", owner_influence, 1.35)
+            owner_contribution += sect_merit_war_contribution_score("influence", owner_second_influence, 1.35)
+            owner_contribution += sect_merit_war_contribution_score("support", 1000)
+            member_contribution = sect_merit_war_contribution_score("influence", member_influence, 1.35)
             assert _cycle_record_count(db, finished_cycle_start) == 1
             assert _cycle_influence(db, finished_cycle_start) > 0
-            assert _personal_influence(db, "owner", finished_cycle_start) == owner_influence * 2
-            assert _personal_influence(db, "member", finished_cycle_start) == member_influence
+            assert _personal_influence(db, "owner", finished_cycle_start) == owner_contribution
+            assert _personal_influence(db, "member", finished_cycle_start) == member_contribution
             with db.transaction() as conn:
                 wrong_sect = record_sect_robbery_influence_conn(
                     conn,
@@ -165,7 +170,7 @@ def main() -> None:
 
             war_text = sect.war("owner")
             assert "宗门大会" in war_text
-            assert "本期影响力" in war_text
+            assert "宗门大会影响力" in war_text
             assert "个人贡献" in war_text
             assert "宗主甲" in war_text
             assert "宗门加持" in war_text
@@ -174,6 +179,77 @@ def main() -> None:
 
             reward = sect.claim_war_reward("owner")
             assert "宗门大会奖励" in reward or "没有可领取" in reward
+
+            quit_text = sect.quit("member")
+            assert "已进入退出宗门冷静期" in quit_text
+            assert db.fetch_one("SELECT 1 FROM sect_members WHERE client_id = ?", ("member",)) is not None
+            repeat_quit = sect.quit("member")
+            assert "冷静期尚未结束" in repeat_quit
+            assert "冷静期尚未结束" in sect.confirm_quit("member")
+            assert "已取消退出宗门申请" in sect.cancel_quit("member")
+            assert "没有待确认的退出申请" in sect.confirm_quit("member")
+
+            quit_text = sect.quit("member")
+            assert "已进入退出宗门冷静期" in quit_text
+            db.execute(
+                """
+                UPDATE game_logs
+                SET detail = json_set(detail, '$.expires_at', ?)
+                WHERE client_id = ? AND action = ?
+                """,
+                (ts(datetime(2026, 1, 1, 0, 0, 0)), "member", SECT_QUIT_REQUEST_ACTION),
+            )
+            assert "退出申请已过期" in sect.quit("member")
+
+            quit_text = sect.quit("member")
+            assert "已进入退出宗门冷静期" in quit_text
+            db.execute(
+                """
+                UPDATE game_logs
+                SET detail = json_set(detail, '$.available_at', ?)
+                WHERE client_id = ? AND action = ?
+                """,
+                (ts(datetime(2026, 1, 1, 0, 0, 0)), "member", SECT_QUIT_REQUEST_ACTION),
+            )
+            confirm_quit = sect.confirm_quit("member")
+            assert "已退出宗门" in confirm_quit
+            assert db.fetch_one("SELECT 1 FROM sect_members WHERE client_id = ?", ("member",)) is None
+            _join_sect(db, sect, "member", "青云宗")
+
+            solo_db = XiuxianDB(Path(temp_dir) / "xiuxian_sect_solo_test.db")
+            try:
+                solo_player = PlayerService(solo_db)
+                solo_sect = SectService(solo_db)
+                solo_sect._is_member_locked = lambda value=None: False  # type: ignore[method-assign]
+                WeaponService(solo_db).ensure_starter_weapon("solo")
+                assert "创建成功" in solo_player.create("solo", "独宗主")
+                _build_sect(solo_db, solo_sect, "solo", "独宗", x=-46, y=-46)
+                solo_sect_id_row = solo_db.fetch_one("SELECT sect_id FROM sects WHERE name = ?", ("独宗",))
+                assert solo_sect_id_row is not None
+                with solo_db.transaction() as conn:
+                    record_sect_robbery_influence_conn(
+                        conn,
+                        "solo",
+                        sect_id=int(solo_sect_id_row["sect_id"]),
+                        success=True,
+                        item_value=1000,
+                        battle={"actions": [1], "left_level": 10, "right_level": 10},
+                        detail="solo sect",
+                        occurred_at=datetime.fromisoformat(f"{solo_sect._cycle_bounds()[0]}T12:00:00"),
+                    )
+                assert "已进入退出宗门冷静期" in solo_sect.quit("solo")
+                solo_db.execute(
+                    """
+                    UPDATE game_logs
+                    SET detail = json_set(detail, '$.available_at', ?)
+                    WHERE client_id = ? AND action = ?
+                    """,
+                    (ts(datetime(2026, 1, 1, 0, 0, 0)), "solo", SECT_QUIT_REQUEST_ACTION),
+                )
+                assert "不能解散宗门" in solo_sect.confirm_quit("solo")
+                assert solo_db.fetch_one("SELECT * FROM sects WHERE name = ?", ("独宗",)) is not None
+            finally:
+                solo_db.close()
 
             with db.transaction() as conn:
                 sect._ensure_rewards_generated_conn(conn, finished_cycle_start, finished_cycle_end)
