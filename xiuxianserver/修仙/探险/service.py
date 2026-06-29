@@ -229,6 +229,9 @@ class ExplorationService(CoreService):
             panel.line(f"地貌：{world_point['terrain']}｜类型：{world_point['category']}｜功能：{features}")
             if str(world_point.get("desc") or "").strip():
                 panel.line(f"说明：{world_point['desc']}")
+        elif sect:
+            panel.line("地貌：宗门山门｜类型：玩家宗门｜功能：山门外观")
+            panel.line("此处已有宗门立下山门；外来者只能看到公开山门信息。")
         else:
             panel.line("地貌：荒野｜类型：自由坐标｜功能：暂无固定建筑")
             panel.line("荒野可以作为宗门山门坐标；若要探险或跑商，先导航到普通城池。")
@@ -279,7 +282,9 @@ class ExplorationService(CoreService):
         if sect:
             panel.hr()
             panel.section("宗门山门")
-            panel.line(f"{sect['name']}｜宗主：{self._player_name(str(sect['master_client_id']))}｜成员：{self._sect_member_count(int(sect['sect_id']))}")
+            panel.line(f"{sect['name']}｜山门：({sect['location_x']},{sect['location_y']})")
+            panel.line(f"宗主：{self._player_name(str(sect['master_client_id']))}｜公开成员数：{self._sect_member_count(int(sect['sect_id']))}")
+            panel.line("更多宗门详情需要加入后查看。")
             buttons.extend([f"加入宗门 {sect['name']}", "宗门"])
 
         if treasure:

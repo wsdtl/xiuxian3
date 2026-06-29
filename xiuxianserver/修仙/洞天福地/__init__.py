@@ -9,11 +9,13 @@ from ..identity import current_player_id
 from ..reply import send_reply
 from .bianling_color import bianling_color_config, finish_bianling_color, start_bianling_color
 from .hedan_furnace import finish_hedan_furnace, hedan_furnace_config, start_hedan_furnace
+from .jianfeng_chazhen import finish_jianfeng_chazhen, jianfeng_chazhen_config, start_jianfeng_chazhen
 from .lingguo_sum_ten import finish_lingguo_sum_ten, lingguo_sum_ten_config, start_lingguo_sum_ten
 from .lingpai_memory import finish_lingpai_memory, lingpai_memory_config, start_lingpai_memory
 from .lingquan_ten_drop import finish_lingquan_ten_drop, lingquan_ten_drop_config, start_lingquan_ten_drop
 from .lingxi_fishing import finish_lingxi_fishing, lingxi_fishing_config, start_lingxi_fishing
 from .service import service
+from .suixing_qieyu import finish_suixing_qieyu, start_suixing_qieyu, suixing_qieyu_config
 from .zhuiyuan_hundred_floor import (
     finish_zhuiyuan_hundred_floor,
     start_zhuiyuan_hundred_floor,
@@ -309,6 +311,89 @@ async def api_zhuiyuan_hundred_floor_finish(request: Request) -> dict:
     payload = await _json_payload(request, "坠渊百层结算数据不是有效 JSON。")
     try:
         return finish_zhuiyuan_hundred_floor(service, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/suixing-qieyu/config")
+async def api_suixing_qieyu_config(request: Request, response: Response) -> dict:
+    """碎星切玉启动配置。"""
+
+    try:
+        return _config_with_cookie(
+            request,
+            response,
+            "suixing-qieyu",
+            suixing_qieyu_config(service, _game_token_cookie(request, "suixing-qieyu")),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/suixing-qieyu/start")
+async def api_suixing_qieyu_start(request: Request) -> dict:
+    """碎星切玉开局，返回一次性单局凭证。"""
+
+    payload = await _json_payload(request, "碎星开局数据不是有效 JSON。")
+    try:
+        return start_suixing_qieyu(service, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/suixing-qieyu/finish")
+async def api_suixing_qieyu_finish(request: Request) -> dict:
+    """碎星切玉结算。
+
+    前端提交的分数、切玉、特殊玉、连斩和漏切只是材料；服务端会按
+    九十息上限和星潮密度重新裁定，最终只签发一次性洞天兑换码。
+    """
+
+    payload = await _json_payload(request, "碎星结算数据不是有效 JSON。")
+    try:
+        return finish_suixing_qieyu(service, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/jianfeng-chazhen/config")
+async def api_jianfeng_chazhen_config(request: Request, response: Response) -> dict:
+    """剑锋插阵启动配置。"""
+
+    try:
+        return _config_with_cookie(
+            request,
+            response,
+            "jianfeng-chazhen",
+            jianfeng_chazhen_config(service, _game_token_cookie(request, "jianfeng-chazhen")),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/jianfeng-chazhen/start")
+async def api_jianfeng_chazhen_start(request: Request) -> dict:
+    """剑锋插阵开局，返回一次性单局凭证。"""
+
+    payload = await _json_payload(request, "剑阵开局数据不是有效 JSON。")
+    try:
+        return start_jianfeng_chazhen(service, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/jianfeng-chazhen/finish")
+async def api_jianfeng_chazhen_finish(request: Request) -> dict:
+    """剑锋插阵结算。
+
+    前端提交的剑意、插剑、破阵、天隙和失误只是材料；服务端会按
+    九十息上限、最后三十息密度和护心失误重新裁定，最终只签发
+    一次性洞天兑换码。
+    """
+
+    payload = await _json_payload(request, "剑阵结算数据不是有效 JSON。")
+    try:
+        return finish_jianfeng_chazhen(service, payload)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

@@ -695,9 +695,17 @@ class TradeService(WeaponCore):
                     "发送：导航 x y，其中 x 和 y 都需要在世界范围内。",
                 )
             location = self._known_location_at(x, y)
-            name = str(location["name"]) if location else self._wilderness_name(x, y)
+            sect = None if location else self._sect_at(x, y)
+            if location:
+                name = str(location["name"])
+                terrain = str(location.get("terrain") or "荒野")
+            elif sect:
+                name = str(sect.get("location_name") or f"{sect['name']}山门")
+                terrain = "宗门山门"
+            else:
+                name = self._wilderness_name(x, y)
+                terrain = "荒野"
             location_id = str(location.get("location_id") or "") if location else ""
-            terrain = str(location.get("terrain") or "荒野") if location else "荒野"
             wormhole_location = name if location else ""
             wormhole_location_id = location_id
         else:
@@ -712,7 +720,11 @@ class TradeService(WeaponCore):
                 (client_id, f"location={name}, x={x}, y={y}", ts()),
             )
         notice = self.wormhole.try_discover(client_id, "navigate", wormhole_location, wormhole_location_id) if wormhole_location else ""
-        return T.attach(f"已到达 {name} ({x},{y})｜地貌：{terrain}。{notice}", "<探险><商场推荐><自动出售>")
+        extra_buttons = ("位置", "探险", "商场推荐", "自动出售")
+        if "sect" in locals() and sect:
+            notice = f"此处是 {sect['name']} 山门。{notice}"
+            extra_buttons = ("位置", "宗门", f"加入宗门 {sect['name']}", "地图")
+        return T.attach(f"已到达 {name} ({x},{y})｜地貌：{terrain}。{notice}", T.buttons(*extra_buttons))
 
     def price(self, location_name: str, item_id: str, save: bool = False) -> tuple[int, int]:
         """获取当天价格。
@@ -1485,6 +1497,11 @@ class TradeService(WeaponCore):
         """读取精确坐标上的系统保留地点。"""
 
         return world_location_by_point(self.db, x, y)
+
+    def _sect_at(self, x: int, y: int) -> dict | None:
+        """读取精确坐标上的宗门山门。"""
+
+        return self.db.fetch_one("SELECT * FROM sects WHERE location_x = ? AND location_y = ?", (int(x), int(y)))
 
     def _nearest_location(self, x: int, y: int) -> dict | None:
         """按坐标找最近地点。"""

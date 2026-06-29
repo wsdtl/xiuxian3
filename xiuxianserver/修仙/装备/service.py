@@ -86,7 +86,7 @@ class EquipmentService(CoreService):
                 (client_id, f"slot={slot}, level={level + 1}, cost={cost}", ts()),
             )
         self.recalc_player(client_id)
-        return f"{fixed_equipment_label(row) if row else slot} 升级成功，当前 {level + 1} 级。"
+        return f"{fixed_equipment_label(row) if row else slot} 升级成功，当前 {level + 1} 级，消耗{currency_name()} {money(cost)}。"
 
     def holes(self, client_id: str, slot: str) -> str:
         """查看装备孔位。"""

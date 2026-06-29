@@ -356,7 +356,7 @@ def _action_text(action: dict[str, Any], enemy_name: str, enemy_label: str) -> s
         skill = _first_text(action, ("enemy_skill_name", "monster_skill_name", "boss_skill_name", "skill_name"))
         used = any(bool(action.get(key)) for key in ("enemy_skill_used", "monster_skill_used", "boss_skill_used", "skill_used"))
         attack = f"技能「{skill}」" if used and skill else "普通攻击"
-        damage = _first_int(action, ("monster_damage", "boss_damage", "enemy_damage"))
+        damage = _enemy_action_damage(action)
         extra = _action_effect_suffix(action, include_mp_cost=True)
         player_state = _player_state_suffix(action)
         if action.get("dodged"):
@@ -383,6 +383,28 @@ def _is_enemy_action(action: dict[str, Any], actor: str) -> bool:
     if actor in {"enemy", "monster", "boss"}:
         return True
     return bool(action.get("monster_attack") or action.get("boss_attack"))
+
+
+def _enemy_action_damage(action: dict[str, Any]) -> int:
+    """读取敌方本次造成的伤害。"""
+
+    if _is_monster_style_enemy_action(action):
+        return _first_int(action, ("monster_damage", "boss_damage", "enemy_damage"))
+    if _is_mirror_style_enemy_action(action):
+        return _first_int(action, ("player_total_damage", "damage"))
+    return 0
+
+
+def _is_monster_style_enemy_action(action: dict[str, Any]) -> bool:
+    """判断是否是普通怪物或 Boss 的敌方出手结构。"""
+
+    return action.get("monster_attack") is True or action.get("boss_attack") is True
+
+
+def _is_mirror_style_enemy_action(action: dict[str, Any]) -> bool:
+    """判断是否是太虚映身复用玩家出手的结构。"""
+
+    return action.get("monster_attack") is False and action.get("boss_attack") is False
 
 
 def _action_effect_suffix(action: dict[str, Any], *, include_mp_cost: bool = False) -> str:

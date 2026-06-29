@@ -80,6 +80,11 @@ from 修仙.用户组.service import UserGroupService
 from 修仙.玩家.service import PlayerService
 from 修仙.洞天福地.bianling_color import bianling_color_config, finish_bianling_color, start_bianling_color
 from 修仙.洞天福地.hedan_furnace import finish_hedan_furnace, hedan_furnace_config, start_hedan_furnace
+from 修仙.洞天福地.jianfeng_chazhen import (
+    finish_jianfeng_chazhen,
+    jianfeng_chazhen_config,
+    start_jianfeng_chazhen,
+)
 from 修仙.洞天福地.lingguo_sum_ten import finish_lingguo_sum_ten, lingguo_sum_ten_config, start_lingguo_sum_ten
 from 修仙.洞天福地.lingpai_memory import finish_lingpai_memory, lingpai_memory_config, start_lingpai_memory
 from 修仙.洞天福地.lingxi_fishing import (
@@ -90,6 +95,7 @@ from 修仙.洞天福地.lingxi_fishing import (
 )
 from 修仙.洞天福地.lingquan_ten_drop import finish_lingquan_ten_drop, lingquan_ten_drop_config, start_lingquan_ten_drop
 from 修仙.洞天福地.service import DongtianService, dongtian_medicine_embryo_rate
+from 修仙.洞天福地.suixing_qieyu import finish_suixing_qieyu, start_suixing_qieyu, suixing_qieyu_config
 from 修仙.宗门.service import SectService
 from 修仙.纳戒.service import RingService
 from 修仙.保险箱.service import InsuranceBoxService
@@ -293,10 +299,11 @@ def _check_battle_log_renderer() -> None:
     _must_contain(monster_text, "我方血气 123，精神 45")
     _must_not_contain(monster_text, "怪物战斗记录")
 
-    mirror_text = _action_text(
+    monster_priority_text = _action_text(
         {
             "round": 23,
             "actor": "enemy",
+            "monster_attack": True,
             "skill_used": True,
             "skill_name": "回春刺",
             "damage": 999,
@@ -307,11 +314,33 @@ def _check_battle_log_renderer() -> None:
             "player_hp_left": 675,
             "player_mp_left": 680,
         },
+        "寒魄鬼",
+        "怪物",
+    )
+    _must_contain(monster_priority_text, "寒魄鬼 使用技能「回春刺」，造成 51 伤害")
+    _must_not_contain(monster_priority_text, "造成 999 伤害")
+
+    mirror_text = _action_text(
+        {
+            "round": 24,
+            "actor": "enemy",
+            "monster_attack": False,
+            "boss_attack": False,
+            "skill_used": True,
+            "skill_name": "回春刺",
+            "damage": 999,
+            "player_total_damage": 999,
+            "monster_damage": 0,
+            "boss_damage": 0,
+            "life_steal": 4,
+            "mp_cost": 7,
+            "player_hp_left": 675,
+            "player_mp_left": 680,
+        },
         "太虚映身·寒魄鬼",
         "怪物",
     )
-    _must_contain(mirror_text, "太虚映身·寒魄鬼 使用技能「回春刺」，造成 51 伤害")
-    _must_not_contain(mirror_text, "造成 999 伤害")
+    _must_contain(mirror_text, "太虚映身·寒魄鬼 使用技能「回春刺」，造成 999 伤害")
     _must_contain(mirror_text, "吸血 +4")
     _must_contain(mirror_text, "消耗精神 7")
     _must_contain(mirror_text, "我方血气 675，精神 680")
@@ -2120,6 +2149,56 @@ def _hedan_finish_payload(dongtian: DongtianService, payload: dict[str, Any]) ->
     return result
 
 
+def _suixing_finish_payload(dongtian: DongtianService, payload: dict[str, Any]) -> dict[str, Any]:
+    """生成一份带服务端开局凭证、且已超过最短局时的碎星结算数据。"""
+
+    config = suixing_qieyu_config(dongtian)
+    assert config["game_key"] == "suixing-qieyu"
+    assert config["game_token"]
+    round_info = start_suixing_qieyu(dongtian, {"gameToken": config["game_token"]})
+    reported_elapsed = max(0, int(payload.get("elapsedSeconds") or payload.get("elapsed_seconds") or 0))
+    elapsed_seconds = max(DONGTIAN_ROUND_MIN_SECONDS + 1, min(reported_elapsed, 90))
+    old_issued_at = ts(now() - timedelta(seconds=elapsed_seconds + 1))
+    dongtian.db.execute(
+        "UPDATE dongtian_rounds SET issued_at = ? WHERE session_id = ?",
+        (old_issued_at, round_info["session_id"]),
+    )
+    result = dict(payload)
+    result.update(
+        {
+            "gameToken": config["game_token"],
+            "sessionId": round_info["session_id"],
+            "roundToken": round_info["round_token"],
+        }
+    )
+    return result
+
+
+def _jianfeng_finish_payload(dongtian: DongtianService, payload: dict[str, Any]) -> dict[str, Any]:
+    """生成一份带服务端开局凭证、且已超过最短局时的剑锋结算数据。"""
+
+    config = jianfeng_chazhen_config(dongtian)
+    assert config["game_key"] == "jianfeng-chazhen"
+    assert config["game_token"]
+    round_info = start_jianfeng_chazhen(dongtian, {"gameToken": config["game_token"]})
+    reported_elapsed = max(0, int(payload.get("elapsedSeconds") or payload.get("elapsed_seconds") or 0))
+    elapsed_seconds = max(DONGTIAN_ROUND_MIN_SECONDS + 1, min(reported_elapsed, 90))
+    old_issued_at = ts(now() - timedelta(seconds=elapsed_seconds + 1))
+    dongtian.db.execute(
+        "UPDATE dongtian_rounds SET issued_at = ? WHERE session_id = ?",
+        (old_issued_at, round_info["session_id"]),
+    )
+    result = dict(payload)
+    result.update(
+        {
+            "gameToken": config["game_token"],
+            "sessionId": round_info["session_id"],
+            "roundToken": round_info["round_token"],
+        }
+    )
+    return result
+
+
 def _dongtian_request(cookies: dict[str, str] | None = None) -> Request:
     """构造最小 HTTP 请求，用来测试洞天启动 token cookie。"""
 
@@ -2151,6 +2230,8 @@ def _check_dongtian_refresh_token_lock(dongtian: DongtianService) -> None:
         ("辨灵试色", bianling_color_config),
         ("灵果凑十", lingguo_sum_ten_config),
         ("合丹炉", hedan_furnace_config),
+        ("碎星切玉", suixing_qieyu_config),
+        ("剑锋插阵", jianfeng_chazhen_config),
     ):
         first_config = config_func(dongtian)
         reused_config = config_func(dongtian, first_config["game_token"])
@@ -2288,6 +2369,18 @@ def _check_dongtian(services: dict[str, object]) -> None:
             "<!doctype html><html><head><title>合丹炉</title></head><body>demo</body></html>",
             encoding="utf-8",
         )
+        suixing_dir = Path(temp_dir) / "suixing-demo"
+        suixing_dir.mkdir(parents=True)
+        (suixing_dir / "index.html").write_text(
+            "<!doctype html><html><head><title>碎星切玉</title></head><body>demo</body></html>",
+            encoding="utf-8",
+        )
+        jianfeng_dir = Path(temp_dir) / "jianfeng-demo"
+        jianfeng_dir.mkdir(parents=True)
+        (jianfeng_dir / "index.html").write_text(
+            "<!doctype html><html><head><title>剑锋插阵</title></head><body>demo</body></html>",
+            encoding="utf-8",
+        )
         dongtian_service_module.DONGTIAN_STATIC_DIR = Path(temp_dir)
         try:
             entry_text = dongtian.games("u1")
@@ -2301,6 +2394,10 @@ def _check_dongtian(services: dict[str, object]) -> None:
             _must_contain(entry_text, "/static/dongtian/bianling-demo/index.html")
             _must_contain(entry_text, "[合丹炉](")
             _must_contain(entry_text, "/static/dongtian/hedan-demo/index.html")
+            _must_contain(entry_text, "[碎星切玉](")
+            _must_contain(entry_text, "/static/dongtian/suixing-demo/index.html")
+            _must_contain(entry_text, "[剑锋插阵](")
+            _must_contain(entry_text, "/static/dongtian/jianfeng-demo/index.html")
 
             try:
                 finish_lingxi_fishing(dongtian, {"score": 1, "caughtFish": []})
@@ -2466,6 +2563,59 @@ def _check_dongtian(services: dict[str, object]) -> None:
             furnace_retry = finish_hedan_furnace(dongtian, furnace_payload)
             assert furnace_retry["code"] == furnace_finish["code"]
             assert furnace_retry["reissued"] is True
+
+            suixing_payload = _suixing_finish_payload(
+                dongtian,
+                {
+                    "score": 9999,
+                    "cubesSliced": 999,
+                    "strongCubes": 99,
+                    "slowmoCubes": 99,
+                    "maxCombo": 999,
+                    "misses": 99,
+                    "elapsedSeconds": 90,
+                    "endReason": "timeout",
+                },
+            )
+            suixing_finish = finish_suixing_qieyu(dongtian, suixing_payload)
+            assert suixing_finish["game_key"] == "suixing-qieyu"
+            assert suixing_finish["game_title"] == "碎星切玉"
+            assert 0 < suixing_finish["accepted_score"] <= 3600
+            assert suixing_finish["cubes_sliced"] <= 240
+            assert suixing_finish["max_combo"] <= 140
+            assert any(line.startswith("基础原石 +") for line in suixing_finish["reward_preview"])
+            assert not any(reward.get("key") in {"kaikongqi", "cuifengdan"} for reward in suixing_finish["rewards"])
+            suixing_retry = finish_suixing_qieyu(dongtian, suixing_payload)
+            assert suixing_retry["code"] == suixing_finish["code"]
+            assert suixing_retry["reissued"] is True
+
+            jianfeng_payload = _jianfeng_finish_payload(
+                dongtian,
+                {
+                    "score": 9999,
+                    "swordsInserted": 999,
+                    "formationsBroken": 99,
+                    "gapHits": 99,
+                    "maxCombo": 999,
+                    "burstSwords": 999,
+                    "misses": 99,
+                    "elapsedSeconds": 90,
+                    "endReason": "mistake_limit",
+                },
+            )
+            jianfeng_finish = finish_jianfeng_chazhen(dongtian, jianfeng_payload)
+            assert jianfeng_finish["game_key"] == "jianfeng-chazhen"
+            assert jianfeng_finish["game_title"] == "剑锋插阵"
+            assert 0 < jianfeng_finish["accepted_score"] <= 3000
+            assert jianfeng_finish["swords_inserted"] <= 150
+            assert jianfeng_finish["formations_broken"] <= 36
+            assert jianfeng_finish["gap_hits"] <= 48
+            assert jianfeng_finish["max_combo"] <= 90
+            assert any(line.startswith("基础原石 +") for line in jianfeng_finish["reward_preview"])
+            assert not any(reward.get("key") in {"kaikongqi", "cuifengdan"} for reward in jianfeng_finish["rewards"])
+            jianfeng_retry = finish_jianfeng_chazhen(dongtian, jianfeng_payload)
+            assert jianfeng_retry["code"] == jianfeng_finish["code"]
+            assert jianfeng_retry["reissued"] is True
 
             normal_payload = _lingxi_finish_payload(
                 dongtian,

@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>碎星切玉</title>
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#10233a" />
+
+    <link rel="stylesheet" href="css/style.css" />
+  </head>
+
+  <body>
+    <canvas id="c"></canvas>
+    <div class="cloud-veil" aria-hidden="true"></div>
+    <div class="crane-mark" aria-hidden="true"></div>
+
+    <div class="hud">
+      <div class="trial-status">
+        <span class="trial-kicker">飞鹤试炼</span>
+        <strong class="trial-timer">90.0</strong>
+        <span class="trial-phase">云海初开</span>
+      </div>
+      <div class="hud__score">
+        <div class="score-lbl"></div>
+        <div class="cube-count-lbl"></div>
+      </div>
+      <button type="button" class="settle-btn">结算本局</button>
+      <div class="pause-btn"><div></div></div>
+      <div class="slowmo">
+        <div class="slowmo__bar"></div>
+      </div>
+    </div>
+    <div class="combo-surge" aria-live="polite"></div>
+    <div class="slash-feed" aria-hidden="true"></div>
+    <div class="star-tide" aria-hidden="true">星潮爆发</div>
+
+    <div class="menus">
+      <div class="menu menu--main">
+        <p class="menu-eyebrow">洞天福地</p>
+        <h1>碎星切玉</h1>
+        <p class="menu-copy">御气成刃，掠过星玉。最后三十息，星潮会把整片云台推到最烈。</p>
+        <button type="button" class="play-normal-btn">开始本局</button>
+        <button type="button" class="play-casual-btn">开始本局</button>
+      </div>
+      <div class="menu menu--pause">
+        <h1>暂停</h1>
+        <button type="button" class="resume-btn">继续游戏</button>
+        <button type="button" class="menu-btn--pause">主菜单</button>
+      </div>
+      <div class="menu menu--score">
+        <h1>星玉归匣</h1>
+        <h2>本局切玉:</h2>
+        <div class="final-score-lbl"></div>
+        <div class="high-score-lbl"></div>
+        <div class="dongtian-result"></div>
+        <button type="button" class="copy-code-btn">复制兑换命令</button>
+        <button type="button" class="play-again-btn">再开一局</button>
+        <button type="button" class="menu-btn--score">主菜单</button>
+      </div>
+    </div>
+
+    <script src="js/index.js"></script>
+    <script src="js/dongtian.js"></script>
+  </body>
+</html>

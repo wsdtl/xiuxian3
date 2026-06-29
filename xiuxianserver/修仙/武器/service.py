@@ -187,7 +187,8 @@ class WeaponService(WeaponCore):
             )
         return (
             f"升级成功，{weapon_label_name(weapon)} 等级 {next_level}/{max_level}，"
-            f"经验补满 +{exp_gain}，攻击 {attack}，附魔栏 {slots}。"
+            f"经验补满 +{exp_gain}，攻击 {attack}，附魔栏 {slots}，"
+            f"消耗{currency_name()} {money(cost)}。"
         )
 
     @staticmethod
