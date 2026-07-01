@@ -35,6 +35,7 @@ GUIDE_COMMANDS: dict[str, tuple[str, tuple[str, ...]]] = {
     "账户": (
         "账户银行",
         (
+            "货币",
             "银行",
             "银行结息",
             "升级银行",

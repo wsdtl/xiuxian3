@@ -139,6 +139,61 @@ class WorldMaterialService(CoreService):
         ).fetchone()
         return str(row["location_id"]) if row else ""
 
+    def war_prep_state(self, buyer_name: object = "", location_id: object = "") -> dict[str, Any]:
+        """读取特殊收购点的战备蓄能状态，供位置和地图展示。"""
+
+        with self.db.transaction() as conn:
+            return self.war_prep_state_conn(conn, buyer_name, location_id)
+
+    def war_prep_state_conn(
+        self,
+        conn: sqlite3.Connection,
+        buyer_name: object = "",
+        location_id: object = "",
+    ) -> dict[str, Any]:
+        buyer_id = self._buyer_location_id_conn(conn, buyer_name, location_id)
+        if not buyer_id:
+            return {}
+        threshold = self.war_prep_threshold_conn(conn)
+        conn.execute("UPDATE war_prep_states SET threshold = ? WHERE location_id = ?", (threshold, buyer_id))
+        row = conn.execute("SELECT * FROM war_prep_states WHERE location_id = ?", (buyer_id,)).fetchone()
+        if not row:
+            return {}
+        value = max(0, int(row["prep_value"] or 0))
+        threshold = max(1, int(row["threshold"] or threshold))
+        return {
+            "location_id": buyer_id,
+            "buyer_name": str(row["buyer_name"] or buyer_name or ""),
+            "prep_name": str(row["prep_name"] or ""),
+            "loot_subtype": str(row["loot_subtype"] or ""),
+            "value": value,
+            "threshold": threshold,
+            "progress": min(1.0, value / threshold),
+            "pending": bool(int(row["pending"] or 0)),
+            "pending_at": str(row["pending_at"] or ""),
+            "last_opened_at": str(row["last_opened_at"] or ""),
+        }
+
+    @staticmethod
+    def war_prep_state_lines(state: dict[str, Any]) -> list[str]:
+        """格式化特殊收购点战备蓄能展示。"""
+
+        if not state:
+            return []
+        value = max(0, int(state.get("value", 0) or 0))
+        threshold = max(1, int(state.get("threshold", 1) or 1))
+        percent = min(999, int(value / threshold * 100))
+        name = str(state.get("prep_name") or "战备蓄能")
+        status = "已入待牵引队列" if state.get("pending") else f"{percent}%"
+        lines = [f"{name}：{value}/{threshold}（{status}）"]
+        if state.get("pending"):
+            lines.append("已可牵引异界虫洞；下一次战备调度会优先消耗该蓄能。")
+        else:
+            lines.append("出售对应战利品会继续累积；满值后可牵引异界虫洞。")
+        if state.get("last_opened_at"):
+            lines.append(f"上次牵引：{state['last_opened_at']}")
+        return lines
+
     def recycle(self, client_id: str, message: str) -> str:
         """回收药路、民生、建设和古物。"""
 

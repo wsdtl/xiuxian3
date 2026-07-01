@@ -101,6 +101,43 @@ def main() -> None:
             assert current_fatigue_rate < fresh_fatigue_rate
             assert 0.079 <= heavy_fatigue_rate <= 0.081
 
+            with db.transaction() as conn:
+                hot_state = trade._trade_market_state_conn(conn, "trade_tester")
+                conn.execute(
+                    """
+                    INSERT INTO trade_records
+                    (client_id, action, item_id, quantity, effective_quantity, fatigue_quantity,
+                     total_price, fee, effective_profit, fatigue_profit, location_name, business_day, created_at)
+                    VALUES ('other_runner', 'sell', ?, ?, ?, 0, 1, 0, 1, 0, ?, ?, ?)
+                    """,
+                    (
+                        options[0]["item_id"],
+                        hot_state["global_soft_line"] * 2,
+                        hot_state["global_soft_line"] * 2,
+                        str(options[0]["target"]),
+                        business_day(),
+                        ts(),
+                    ),
+                )
+                locations = conn.execute("SELECT location_id, name FROM trade_locations").fetchall()
+                goods = conn.execute("SELECT item_id FROM trade_goods").fetchall()
+                for location in locations:
+                    for good in goods:
+                        trade._add_heat_conn(
+                            conn,
+                            str(location["name"]),
+                            str(good["item_id"]),
+                            buy_count=500,
+                            sell_count=500,
+                            location_id=str(location["location_id"]),
+                        )
+            hot_text = trade.recommend("trade_tester")
+            assert "商场购买" in hot_text, hot_text
+            assert "散商" in hot_text, hot_text
+            hot_options = trade._recommended_trade_options("trade_tester", trade.player("trade_tester"))
+            assert hot_options, hot_text
+            assert min(int(option["quantity"]) for option in hot_options) >= 3
+
             original_trade_options_for_location = trade._trade_options_for_location
 
             def no_current_location_options(client_id: str, player_row: dict, source: str, current: str) -> list[dict]:

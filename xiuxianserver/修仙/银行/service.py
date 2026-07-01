@@ -14,6 +14,29 @@ from ..sql import db
 class BankService(CoreService):
     """货币存储和活期收益系统。"""
 
+    def currency(self, client_id: str) -> str:
+        """查看随身和银行货币总览。"""
+
+        player, error = self.require_player(client_id)
+        if error:
+            return error
+        account = self._account(client_id)
+        raw_stones = int(player["raw_stones"] or 0)
+        balance = int(account["balance"] or 0)
+        panel = T.panel()
+        panel.section("货币")
+        panel.line(f"随身{currency_name()}：**{money(raw_stones)}**")
+        panel.line(f"银行{currency_name()}：**{money(balance)}**")
+        panel.line(f"合计：**{currency_amount(raw_stones + balance)}**")
+        buttons = ["银行"]
+        star_level = int(account["star_level"] or 1)
+        capacity_left = max(0, int(BANK_LEVELS[star_level]["limit"]) - balance)
+        if raw_stones > 0 and capacity_left > 0:
+            buttons.append(f"存入货币 {min(raw_stones, capacity_left)}")
+        if balance > 0:
+            buttons.append(f"取出货币 {balance}")
+        return T.attach(panel.render(), T.buttons(*buttons))
+
     def info(self, client_id: str) -> str:
         """查看银行。"""
 
@@ -21,15 +44,41 @@ class BankService(CoreService):
         if error:
             return error
         account = self._account(client_id)
-        level_conf = BANK_LEVELS[account["star_level"]]
+        star_level = int(account["star_level"])
+        level_conf = BANK_LEVELS[star_level]
+        balance = int(account["balance"] or 0)
+        limit = int(level_conf["limit"])
+        capacity_left = max(0, limit - balance)
+        raw_stones = int(player["raw_stones"] or 0)
+        preview = self._interest_preview(account)
         panel = T.panel()
         panel.section("银行")
         panel.line(f"星级：{level_conf['name']}")
-        panel.line(f"随身{currency_name()}：**{money(player['raw_stones'])}**")
-        panel.line(f"银行{currency_name()}：**{money(account['balance'])}/{money(level_conf['limit'])}**")
+        panel.line(f"随身{currency_name()}：**{money(raw_stones)}**")
+        panel.line(f"银行{currency_name()}：**{money(balance)}/{money(limit)}**｜余量 {money(capacity_left)}")
         daily_interest_claimed = self._display_daily_interest_claimed(account)
         panel.line(f"今日利息：**{currency_amount(daily_interest_claimed)}/{money(level_conf['daily_interest_limit'])}**")
-        return T.attach(panel.render(), "<银行结息><升级银行>")
+        panel.line(
+            f"待结息：**{currency_amount(preview['reward'])}**｜"
+            f"已计 {preview['hours']:.2f} 小时"
+        )
+        panel.line(f"计息：每小时 {float(level_conf['hour_rate']) * 100:.3f}%｜单次最多 24 小时。")
+        if star_level < BANK_MAX_LEVEL:
+            next_conf = BANK_LEVELS[star_level + 1]
+            panel.line(
+                f"下级：{next_conf['name']}｜容量 {money(next_conf['limit'])}｜"
+                f"日上限 {money(next_conf['daily_interest_limit'])}｜升级费 {currency_amount(next_conf['cost'])}"
+            )
+        else:
+            panel.line("下级：已满级。")
+        buttons = ["银行结息"]
+        if star_level < BANK_MAX_LEVEL:
+            buttons.append("升级银行")
+        if raw_stones > 0 and capacity_left > 0:
+            buttons.append(f"存入货币 {min(raw_stones, capacity_left)}")
+        if balance > 0:
+            buttons.append(f"取出货币 {balance}")
+        return T.attach(panel.render(), T.buttons(*buttons))
 
     def settle(self, client_id: str) -> str:
         """手动结息。"""
@@ -183,6 +232,23 @@ class BankService(CoreService):
         if vault.get("last_interest_day") != business_day():
             return 0
         return max(0, int(vault.get("daily_interest_claimed", 0) or 0))
+
+    @staticmethod
+    def _interest_preview(account: dict) -> dict:
+        """预览本次可结息数值，不修改账本。"""
+
+        current = now()
+        day = business_day(current)
+        star_level = int(account.get("star_level", 1) or 1)
+        conf = BANK_LEVELS.get(star_level, BANK_LEVELS[1])
+        claimed = int(account.get("daily_interest_claimed", 0) or 0) if account.get("last_interest_day") == day else 0
+        daily_left = max(0, int(conf["daily_interest_limit"]) - claimed)
+        last = dt(account.get("last_settle_at")) or current
+        hours = max(0.0, min(24.0, (current - last).total_seconds() / 3600))
+        balance = max(0, int(account.get("balance", 0) or 0))
+        raw_reward = int(balance * float(conf["hour_rate"]) * hours)
+        reward = max(0, min(raw_reward, daily_left))
+        return {"reward": reward, "hours": hours, "daily_left": daily_left, "raw_reward": raw_reward}
 
     @staticmethod
     def _rebased_settle_at_after_deposit(vault: dict, new_balance: int) -> str:

@@ -263,7 +263,16 @@ class ExplorationService(CoreService):
         if special_buyer:
             panel.hr()
             panel.section("特殊收购")
-            panel.line(f"{special_buyer['buyer_name']}：收购对应战利品，出售会自动按今日价格曲线结算。")
+            panel.line(
+                f"{special_buyer['buyer_name']}：收购{self._special_buyer_items_text(special_buyer)}，"
+                f"基础倍率 {float(special_buyer['price_factor']):.2f}。"
+            )
+            panel.line("出售会按今日特殊收购价结算，并累积对应战备蓄能。")
+            prep_state = self.world_material.war_prep_state(
+                str(special_buyer["buyer_name"]),
+                str(special_buyer.get("location_id") or ""),
+            )
+            panel.lines(self.world_material.war_prep_state_lines(prep_state))
             buttons.append("自动出售")
 
         if recycle:
@@ -271,7 +280,10 @@ class ExplorationService(CoreService):
             panel.section("回收建筑")
             recycle_type = str(recycle["recycle_type"])
             label = RECYCLE_TYPE_LABELS.get(recycle_type, recycle_type)
-            panel.line(f"{recycle['name']}：回收{label}，当前系数 {float(recycle['price_factor']):.2f}。")
+            if str(recycle.get("desc") or "").strip():
+                panel.line(str(recycle["desc"]))
+            panel.line(f"处理类型：{label}｜基础系数 {float(recycle['price_factor']):.2f}。")
+            panel.line("这是纳戒资产回收点，主要受个人今日回收曲线影响，不累积战备虫洞进度。")
             if recycle_type == "weapon":
                 buttons.append("出售全部 武器")
             elif recycle_type == "gem":
@@ -1177,6 +1189,30 @@ class ExplorationService(CoreService):
         """读取当前位置上的特殊收购点。"""
 
         return special_buyer_by_point(self.db, int(x), int(y))
+
+    def _special_buyer_items_text(self, buyer: dict) -> str:
+        """把特殊收购点配置的战利品压成短文本，避免位置面板过长。"""
+
+        ids = [item_id.strip() for item_id in str(buyer.get("item_ids") or "").split(",") if item_id.strip()]
+        names: list[str] = []
+        categories: list[str] = []
+        for item_id in ids:
+            item = self.item_def(item_id)
+            if not item:
+                continue
+            name = str(item.get("name") or item_id)
+            category = str(item.get("category") or "").strip()
+            if category and category not in categories:
+                categories.append(category)
+            if len(names) < 4:
+                names.append(name)
+        prefix = "、".join(categories[:2]) if categories else "对应战利品"
+        if names:
+            suffix = "、".join(names)
+            if len(ids) > len(names):
+                suffix += f"等 {len(ids)} 种"
+            return f"{prefix}（{suffix}）"
+        return prefix
 
     def _recycle_location_at(self, x: int, y: int) -> dict | None:
         """读取当前位置上的回收建筑。"""

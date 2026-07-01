@@ -811,6 +811,11 @@ def _check_mobile_map_layout_contract() -> None:
     assert "setInterval(refreshMapData, 60000)" in text, "网页地图需要保持 60 秒自动刷新"
     assert "const radius = level * scale()" in text, "网页地图城池增幅圈必须按城池等级显示真实半径"
     assert 'state.activeLayers.has("city") && DATA.cities.length' in text, "网页地图城池增幅圈需要保持动画刷新"
+    builder_text = (PROJECT_ROOT / "修仙" / "修仙帮助" / "map_builder.py").read_text(encoding="utf-8")
+    assert '"itemSummary"' in builder_text and '"warPrep"' in builder_text, "地图战利品收购点必须输出收购清单和战备蓄能"
+    assert '"progressText": "不累积战备虫洞进度"' in builder_text, "地图纳戒回收建筑不能混入战备虫洞进度"
+    assert "point.itemSummary" in text and "point.warPrep" in text, "网页地图必须展示战利品收购点的收购清单和战备蓄能"
+    assert "point.progressText" in text, "网页地图必须展示纳戒回收建筑的轻量回收定位"
 
 
 def _css_media_block(text: str, marker: str) -> str:

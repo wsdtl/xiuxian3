@@ -11,6 +11,13 @@ from ..reply import send_reply
 from .service import service
 
 
+@MessageHandler.handler(cmd="货币", priority=100, block=True)
+async def ws_currency_info(player_id: str = Depends(current_player_id)) -> None:
+    """查看随身和银行货币。"""
+
+    await send_reply(player_id, service.currency(player_id), manager, service)
+
+
 @MessageHandler.handler(cmd="银行", priority=100, block=True)
 async def ws_bank_info(player_id: str = Depends(current_player_id)) -> None:
     """查看银行。"""

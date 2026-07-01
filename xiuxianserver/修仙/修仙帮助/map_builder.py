@@ -6,7 +6,9 @@ from typing import Any
 
 from ..common import now
 from ..constants import WORLD_COORD_MAX, WORLD_COORD_MIN
+from ..definition_cache import item_def_by_id
 from ..sql import db
+from ..world_materials import WorldMaterialService
 
 
 # 地图坐标范围是 -100..100。前端按 1 坐标 = 24px 渲染，
@@ -98,25 +100,55 @@ def _realms(database: Any) -> list[dict[str, Any]]:
 def _buyers(database: Any) -> list[dict[str, Any]]:
     rows = database.fetch_all(
         """
-        SELECT b.location_id, b.buyer_name, b.price_factor, b.x, b.y,
+        SELECT b.location_id, b.buyer_name, b.item_ids, b.price_factor, b.x, b.y,
                COALESCE(w.terrain, '') AS terrain
         FROM special_buyers AS b
         LEFT JOIN world_locations AS w ON w.location_id = b.location_id
         ORDER BY b.buyer_name
         """
     )
-    return [
-        {
-            "type": "buyer",
-            "id": str(row["location_id"]),
-            "name": str(row["buyer_name"]),
-            "x": int(row["x"]),
-            "y": int(row["y"]),
-            "desc": f"战利品收购｜倍率 {float(row['price_factor'] or 1):.2f}",
-            "terrain": str(row["terrain"] or ""),
-        }
-        for row in rows
-    ]
+    material = WorldMaterialService(database)
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        item_summary = _buyer_items_text(database, str(row["item_ids"] or ""))
+        result.append(
+            {
+                "type": "buyer",
+                "id": str(row["location_id"]),
+                "name": str(row["buyer_name"]),
+                "x": int(row["x"]),
+                "y": int(row["y"]),
+                "desc": "势力据点｜出售战利品会累积战备蓄能，满值后牵引虫洞。",
+                "priceFactor": float(row["price_factor"] or 1),
+                "itemSummary": item_summary,
+                "warPrep": material.war_prep_state(str(row["buyer_name"] or ""), str(row["location_id"] or "")),
+                "terrain": str(row["terrain"] or ""),
+            }
+        )
+    return result
+
+
+def _buyer_items_text(database: Any, item_ids_text: str) -> str:
+    item_ids = [item_id.strip() for item_id in str(item_ids_text or "").split(",") if item_id.strip()]
+    names: list[str] = []
+    categories: list[str] = []
+    for item_id in item_ids:
+        item = item_def_by_id(database, item_id)
+        if not item:
+            continue
+        name = str(item.get("name") or item_id)
+        category = str(item.get("category") or "").strip()
+        if category and category not in categories:
+            categories.append(category)
+        if len(names) < 4:
+            names.append(name)
+    prefix = "、".join(categories[:2]) if categories else "对应战利品"
+    if not names:
+        return prefix
+    suffix = "、".join(names)
+    if len(item_ids) > len(names):
+        suffix += f"等 {len(item_ids)} 种"
+    return f"{prefix}（{suffix}）"
 
 
 def _recycles(database: Any) -> list[dict[str, Any]]:
@@ -138,11 +170,21 @@ def _recycles(database: Any) -> list[dict[str, Any]]:
             "y": int(row["y"]),
             "desc": str(row["desc"] or f"{row['recycle_type']} 回收"),
             "recycleType": str(row["recycle_type"] or ""),
+            "recycleLabel": _recycle_label(str(row["recycle_type"] or "")),
             "priceFactor": float(row["price_factor"] or 1),
+            "progressText": "不累积战备虫洞进度",
             "terrain": str(row["terrain"] or ""),
         }
         for row in rows
     ]
+
+
+def _recycle_label(recycle_type: str) -> str:
+    return {
+        "weapon": "武器",
+        "gem": "宝石",
+        "book": "技能书",
+    }.get(recycle_type, recycle_type)
 
 
 def _sects(database: Any) -> list[dict[str, Any]]:

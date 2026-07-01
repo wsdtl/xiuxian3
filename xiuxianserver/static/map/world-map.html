@@ -1736,11 +1736,24 @@
         lines.push(["状态", point.status || "-"]);
         lines.push(["境界", `Lv.${point.level || 1}`]);
       } else if (point.type === "recycle") {
-        if (point.recycleType) lines.push(["回收类型", point.recycleType]);
-        if (point.priceFactor) lines.push(["倍率", Number(point.priceFactor).toFixed(2)]);
+        lines.push(["定位", "纳戒资产回收"]);
+        if (point.recycleLabel || point.recycleType) lines.push(["回收类型", point.recycleLabel || point.recycleType]);
+        if (Number.isFinite(Number(point.priceFactor))) lines.push(["基础倍率", Number(point.priceFactor).toFixed(2)]);
+        lines.push(["进度", point.progressText || "不累积战备虫洞进度"]);
         if (point.terrain) lines.push(["地貌", point.terrain]);
         if (point.desc) lines.push(["说明", point.desc]);
       } else if (point.type === "buyer") {
+        if (point.itemSummary) lines.push(["收购", point.itemSummary]);
+        if (Number.isFinite(Number(point.priceFactor))) lines.push(["基础倍率", Number(point.priceFactor).toFixed(2)]);
+        const prep = point.warPrep && typeof point.warPrep === "object" ? point.warPrep : null;
+        if (prep && prep.prep_name) {
+          const value = Math.max(0, Number(prep.value || 0));
+          const threshold = Math.max(1, Number(prep.threshold || 1));
+          const percent = Math.min(999, Math.round(value / threshold * 100));
+          const status = prep.pending ? "已入待牵引队列" : `${percent}%`;
+          lines.push(["战备蓄能", `${prep.prep_name} ${value}/${threshold}（${status}）`]);
+          lines.push(["虫洞牵引", prep.pending ? "可触发调度牵引" : "出售战利品累积，满值后牵引"]);
+        }
         if (point.terrain) lines.push(["地貌", point.terrain]);
         if (point.desc) lines.push(["说明", point.desc]);
       } else if (point.type === "event") {

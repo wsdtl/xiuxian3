@@ -6,7 +6,7 @@ from ..format_text import T
 
 from datetime import timedelta
 import hashlib
-from math import hypot
+from math import hypot, sqrt
 
 from ..common import (
     RING_CATEGORY_BOOK,
@@ -33,13 +33,17 @@ from ..common import (
 from ..constants import (
     TRADE_ACTIVE_WINDOW_DAYS,
     TRADE_BUY_FEE_RATE,
+    TRADE_BUY_HEAT_MAX_RATE,
     TRADE_DAILY_REWARD_CAP_BASE,
     TRADE_DAILY_REWARD_CAP_LEVEL_BONUS,
     TRADE_DAILY_REWARD_RATE,
     TRADE_MAX_PROFIT_RATE,
+    TRADE_HEAT_EFFECTIVE_QUANTITY,
     TRADE_PURE_ECONOMY_PRICE_FACTOR,
+    TRADE_RECOMMEND_MIN_QUANTITY,
     TRADE_RESALE_LOCK_HOURS,
     TRADE_SELL_FEE_RATE,
+    TRADE_SELL_HEAT_MAX_RATE,
     WORLD_COORD_MAX,
     WORLD_COORD_MIN,
 )
@@ -456,7 +460,10 @@ class TradeService(WeaponCore):
         panel.line(f"近{TRADE_ACTIVE_WINDOW_DAYS}天活跃：**{market_state['active_count']}** 人")
         panel.line(f"今日个人商誉：**{market_state['player_used']}/{market_state['player_soft_line']}** 件")
         panel.line(f"今日个人散商：**{market_state['player_fatigue_used']}** 件")
-        panel.line(f"今日全服商机：**{market_state['global_used']}/{market_state['global_soft_line']}** 件")
+        global_line = f"今日商誉成交：**{market_state['global_used']}/{market_state['global_soft_line']}** 件"
+        if global_remaining <= 0:
+            global_line += "｜商誉已满，后续进入散商"
+        panel.line(global_line)
         if available_reputation > 0:
             panel.line(
                 f"当前可用商誉：**{available_reputation}** 件；商誉利润倍率：**{int(current_rate * 100)}%**；"
@@ -465,7 +472,7 @@ class TradeService(WeaponCore):
         else:
             panel.line(
                 f"当前可用商誉：**0** 件；后续普通跑商按散商倍率 **{int(fatigue_rate * 100)}%** "
-                "结算利润部分，不限制买卖"
+                "结算封顶后的满净利润，不限制买卖"
             )
         panel.line("当前跑商特产都是纯经济货物；价格基准更高，但仍计入普通跑商收益线")
         panel.line(f"同地点买入后 **{TRADE_RESALE_LOCK_HOURS}** 小时内不能原地出售")
@@ -802,10 +809,12 @@ class TradeService(WeaponCore):
             or {"buy_count": 0, "sell_count": 0}
         )
         market_price = item["base_price"] * supply_factor * demand_factor * daily_wave * self._group_price_factor(trade_group)
-        buy_price = max(1, int(market_price * min(1.5, 1.04 + heat["buy_count"] * 0.01)))
+        buy_heat = self._effective_trade_heat(int(heat["buy_count"]))
+        sell_heat = self._effective_trade_heat(int(heat["sell_count"]))
+        buy_price = max(1, int(market_price * (1.04 + buy_heat * TRADE_BUY_HEAT_MAX_RATE)))
         sell_price = max(
             1,
-            int(market_price * 0.82 * max(0.65, 1.0 - heat["sell_count"] * 0.008)),
+            int(market_price * 0.82 * (1.0 - sell_heat * TRADE_SELL_HEAT_MAX_RATE)),
         )
         if save and location_id:
             self.db.execute(
@@ -817,6 +826,14 @@ class TradeService(WeaponCore):
                 (location_name, location_id, item_id, buy_price, sell_price, day),
             )
         return buy_price, sell_price
+
+    @staticmethod
+    def _effective_trade_heat(raw_count: int) -> float:
+        """把真实交易件数折算成价格有效热度，避免异常量直接打穿市场。"""
+
+        count = max(0, int(raw_count))
+        base = max(1, TRADE_HEAT_EFFECTIVE_QUANTITY)
+        return min(1.0, sqrt(count / base))
 
     @staticmethod
     def _supply_factor(distance: float, is_home: bool) -> float:
@@ -879,15 +896,24 @@ class TradeService(WeaponCore):
 
         for item in self._location_goods(source):
             buy_price, _ = self.price(source, item["item_id"])
-            quantity = self._max_buy_quantity(client_id, item, buy_price, buy_fee_rate, raw_stones)
-            if quantity <= 0:
+            max_quantity = self._max_buy_quantity(client_id, item, buy_price, buy_fee_rate, raw_stones)
+            if max_quantity <= 0:
                 continue
             for loc in all_trade_locations(self.db):
                 if loc["name"] == source:
                     continue
                 _, sell_price = self.price(loc["name"], item["item_id"])
                 sell_price = self._profit_capped_sell_price(buy_price, sell_price)
-                plan = self._trade_sale_plan(market_state, quantity, buy_price, sell_price, buy_fee_rate, sell_fee_rate)
+                quantity, plan = self._best_trade_quantity_plan(
+                    market_state,
+                    max_quantity,
+                    buy_price,
+                    sell_price,
+                    buy_fee_rate,
+                    sell_fee_rate,
+                )
+                if quantity <= 0:
+                    continue
                 total_profit = int(plan["total_profit"])
                 if total_profit <= 0:
                     continue
@@ -919,6 +945,8 @@ class TradeService(WeaponCore):
                     "fatigue_rate": plan["fatigue_rate"],
                     "effective_profit": plan["effective_profit"],
                     "fatigue_profit": plan["fatigue_profit"],
+                    "profit_rate": plan["profit_rate"],
+                    "profit_rate_loss": plan["profit_rate_loss"],
                     "profit_per_weight": total_profit / max(1, int(item["weight"]) * quantity),
                 }
                 item_effect = load_json(item.get("effect"), {})
@@ -930,7 +958,16 @@ class TradeService(WeaponCore):
                 option["recommend_score"] = self._trade_route_score(client_id, current, option)
                 options.append(option)
 
-        options.sort(key=lambda row: (row["total_profit"], row["profit_per_weight"]), reverse=True)
+        options.sort(
+            key=lambda row: (
+                float(row.get("profit_rate") or 0),
+                -float(row.get("profit_rate_loss") or 0),
+                row["unit_profit"],
+                row["profit_per_weight"],
+                row["total_profit"],
+            ),
+            reverse=True,
+        )
         return options
 
     def _global_trade_options(self, client_id: str, player: dict) -> list[dict]:
@@ -940,7 +977,16 @@ class TradeService(WeaponCore):
         options: list[dict] = []
         for loc in all_trade_locations(self.db):
             options.extend(self._trade_options_for_location(client_id, player, str(loc["name"]), current))
-        options.sort(key=lambda row: (row["total_profit"], row["profit_per_weight"]), reverse=True)
+        options.sort(
+            key=lambda row: (
+                float(row.get("profit_rate") or 0),
+                -float(row.get("profit_rate_loss") or 0),
+                row["unit_profit"],
+                row["profit_per_weight"],
+                row["total_profit"],
+            ),
+            reverse=True,
+        )
         return options
 
     def _recommended_trade_options(self, client_id: str, player: dict, limit: int = 3) -> list[dict]:
@@ -960,6 +1006,9 @@ class TradeService(WeaponCore):
         ranked = sorted(
             options,
             key=lambda row: (
+                float(row.get("profit_rate") or 0),
+                -float(row.get("profit_rate_loss") or 0),
+                row["unit_profit"],
                 row.get("recommend_score", 0),
                 row["total_profit"],
                 row["profit_per_weight"],
@@ -1007,9 +1056,18 @@ class TradeService(WeaponCore):
 
         total_profit = max(1.0, float(option["total_profit"]))
         weight_profit = max(1.0, float(option["profit_per_weight"]))
+        profit_rate = max(0.0, float(option.get("profit_rate") or 0))
+        profit_loss = max(0.0, float(option.get("profit_rate_loss") or 0))
+        rate_score = max(0.2, 1.0 - min(1.0, profit_loss / max(0.01, TRADE_MAX_PROFIT_RATE)))
         heat_penalty = self._target_trade_heat_penalty(str(option["target"]))
         jitter = self._stable_route_jitter(client_id, current, option)
-        return total_profit * (0.80 + min(0.30, weight_profit / total_profit)) * heat_penalty * jitter
+        return (
+            (profit_rate * 10_000 + min(total_profit, 20_000) * 0.04)
+            * rate_score
+            * (0.80 + min(0.30, weight_profit / total_profit))
+            * heat_penalty
+            * jitter
+        )
 
     def _target_trade_heat_penalty(self, target: str) -> float:
         """终点近期卖货越拥挤，推荐分越低，避免所有路线被一个城池吸住。"""
@@ -1027,7 +1085,8 @@ class TradeService(WeaponCore):
             (location_id, business_day()),
         )
         sell_count = int(row["sell_count"] if row else 0)
-        return max(0.72, 1.0 - min(0.28, sell_count * 0.018))
+        target_heat = min(1.0, sqrt(max(0, sell_count) / max(1, TRADE_HEAT_EFFECTIVE_QUANTITY * 3)))
+        return 1.0 - target_heat * 0.12
 
     @staticmethod
     def _stable_route_jitter(client_id: str, current: str, option: dict) -> float:
@@ -1066,6 +1125,66 @@ class TradeService(WeaponCore):
                 else:
                     high = mid - 1
         return low
+
+    def _best_trade_quantity_plan(
+        self,
+        market_state: dict[str, int],
+        max_quantity: int,
+        buy_price: int,
+        sell_price: int,
+        buy_fee_rate: float,
+        sell_fee_rate: float,
+    ) -> tuple[int, dict[str, int | float]]:
+        """按真实结算曲线挑推荐数量，优先减少 45% 封顶内的收益损耗。"""
+
+        max_amount = max(0, int(max_quantity))
+        if max_amount <= 0:
+            return 0, {}
+        player_remaining = max(0, int(market_state["player_soft_line"]) - int(market_state["player_used"]))
+        global_remaining = max(0, int(market_state["global_soft_line"]) - int(market_state["global_used"]))
+        reputation_remaining = min(player_remaining, global_remaining)
+        candidates = {
+            max_amount,
+            TRADE_RECOMMEND_MIN_QUANTITY,
+            5,
+            10,
+            20,
+            40,
+            80,
+            reputation_remaining,
+            reputation_remaining + 5,
+            reputation_remaining + 10,
+            reputation_remaining + 20,
+            reputation_remaining + 40,
+        }
+        candidates = {amount for amount in candidates if TRADE_RECOMMEND_MIN_QUANTITY <= amount <= max_amount}
+        if not candidates and max_amount > 0:
+            candidates = {max_amount}
+
+        best_quantity = 0
+        best_plan: dict[str, int | float] = {}
+        best_key: tuple[float, float, float, int, float, int] | None = None
+        for amount in candidates:
+            plan = self._trade_sale_plan(market_state, amount, buy_price, sell_price, buy_fee_rate, sell_fee_rate)
+            total_profit = int(plan["total_profit"])
+            if total_profit <= 0:
+                continue
+            profit_rate = float(plan["profit_rate"])
+            loss = float(plan["profit_rate_loss"])
+            score = profit_rate * 10_000 + min(total_profit, 20_000) * 0.04
+            key = (
+                score,
+                profit_rate,
+                -loss,
+                int(plan["unit_profit"]),
+                total_profit / max(1, amount),
+                total_profit,
+            )
+            if best_key is None or key > best_key:
+                best_key = key
+                best_quantity = amount
+                best_plan = plan
+        return best_quantity, best_plan
 
     def _sell_item(self, client_id: str, location_name: str, item: dict, quantity: int, discover: bool = True) -> str:
         """出售一类背包物品。"""
@@ -1424,19 +1543,6 @@ class TradeService(WeaponCore):
         max_sell = int(cost * (1 + TRADE_MAX_PROFIT_RATE))
         return min(raw_price, max(1, max_sell))
 
-    @staticmethod
-    def _profit_adjusted_sell_price(buy_price: int, sell_price: int, rate: float) -> int:
-        """只对普通跑商利润部分应用柔性衰减。"""
-
-        raw_price = max(1, int(sell_price))
-        cost = max(0, int(buy_price))
-        if cost <= 0 or raw_price <= cost:
-            return raw_price
-        profit = raw_price - cost
-        safe_rate = max(0.0, min(1.0, float(rate)))
-        adjusted = cost + int(profit * safe_rate)
-        return max(1, min(raw_price, adjusted))
-
     def _trade_sale_plan(
         self,
         market_state: dict[str, int],
@@ -1461,28 +1567,29 @@ class TradeService(WeaponCore):
         fatigue_quantity = max(0, amount - effective_quantity)
 
         effective_rate = self._trade_profit_rate_for_quantity(market_state, effective_quantity) if effective_quantity > 0 else 0.0
-        effective_sell_price = (
-            self._profit_adjusted_sell_price(cost, capped_sell, effective_rate)
-            if effective_quantity > 0
-            else 0
+        effective_total, effective_fee, effective_profit, effective_sell_price = self._trade_segment_plan(
+            effective_quantity,
+            cost,
+            capped_sell,
+            buy_fee_rate,
+            sell_fee_rate,
+            effective_rate,
         )
         fatigue_rate = self._trade_fatigue_rate_for_quantity(market_state, fatigue_quantity) if fatigue_quantity > 0 else 0.0
-        fatigue_sell_price = (
-            self._profit_adjusted_sell_price(cost, capped_sell, fatigue_rate)
-            if fatigue_quantity > 0
-            else 0
+        fatigue_total, fatigue_fee, fatigue_profit, fatigue_sell_price = self._trade_segment_plan(
+            fatigue_quantity,
+            cost,
+            capped_sell,
+            buy_fee_rate,
+            sell_fee_rate,
+            fatigue_rate,
         )
-
-        effective_total = effective_sell_price * effective_quantity
-        fatigue_total = fatigue_sell_price * fatigue_quantity
-        effective_fee = int(effective_total * sell_fee_rate)
-        fatigue_fee = int(fatigue_total * sell_fee_rate)
-        effective_cost = cost * effective_quantity + int(cost * effective_quantity * buy_fee_rate)
-        fatigue_cost = cost * fatigue_quantity + int(cost * fatigue_quantity * buy_fee_rate)
-        effective_profit = max(0, effective_total - effective_fee - effective_cost)
-        fatigue_profit = max(0, fatigue_total - fatigue_fee - fatigue_cost)
         total_price = effective_total + fatigue_total
         fee = effective_fee + fatigue_fee
+        total_profit = effective_profit + fatigue_profit
+        buy_cost = cost * amount + int(cost * amount * buy_fee_rate)
+        profit_rate = total_profit / max(1, buy_cost)
+        target_profit_rate = TRADE_MAX_PROFIT_RATE
 
         return {
             "effective_quantity": effective_quantity,
@@ -1496,9 +1603,38 @@ class TradeService(WeaponCore):
             "fee": fee,
             "effective_profit": effective_profit,
             "fatigue_profit": fatigue_profit,
-            "total_profit": effective_profit + fatigue_profit,
-            "unit_profit": (effective_profit + fatigue_profit) // amount if amount > 0 else 0,
+            "total_profit": total_profit,
+            "unit_profit": total_profit // amount if amount > 0 else 0,
+            "profit_rate": profit_rate,
+            "profit_rate_loss": abs(target_profit_rate - min(target_profit_rate, profit_rate)),
         }
+
+    @staticmethod
+    def _trade_segment_plan(
+        quantity: int,
+        buy_price: int,
+        sell_price: int,
+        buy_fee_rate: float,
+        sell_fee_rate: float,
+        rate: float,
+    ) -> tuple[int, int, int, int]:
+        """把一段成交按封顶后的满净利润折算，成本和手续费不被收益曲线吞掉。"""
+
+        amount = max(0, int(quantity))
+        if amount <= 0:
+            return 0, 0, 0, 0
+        cost = max(0, int(buy_price))
+        capped_sell = max(1, int(sell_price))
+        safe_rate = max(0.0, min(1.0, float(rate)))
+        full_total = capped_sell * amount
+        full_fee = int(full_total * sell_fee_rate)
+        buy_cost = cost * amount + int(cost * amount * buy_fee_rate)
+        full_profit = max(0, full_total - full_fee - buy_cost)
+        scaled_profit = int(full_profit * safe_rate)
+        scaled_fee = int(full_fee * safe_rate)
+        total_price = buy_cost + scaled_profit + scaled_fee
+        average_sell_price = total_price // amount
+        return total_price, scaled_fee, scaled_profit, average_sell_price
 
     @staticmethod
     def _trade_group(item: dict) -> str:
